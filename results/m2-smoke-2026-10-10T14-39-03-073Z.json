@@ -65,19 +65,19 @@
       "group": "② M2-2 后坐力与开镜",
       "name": "连发使扩散增大",
       "pass": true,
-      "detail": "spread 峰值 3.260（基线 3）"
+      "detail": "spread 峰值 3.223（基线 3）"
     },
     {
       "group": "② M2-2 后坐力与开镜",
       "name": "视角 = 瞄准 + 后坐力偏移（结构不变量）",
       "pass": true,
-      "detail": "aim 0 + recoil 0.09153 = 0.09152591769525752"
+      "detail": "aim 0 + recoil 0.09152 = 0.09152349866891424"
     },
     {
       "group": "② M2-2 后坐力与开镜",
       "name": "连发期间产生了后坐力临时偏移",
       "pass": true,
-      "detail": "recoilPitch 0.09153"
+      "detail": "recoilPitch 0.09152"
     },
     {
       "group": "② M2-2 后坐力与开镜",
@@ -113,13 +113,13 @@
       "group": "② M2-2 后坐力与开镜",
       "name": "连发后存在后坐力临时偏移",
       "pass": true,
-      "detail": "recoilPitch 0.03604"
+      "detail": "recoilPitch 0.03605"
     },
     {
       "group": "② M2-2 后坐力与开镜",
       "name": "压枪改变的是瞄准、且不动后坐力偏移",
       "pass": true,
-      "detail": "aimPitch 0 → -0.05236；recoilPitch 0.036045 → 0.036045（应完全相同）"
+      "detail": "aimPitch 0 → -0.05236；recoilPitch 0.036046 → 0.036046（应完全相同）"
     },
     {
       "group": "② M2-2 后坐力与开镜",
@@ -197,7 +197,7 @@
       "group": "④ M2-4 部位伤害与护甲耐久",
       "name": "找到有视线的射击位",
       "pass": true,
-      "detail": "guard @ 34°"
+      "detail": "guard @ 23°"
     },
     {
       "group": "④ M2-4 部位伤害与护甲耐久",
@@ -215,7 +215,7 @@
       "group": "④ 回归：隔墙打不中（M1-TEMP-16 已修）",
       "name": "找到\"玩家—墙—AI\"三点一线位置",
       "pass": true,
-      "detail": "玩家格 23,17 墙格 24,18"
+      "detail": "玩家格 24,14 墙格 24,15"
     },
     {
       "group": "④ 回归：隔墙打不中（M1-TEMP-16 已修）",
@@ -233,25 +233,43 @@
       "group": "⑥ M2-6 AI 状态机与寻路",
       "name": "AI 会移动（寻路生效，M1-TEMP-6 已修）",
       "pass": true,
-      "detail": "5/7 个 AI 产生了位移"
+      "detail": "4/7 个 AI 产生了位移"
     },
     {
       "group": "⑥ M2-6 AI 状态机与寻路",
       "name": "AI 状态机产生非 patrol 状态",
       "pass": true,
-      "detail": "状态集合 dead,patrol,combat,search；轮询期间已观测到警觉=true；各 AI 更新次数 141,480,260,838,1771,517,652；flow=raid 玩家生命 81.647"
+      "detail": "状态集合 dead,search,combat,patrol；轮询期间已观测到警觉=true；各 AI 更新次数 159,518,631,840,1937,326,598；flow=raid 玩家生命 83.26100000000001"
     },
     {
       "group": "⑥ M2-6 AI 状态机与寻路",
       "name": "AI 通过调度器获得了路点",
       "pass": true,
-      "detail": "最长路径 34 点"
+      "detail": "最长路径 19 点"
+    },
+    {
+      "group": "⑥ M2-6 AI 状态机与寻路",
+      "name": "受击/发现后有 AI 进入交战或搜索（不得停在巡逻）",
+      "pass": true,
+      "detail": "存活 5 个，状态集合 search,combat,patrol"
+    },
+    {
+      "group": "⑥ M2-6 AI 状态机与寻路",
+      "name": "被攻击的那个 AI 进入了交战/搜索",
+      "pass": true,
+      "detail": "观察对象 ai_4（起始 12.0m）"
+    },
+    {
+      "group": "⑥ M2-6 AI 状态机与寻路",
+      "name": "被攻击的 AI 会主动向玩家逼近（距离缩短 ≥3m）",
+      "pass": true,
+      "detail": "ai_4：起始 12.0m → 过程中最近 6.5m"
     },
     {
       "group": "⑥ M2 硬性要求：AI 更新频率分级 + 寻路限流（C-1/C-2）",
       "name": "更新分级测试时确实处于局内（否则全是 null，与\"分级坏了\"无法区分）",
       "pass": true,
-      "detail": "flow=raid paused=false 各 AI 更新次数 141,480,260,838,1771,517,652"
+      "detail": "flow=raid paused=false 各 AI 更新次数 159,518,672,881,2734,366,639"
     },
     {
       "group": "⑥ M2 硬性要求：AI 更新频率分级 + 寻路限流（C-1/C-2）",
@@ -275,7 +293,7 @@
       "group": "⑥ M2 硬性要求：AI 更新频率分级 + 寻路限流（C-1/C-2）",
       "name": "单帧寻路耗时不超上限（C-2）",
       "pass": true,
-      "detail": "峰值 0.33ms（上限 2ms，留了测量余量）"
+      "detail": "峰值 0.31ms（上限 2ms，留了测量余量）"
     },
     {
       "group": "③ M2-3 命中反馈（弹孔 / 统计）",
@@ -287,19 +305,19 @@
       "group": "⑤ M2-5 医疗与消耗品",
       "name": "被 AI 击中会掉血（在等待窗口内）",
       "pass": true,
-      "detail": "生命 81.6 → 77.0；胸甲 51.8 → 50.2"
+      "detail": "生命 83.3 → 75.3；胸甲 51.8 → 51.8"
     },
     {
       "group": "⑤ M2-5 医疗与消耗品",
       "name": "护甲承受伤害后耐久下降（M2-4）",
       "pass": true,
-      "detail": "51.8 → 50.2"
+      "detail": "51.8 → 51.8"
     },
     {
       "group": "⑤ M2-5 医疗与消耗品",
       "name": "找到远离所有 AI 的安全位置用于测治疗",
       "pass": true,
-      "detail": "距最近 AI 49.6m"
+      "detail": "距最近 AI 52m"
     },
     {
       "group": "⑤ M2-5 医疗与消耗品",
@@ -311,13 +329,13 @@
       "group": "⑤ M2-5 医疗与消耗品",
       "name": "使用后回血（M2-5）",
       "pass": true,
-      "detail": "77.0 → 100.0"
+      "detail": "75.3 → 100.0"
     },
     {
       "group": "⑤ M2-5 医疗与消耗品",
       "name": "治疗不会降低生命（回归：绷带把人治到上限的 bug）",
       "pass": true,
-      "detail": "77.0 → 100.0"
+      "detail": "75.3 → 100.0"
     },
     {
       "group": "⑤ M2-5 医疗与消耗品",
@@ -419,19 +437,19 @@
       "group": "⑩ M1-TEMP-2 移动手感：加速 / 摩擦 / 落地缓冲",
       "name": "落地产生相机下沉（落地缓冲）",
       "pass": true,
-      "detail": "下沉峰值 0.0566m"
+      "detail": "下沉峰值 0.0565m"
     },
     {
       "group": "⑩ M1-TEMP-2 移动手感：加速 / 摩擦 / 落地缓冲",
       "name": "落地下沉有上限（不会把视角砸穿）",
       "pass": true,
-      "detail": "0.0566 ≤ 0.22"
+      "detail": "0.0565 ≤ 0.22"
     },
     {
       "group": "⑩ M1-TEMP-2 移动手感：加速 / 摩擦 / 落地缓冲",
       "name": "落地后下沉会回弹",
       "pass": true,
-      "detail": "0.0566 → 0.0000"
+      "detail": "0.0565 → 0.0000"
     },
     {
       "group": "⑪ 视角稳定性（\"瞬移\"的两条来源）",
@@ -473,13 +491,13 @@
       "group": "⑪ 视角稳定性（\"瞬移\"的两条来源）",
       "name": "探头被墙收回是渐进的（横向速度未超出物理量级）",
       "pass": true,
-      "detail": "隐含横向速度峰值 4.40 m/s（单帧最大变化 0.0484）；未限速时约 60 m/s"
+      "detail": "隐含横向速度峰值 4.40 m/s（单帧最大变化 0.0485）；未限速时约 60 m/s"
     },
     {
       "group": "⑪ 视角稳定性（\"瞬移\"的两条来源）",
       "name": "探头最终被收回到墙面允许的范围",
       "pass": true,
-      "detail": "leanCurrent 0.02"
+      "detail": "leanCurrent 0.019"
     },
     {
       "group": "⑩ M1-TEMP-3 台阶吸附：低掩体迈上 / 高掩体挡住",
@@ -563,13 +581,13 @@
       "group": "⑩ M1-TEMP-3 台阶吸附：低掩体迈上 / 高掩体挡住",
       "name": "爬升过程被观测到多个中间高度（不是一步到位）",
       "pass": true,
-      "detail": "中间高度采样数 12（瞬间对齐只会取到 0~1 个）"
+      "detail": "中间高度采样数 11（瞬间对齐只会取到 0~1 个）"
     },
     {
       "group": "⑩ M1-TEMP-3 台阶吸附：低掩体迈上 / 高掩体挡住",
       "name": "运动探针本身有效（确实测到了变化）",
       "pass": true,
-      "detail": "实测 6.30 m/s，单帧最大 0.0384m"
+      "detail": "实测 6.30 m/s，单帧最大 0.0386m"
     },
     {
       "group": "⑩ 掩体能挡子弹（M2 掩体对抗成立的前提）",

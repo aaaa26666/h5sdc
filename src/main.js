@@ -536,6 +536,9 @@ if (import.meta.env.DEV) {
           x: a.position.x,
           z: a.position.z,
           pathLen: a.state.path.length,
+          pathIdx: a.state.pathIdx,
+          pendingGoal: a.state.pendingGoalCell,
+          goal: a.state.path.length ? a.state.path[a.state.path.length - 1] : null,
           updates: a.state.updates,
           updateIntervalMs: a.updateTier ? a.updateTier.intervalMs : null,
         })),
@@ -842,6 +845,11 @@ if (import.meta.env.DEV) {
     groundAt(x, z, feetY = 0) {
       return level.surfaceAt(x, z, feetY, cfg.player.stepHeight);
     },
+    /** 制造一次枪声（不造成伤害）。供测试用：验证"被惊动后是否靠近"，而不必把观察对象打死。 */
+    makeNoise() {
+      aiManager.broadcastGunshot(performance.now(), player.state.pos.x, player.state.pos.z);
+      return true;
+    },
     killOneAi() {
       const a = aiManager.ais.find((x) => !x.isDead);
       if (!a) return false;
@@ -849,7 +857,9 @@ if (import.meta.env.DEV) {
         { id: 'debug', class: 'rifle', damage: a.vitals.maxHealth * 10, falloff: { startM: 1, endM: 2, minScale: 1 }, pellets: 1, fireIntervalMs: 100 },
         { id: 'debug', damageScale: 1, armorPenetration: 9 },
         'chest',
-        1
+        1,
+        player.state.pos.x,
+        player.state.pos.z
       );
       return true;
     },

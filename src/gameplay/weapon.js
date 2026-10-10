@@ -172,7 +172,10 @@ export function createWeaponSystem({ cfg, level, player, rng, emit }) {
     if (kind === 'combatant') {
       // 由目标自己解算并处理死亡（见 ai.js applyHitFrom 的说明）：
       // 若在这里直接改 vitals，被击杀的 AI 不会立刻清理，会出现"打死了还站着"。
-      const res = bestTarget.applyHitFrom(wdef, ammo, bestZone, best);
+      // 传入**开火者位置**：AI 挨打后据此知道该往哪还手。
+      // 不传的话它只会切个 ALERT、没有最后已知位置，随即掉回巡逻乱跑 ——
+      // 这就是"被玩家攻击后不会靠近还击"的直接原因。
+      const res = bestTarget.applyHitFrom(wdef, ammo, bestZone, best, ox, oz);
       if (!res) return { kind: 'wall', point, distance: best };
       stats.hits++;
       if (bestZone === 'head') stats.headshots++;

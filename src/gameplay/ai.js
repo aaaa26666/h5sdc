@@ -87,6 +87,12 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
     lastKnownPos: null,
     lastSeenAt: -1e9,
     lastHearAt: -1e9,
+    // 「最后一次知道玩家在哪」的时刻。与 lastSeenAt 的区别：
+    //   看到 / 听到枪声 / 被击中 都算"知道玩家在哪"，但只有"看到"算 lastSeenAt。
+    // 存在的理由（这是一个真实缺陷的修复）：SEARCH 的记忆超时原先只看 lastSeenAt，
+    //   于是"只听到枪声、没看到人"时 lastSeenAt 仍是 -1e9，记忆**在第一帧就判定过期**，
+    //   AI 立刻掉回 PATROL 去走随机巡逻路径 —— 表现为"被打了却漫无目的地乱跑、一枪不开"。
+    lastKnownAt: -1e9,
     nextThinkAt: 0,
     nextFireAt: 0,
     burstLeft: tier.burstShots,
@@ -125,10 +131,24 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
 
   function setState(next, nowMs) {
     if (ai.state === next) return;
+    const leavingPatrol = ai.state === AI_STATE.PATROL;
     ai.state = next;
     ai.stateEnteredAt = nowMs;
     if (next === AI_STATE.PATROL) {
       ai.lastKnownPos = null;
+    }
+    // ★ 离开 PATROL 时必须**丢弃当前路径**。
+    //
+    // 巡逻路径的目标是一个**随机空格**（可能横跨全图）。若不丢弃，
+    // 主循环的 `if (ai.pathIdx < ai.path.length) followPath()` 会继续把它走完 ——
+    // 于是"进入交战状态"的 AI 实际上正在跑向一个随机角落。
+    // 这正是玩家看到的"发现玩家后漫无目的地乱跑"。
+    // 丢弃后 pathIdx >= path.length，主循环便会走 COMBAT 分支（直接逼近）或
+    // 由 think() 重新请求一条通往最后已知位置的路径。
+    if (leavingPatrol) {
+      ai.path = [];
+      ai.pathIdx = 0;
+      ai.pendingGoalCell = null;
     }
   }
 
@@ -258,7 +278,7 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
           break;
         }
         const expired = nowMs - ai.stateEnteredAt > tier.searchDurationMs;
-        const memoryGone = nowMs - ai.lastSeenAt > cfg.aiPerception.memoryMs;
+        const memoryGone = nowMs - ai.lastKnownAt > cfg.aiPerception.memoryMs;
         if (expired || memoryGone) {
           setState(AI_STATE.PATROL, nowMs);
           break;
@@ -416,21 +436,39 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
       const d = Math.hypot(x - ai.position.x, z - ai.position.z);
       if (d > cfg.aiPerception.hearingGunshotRangeM) return;
       ai.lastHearAt = nowMs;
-      if (!ai.lastKnownPos) ai.lastKnownPos = { x, z };
+      // ★ 每次都更新听到的位置，而不是"只在从没听过时记一次"。
+      //   旧写法 `if (!ai.lastKnownPos)` 会让 AI 永远朝着**第一次**听到枪声的地方走，
+      //   之后玩家移动到哪都不影响 —— 表现为"它跑去了一个玩家早就不在的地方"。
+      ai.lastKnownPos = { x, z };
+      ai.lastKnownAt = nowMs;
     },
 
     /**
      * 由武器调用。AI **自己**处理死亡，而不是让武器去猜 ——
      * 否则被击杀的 AI 会留在场上（其 update 要等下一次才可能发现血量归零，
      * 对远处低频 AI 可能延迟 400ms，表现为"打死了还站着"）。
+     *
+     * fromX/fromZ：攻击者位置。**必须传**，否则 AI 挨了打却不知道该往哪还手 ——
+     *   这正是"被玩家攻击后漫无目的乱跑"的直接原因（旧版没有这两个参数，
+     *   受击只切了个 ALERT，既没有最后已知位置、也没有记忆时间戳，
+     *   于是下一帧 SEARCH 立刻判定记忆过期并掉回 PATROL）。
      */
-    applyHitFrom(weapon, ammo, zone, distanceM) {
+    applyHitFrom(weapon, ammo, zone, distanceM, fromX, fromZ) {
       if (dead) return null;
       const r = applyHit(ai.vitals, { weapon, ammo, zone, distanceM, cfg });
       hitFlashUntil = performance.now() + 90;
+      const now = performance.now();
+      if (Number.isFinite(fromX) && Number.isFinite(fromZ)) {
+        // 挨打 = 知道打自己的人在哪。这条比"看到"还可靠（子弹是从那边来的）
+        ai.lastKnownPos = { x: fromX, z: fromZ };
+        ai.lastKnownAt = now;
+      }
       if (r.dead) die();
       else if (ai.state === AI_STATE.PATROL || ai.state === AI_STATE.SEARCH) {
-        setState(AI_STATE.ALERT, performance.now());
+        setState(AI_STATE.ALERT, now);
+      } else if (ai.state === AI_STATE.ALERT) {
+        // 已在 ALERT：受击属于"确凿发现"，直接进交战，不必再等反应时间
+        setState(AI_STATE.COMBAT, now);
       }
       return r;
     },
@@ -461,6 +499,7 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
       if (seen) {
         ai.lastSeenAt = nowMs;
         ai.lastKnownPos = { x: player.state.pos.x, z: player.state.pos.z };
+        ai.lastKnownAt = nowMs;
       }
 
       think(nowMs, player, ctx, seen, distToPlayer);
@@ -468,9 +507,22 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
 
       if (ai.pathIdx < ai.path.length) {
         followPath(elapsedSec);
-      } else if (ai.state === AI_STATE.COMBAT && seen) {
+      } else if (ai.state === AI_STATE.COMBAT) {
+        // 没有路径时也必须推进，否则 AI 会原地发呆。
+        // 原先这里只在 `seen` 时才直接逼近，于是：
+        //   · 暂时失去视线（走进掩体后）-> 一动不动，看起来像"卡住了"；
+        //   · 寻路失败（目标格在寻路网格里不可达，例如玩家站在高掩体上）
+        //     或结果还没从调度器回来 -> 一动不动。
         const eye = player.eyePosition();
-        moveToward(eye.x, eye.z, elapsedSec, cfg.aiCombat.strafeSpeedScale);
+        if (seen) {
+          moveToward(eye.x, eye.z, elapsedSec, cfg.aiCombat.strafeSpeedScale);
+        } else if (ai.lastKnownPos) {
+          moveToward(ai.lastKnownPos.x, ai.lastKnownPos.z, elapsedSec, cfg.aiCombat.strafeSpeedScale);
+        }
+      } else if (ai.state === AI_STATE.SEARCH && ai.lastKnownPos) {
+        // 搜索也要真的走过去。原先 SEARCH 只发路径请求、完全没有兜底移动，
+        // 一旦寻路失败或还没返回，AI 就停在原地 —— 表现就是"被打了却不过来"。
+        moveToward(ai.lastKnownPos.x, ai.lastKnownPos.z, elapsedSec, cfg.aiCombat.strafeSpeedScale);
       }
 
       const r = scheduler.takeResult(ai.id);

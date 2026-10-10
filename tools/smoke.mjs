@@ -403,6 +403,71 @@ try {
 
     const gainedPath = s1.ai.some((a) => a.pathLen > 0);
     check('AI 通过调度器获得了路点', gainedPath, `最长路径 ${Math.max(...s1.ai.map((a) => a.pathLen))} 点`);
+
+    // ---- 回归：受击/发现后必须「一边靠近一边交战」，而不是掉回巡逻乱跑 ----
+    //
+    // 缺陷原貌（试玩报告："AI 发现玩家或被攻击后漫无目的地乱跑，不靠近也不射击"）：
+    //   ① 受击只切 ALERT，**不记录攻击者位置**，所以 AI 不知道往哪还手；
+    //   ② SEARCH 的记忆超时看 lastSeenAt，而"只听到枪声/只挨了打"都不写 lastSeenAt，
+    //      于是 memoryGone 在**第一帧就为真** -> SEARCH 立刻掉回 PATROL；
+    //   ③ 掉回 PATROL 后仍在走旧的随机巡逻路径（pathIdx < pathLen 时不重新请求），
+    //      而 tryShoot 要求 state===COMBAT -> 一枪不开。
+    //   表现为：挨了打，然后朝着一个随机角落跑掉。
+    {
+      const s3 = await snap();
+      const aliveNow = s3.ai.filter((a) => a.alive);
+      const engaged = aliveNow.filter((a) => a.state === 'combat' || a.state === 'search');
+      check('受击/发现后有 AI 进入交战或搜索（不得停在巡逻）', engaged.length > 0,
+        `存活 ${aliveNow.length} 个，状态集合 ${[...new Set(aliveNow.map((a) => a.state))].join(',')}`);
+
+      // 观察对象必须选**离得远**的那个：太近的 AI 按设计要后撤（minRangeM=5），
+      // 拿它测"是否会靠近"必然失败 —— 我第一版就是这么写错的。
+      const dist = (a, p) => Math.hypot(a.x - p.x, a.z - p.z);
+      const ranked = aliveNow
+        .map((a, i) => ({ a, i, d: dist(a, s3.player) }))
+        .sort((p, q) => q.d - p.d);
+      const far = ranked[0];
+      if (!far || far.d < 12) {
+        check('存在离玩家足够远的 AI 可供观察（否则"靠近"无从测起）', false,
+          far ? `最远的只有 ${far.d.toFixed(1)}m` : '没有存活 AI');
+      } else {
+        // ★ 只**制造枪声**惊动它，不开枪打它。
+        //   我第一版用 `mouse.down` 点射，结果在 10m 距离上直接把观察对象打死了
+        //   （读数变成"起始 —"），测试把自己的被测对象消灭了。
+        //   枪声走的是 hearGunshot 通路，与"被攻击"一样会写入最后已知位置，
+        //   但不会造成伤害 —— 既测到行为，又不会毁掉样本。
+        const shot = await page.evaluate((i) => {
+          const r = window.__m2.teleportNearAi(i, 12);
+          window.__m2.makeNoise();
+          return r;
+        }, far.i);
+        await ensureRunning('ai-approach-shot');
+
+        let d0 = null;
+        let dMin = Infinity;
+        let sawEngaged = false;
+        for (let k = 0; k < 12; k++) {
+          await sleep(400);
+          // ★ 暂停时局内不推进，读数会**完全冻结**（我第一版就在这里踩了坑：
+          //   ai_4 的距离精确停在 17.9m 且状态永不变，看起来像"AI 不更新"，
+          //   实际是点击让指针锁丢失、游戏暂停了）。flow 仍是 raid，所以只查 flow 发现不了。
+          if (!(await ensureRunning('ai-approach'))) break;
+          const s4 = await snap();
+          if (s4.flow !== 'raid' || s4.paused) break;
+          const me = s4.ai.find((a) => a.id === shot.aiId);
+          if (!me || !me.alive) break;
+          if (me.state === 'combat' || me.state === 'search') sawEngaged = true;
+          const d = dist(me, s4.player);
+          if (d0 === null) d0 = d;
+          dMin = Math.min(dMin, d);
+        }
+        check('被攻击的那个 AI 进入了交战/搜索',
+          sawEngaged, `观察对象 ${shot.aiId}（起始 ${d0 === null ? '—' : d0.toFixed(1) + 'm'}）`);
+        check('被攻击的 AI 会主动向玩家逼近（距离缩短 ≥3m）',
+          d0 !== null && dMin < d0 - 3,
+          `${shot.aiId}：起始 ${d0 === null ? '—' : d0.toFixed(1) + 'm'} → 过程中最近 ${Number.isFinite(dMin) ? dMin.toFixed(1) + 'm' : '—'}`);
+      }
+    }
   }
 
   // ============================================================
