@@ -11,7 +11,7 @@
 
 ## 立刻玩（不需要装任何东西）
 
-**[下载免安装包](release/搜打撤PVE-M3-免安装.zip)** → 解压 → 双击 `game.html`。
+**[下载免安装包](release/H5-SDC-PVE-M3.zip)** → 解压 → 双击 `game.html`。
 （或直接到 [Releases](https://github.com/aaaa26666/h5sdc/releases) 页下载 **v0.0.2**。）
 
 - 不需要 Node.js、不需要联网、不需要安装
