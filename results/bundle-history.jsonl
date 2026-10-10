@@ -9,3 +9,4 @@
 {"at":"2026-10-10T11:28:45.039Z","firstRawKB":599.8,"firstGzipKB":158.5,"firstBrotliKB":130.5,"asyncBrotliKB":0,"budgetKB":200,"pass":true}
 {"at":"2026-10-10T11:58:21.161Z","firstRawKB":600.3,"firstGzipKB":158.7,"firstBrotliKB":130.6,"asyncBrotliKB":0,"budgetKB":200,"pass":true}
 {"at":"2026-10-10T12:24:38.358Z","firstRawKB":601.2,"firstGzipKB":159,"firstBrotliKB":130.8,"asyncBrotliKB":0,"budgetKB":200,"pass":true}
+{"at":"2026-10-10T12:48:39.391Z","firstRawKB":603.1,"firstGzipKB":159.9,"firstBrotliKB":131.6,"asyncBrotliKB":0,"budgetKB":200,"pass":true}

@@ -496,6 +496,22 @@ if (import.meta.env.DEV) {
           lastFrameDY: +player.state.lastFrameDY.toFixed(4),
           maxFrameDY: +player.state.maxFrameDY.toFixed(4),
           maxFrameDYSpeed: +player.state.maxFrameDYSpeed.toFixed(3),
+          // 视角跳变探针：分别记录鼠标/后坐力/探头各自造成的单帧最大变化。
+          // 报告"视角瞬移"时可直接看出是哪一路引起的。
+          viewProbe: {
+            maxMouseDeltaPx: +player.state.maxMouseDelta.toFixed(1),
+            maxMouseRad: +player.state.maxMouseRad.toFixed(5),
+            maxYawJumpRad: +player.state.maxYawJump.toFixed(5),
+            maxPitchJumpRad: +player.state.maxPitchJump.toFixed(5),
+            maxLeanJump: +player.state.maxLeanJump.toFixed(5),
+            maxLeanSpeed: +player.state.maxLeanSpeed.toFixed(3),
+            maxNonMouseJumpRad: +player.state.maxNonMouseJump.toFixed(5),
+          },
+          inputProbe: {
+            maxEventDeltaPx: input.state.maxEventDelta,
+            spikeEvents: input.state.spikeEvents,
+            lastSpikeDeltaPx: input.state.lastSpikeDelta,
+          },
         },
         weapon: (() => {
           const w = weaponSys.active();
@@ -596,6 +612,23 @@ if (import.meta.env.DEV) {
       player.syncView();
       return { before: beforeAngles, after: snapAngles() };
     },
+    /**
+     * 复位视角朝向（只动瞄准与后坐力，**不动探头量**）。
+     *
+     * 存在的理由：探头的左右方向由 yaw 决定（见 core/direction.js 的右向量），
+     * 所以"贴着某面墙探头"这类测试必须先保证朝向正确。
+     * 如果前面的测试把视角转了几百度却没复原，后面的探头测试就会在错误方向上测量 ——
+     * 表现为"裁剪根本没发生"，而看起来像功能坏了。
+     */
+    resetAim(yawDeg = 0, pitchDeg = 0) {
+      const p = player.state;
+      p.aimYaw = (yawDeg * Math.PI) / 180;
+      p.aimPitch = (pitchDeg * Math.PI) / 180;
+      p.recoilYaw = 0;
+      p.recoilPitch = 0;
+      player.syncView();
+      return { yawDeg, pitchDeg, leanCurrent: +p.leanCurrent.toFixed(4) };
+    },
     /** 传送到对某个存活 AI 确实有视线的位置（避免墙挡下全部子弹造成的假失败） */
     teleportNearAi(aiIndex = 0, dist = 4) {
       const alive = aiManager.ais.filter((a) => !a.isDead);
@@ -614,8 +647,12 @@ if (import.meta.env.DEV) {
       }
       return null;
     },
-    /** 传送到贴墙位置（右向量朝墙），用于验证探头限制与掩体 */
-    placeNextToWall() {
+    /**
+     * 传送到贴墙位置（右向量朝墙），用于验证探头限制与掩体。
+     * @param keepAim true = 保留当前视角与探头量（用于复现"满探头突然贴墙"这类突变）；
+     *                false = 复位视角与探头（默认，用于从干净状态开始）
+     */
+    placeNextToWall(keepAim = false) {
       for (const i of level.free) {
         const cx = i % level.W;
         const cz = Math.floor(i / level.W);
@@ -624,14 +661,22 @@ if (import.meta.env.DEV) {
         const x = (cx + 1) * level.cell - cfg.player.radius - 0.02;
         this.teleport(x, w.z);
         // 视角是**派生值**（aim + recoil），必须写 aim 并同步，直接写 yaw/pitch 会被覆盖
-        player.state.aimYaw = 0;
-        player.state.aimPitch = 0;
-        player.state.recoilYaw = 0;
-        player.state.recoilPitch = 0;
-        player.syncView();
-        player.state.leanCurrent = 0;
-        player.state.leanTarget = 0;
-        return { cell: [cx, cz], wallFaceX: (cx + 1) * level.cell, playerX: x };
+        if (!keepAim) {
+          player.state.aimYaw = 0;
+          player.state.aimPitch = 0;
+          player.state.recoilYaw = 0;
+          player.state.recoilPitch = 0;
+          player.syncView();
+          player.state.leanCurrent = 0;
+          player.state.leanTarget = 0;
+        }
+        return {
+          cell: [cx, cz],
+          wallFaceX: (cx + 1) * level.cell,
+          playerX: x,
+          gapToWall: +(((cx + 1) * level.cell - x)).toFixed(3),
+          leanCurrent: +player.state.leanCurrent.toFixed(4),
+        };
       }
       return null;
     },
@@ -745,6 +790,39 @@ if (import.meta.env.DEV) {
     /** 重置运动探针并返回重置前的峰值（单帧脚底高度最大变化量） */
     resetMotionProbe() {
       return player.resetMotionProbe();
+    },
+    /** 重置视角跳变探针，返回重置前的峰值 */
+    resetViewProbe() {
+      const p = player.state;
+      const prev = {
+        maxMouseDeltaPx: +p.maxMouseDelta.toFixed(1),
+        maxMouseRad: +p.maxMouseRad.toFixed(5),
+        maxYawJumpRad: +p.maxYawJump.toFixed(5),
+        maxPitchJumpRad: +p.maxPitchJump.toFixed(5),
+        maxLeanJump: +p.maxLeanJump.toFixed(5),
+        maxLeanSpeed: +p.maxLeanSpeed.toFixed(3),
+        maxNonMouseJumpRad: +p.maxNonMouseJump.toFixed(5),
+        maxEventDeltaPx: input.state.maxEventDelta,
+        spikeEvents: input.state.spikeEvents,
+        lastSpikeDeltaPx: input.state.lastSpikeDelta,
+      };
+      p.maxMouseDelta = 0;
+      p.maxMouseRad = 0;
+      p.maxYawJump = 0;
+      p.maxPitchJump = 0;
+      p.maxLeanJump = 0;
+      p.maxLeanSpeed = 0;
+      p.maxNonMouseJump = 0;
+      input.state.maxEventDelta = 0;
+      input.state.spikeEvents = 0;
+      return prev;
+    },
+    /** 直接注入一次鼠标移动（诊断用）：模拟异常大的 movementX/Y */
+    injectMouseMove(dx, dy) {
+      window.dispatchEvent(
+        new MouseEvent('mousemove', { movementX: dx, movementY: dy, bubbles: true })
+      );
+      return { dx, dy };
     },
     /**
      * 配置表算出的后坐力量化指标（供端到端测试与配置交叉核对）。

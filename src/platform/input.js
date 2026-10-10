@@ -83,7 +83,18 @@ export function createInput(domElement, cfg, settings) {
     wheelDelta: 0,        // 滚轮累计（消费后清零）
     pointerLocked: false,
     lockedChangeHandlers: [],
+    // 视角瞬移诊断：本会话见到的最大单事件增量、被判定为异常而丢弃的事件数
+    maxEventDelta: 0,
+    spikeEvents: 0,
+    lastSpikeDelta: 0,
+    lastSpikeSpeed: 0,
   };
+
+  // 异常鼠标事件的判定参数（见 onMouseMove）
+  const spikeThresholdPx = cfg.player.mouseSpikeThresholdPx ?? 400;
+  const maxSpeedPxPerMs = cfg.player.mouseMaxSpeedPxPerMs ?? 30;
+  let ignoreMovesUntil = 0;
+  let lastMoveAt = 0;
 
   const anyDown = (codes) => {
     for (let i = 0; i < codes.length; i++) if (keys.has(codes[i])) return true;
@@ -123,8 +134,44 @@ export function createInput(domElement, cfg, settings) {
 
   const onMouseMove = (e) => {
     if (!state.pointerLocked) return;
-    state.mouseDX += e.movementX || 0;
-    state.mouseDY += e.movementY || 0;
+
+    // ★ 指针锁定刚取得时，浏览器可能把"光标归位到窗口中心"也报成一次移动，
+    // movementX/Y 会是一个异常大的值（量级等于窗口尺寸，可达上千像素）。
+    // 直接应用它的后果就是**视角瞬移**：一次事件转掉上百度。
+    if (performance.now() < ignoreMovesUntil) return;
+
+    const dx = e.movementX || 0;
+    const dy = e.movementY || 0;
+    const mag = Math.max(Math.abs(dx), Math.abs(dy));
+
+    // ★ 判定"异常单次事件"用**物理推断速度**，而不是固定像素数。
+    //
+    // 为什么不用固定像素阈值：它无法区分两种情况 ——
+    //   · 一帧内被合并的合法快速甩枪（位移大但速度正常）
+    //   · 光标归位产生的异常事件（位移大且速度物理上不可能）
+    // 用事件时间戳算出隐含速度就能分开，而且与帧率、鼠标回报率都无关。
+    //
+    // 量级依据：人手甩枪上限约 1000~1500°/s，换算约 8000~12000 px/s。
+    // 阈值取 30 px/ms（=30000 px/s）留了约 2.5 倍余量；
+    // 而光标归位事件是"1ms 内移动几百像素"级别（>100000 px/s），必定被拦下。
+    const dtMs = e.timeStamp - lastMoveAt;
+    lastMoveAt = e.timeStamp;
+    let spike = mag > spikeThresholdPx; // 绝对兜底（时间戳不可用时）
+    let impliedSpeed = 0;
+    if (!spike && dtMs > 0 && dtMs < 100) {
+      impliedSpeed = mag / dtMs;
+      if (impliedSpeed > maxSpeedPxPerMs) spike = true;
+    }
+    if (spike) {
+      state.spikeEvents++;
+      state.lastSpikeDelta = mag;
+      state.lastSpikeSpeed = +impliedSpeed.toFixed(1);
+      return;
+    }
+
+    state.mouseDX += dx;
+    state.mouseDY += dy;
+    if (mag > state.maxEventDelta) state.maxEventDelta = mag;
   };
 
   const onMouseDown = (e) => {
@@ -151,6 +198,14 @@ export function createInput(domElement, cfg, settings) {
       // 失焦时清空按键，避免"卡住一直前进"
       keys.clear();
       state.fireHeld = false;
+      state.mouseDX = 0;
+      state.mouseDY = 0;
+    } else {
+      // 刚拿回锁定：丢弃紧随其后的一小段移动（那段里可能夹着光标归位事件），
+      // 并清掉可能在失焦期间残留的累计量。
+      ignoreMovesUntil = performance.now() + 80;
+      state.mouseDX = 0;
+      state.mouseDY = 0;
     }
     for (const h of state.lockedChangeHandlers) h(state.pointerLocked);
   };

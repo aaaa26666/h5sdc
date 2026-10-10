@@ -81,16 +81,57 @@ export function createPlayer(cfg, level) {
     lastFrameDYSpeed: 0,
     maxFrameDYSpeed: 0,
     maxFrameDYSpeedAt: 0,
+    // 视角跳变探针（见 probeView）
+    maxMouseDelta: 0,
+    maxMouseRad: 0,
+    maxYawJump: 0,
+    maxPitchJump: 0,
+    maxLeanJump: 0,
+    maxLeanSpeed: 0,
+    maxNonMouseJump: 0,
   };
 
   const jumpState = createJumpState();
   const landing = createLandingState();
 
-  /** 把 aim + recoil 合成对外可见的视角。任何一路变化后都必须调用。 */
+  /**
+   * 把 aim + recoil 合成对外可见的视角。任何一路变化后都必须调用。
+   */
   function syncView() {
     const lim = P.pitchLimitDeg * DEG;
     player.yaw = player.aimYaw + player.recoilYaw;
     player.pitch = Math.max(-lim, Math.min(lim, player.aimPitch + player.recoilPitch));
+  }
+
+  /**
+   * 视角跳变探针。
+   * 用途：把"视角有时候会瞬移"变成可测量、可归因的数字 ——
+   * 分别记录单帧内 鼠标增量 / 后坐力 / 探头侧移 各自造成的最大变化，
+   * 这样报告"瞬移"时能直接看出是哪一路引起的，而不是靠猜。
+   */
+  function probeView(before, mouseDx, mouseDy, dt) {
+    const dyaw = Math.abs(player.yaw - before.yaw);
+    const dpitch = Math.abs(player.pitch - before.pitch);
+    const dlean = Math.abs(player.leanCurrent - before.lean);
+    const dmouse = Math.hypot(mouseDx, mouseDy);
+    if (dmouse > player.maxMouseDelta) player.maxMouseDelta = dmouse;
+    if (dyaw > player.maxYawJump) player.maxYawJump = dyaw;
+    if (dpitch > player.maxPitchJump) player.maxPitchJump = dpitch;
+    if (dlean > player.maxLeanJump) player.maxLeanJump = dlean;
+    // 探头侧移的**隐含速度**（m/s）。单帧变化量本身随帧率变化，
+    // 拿固定阈值卡它会像"跳变"那样误判；速度才与帧率无关，
+    // 也是"瞬移"的本质：一瞬间出现物理上不可能的移动速度。
+    // 限速后上限是 leanClampRate × leanOffset（8 × 0.55 = 4.4 m/s，
+    // 与冲刺速度 7.5 m/s 同量级）；未限速时可达约 60 m/s。
+    if (dt > 1e-6) {
+      const leanSpeed = (dlean * P.leanOffset) / dt;
+      if (leanSpeed > player.maxLeanSpeed) player.maxLeanSpeed = leanSpeed;
+    }
+    // 归因：本帧视角变化里，鼠标贡献多少、后坐力+探头贡献多少
+    const mouseRad = dmouse * P.mouseSensitivity;
+    if (mouseRad > player.maxMouseRad) player.maxMouseRad = mouseRad;
+    const residual = Math.max(0, Math.max(dyaw, dpitch) - mouseRad);
+    if (residual > player.maxNonMouseJump) player.maxNonMouseJump = residual;
   }
 
   function applyLook(dx, dy) {
@@ -141,19 +182,28 @@ export function createPlayer(cfg, level) {
     };
   }
 
-  function clampLeanByWall() {
+  function clampLeanByWall(dt) {
     if (player.leanCurrent === 0) return;
     const eyeY = player.pos.y + player.eyeHeightCurrent;
     const b = movementBasis(player.yaw);
     const maxReach = P.leanOffset + P.leanWallMargin;
+    // ★ 墙面限制**必须限速**，不能瞬间裁剪。
+    // 瞬间裁剪会在单帧内吃掉最多 0.55m 的侧移 —— 相机一次性横向跳半米，
+    // 与"跳上高箱子"那次是同一类错误：对**相机可见的值**做了瞬时改动。
+    // 限速后同样的位移分摊到约 0.1s，看起来是"贴着墙收回来"而不是瞬移。
+    const rate = (P.leanClampRate ?? 8) * dt;
     if (player.leanCurrent > 0) {
       const d = level.raycastWall(player.pos.x, eyeY, player.pos.z, b.rgtX, 0, b.rgtZ, maxReach);
       const allowed = Math.max(0, d - P.leanWallMargin) / P.leanOffset;
-      if (player.leanCurrent > allowed) player.leanCurrent = allowed;
+      if (player.leanCurrent > allowed) {
+        player.leanCurrent = Math.max(allowed, player.leanCurrent - rate);
+      }
     } else {
       const d = level.raycastWall(player.pos.x, eyeY, player.pos.z, -b.rgtX, 0, -b.rgtZ, maxReach);
       const allowed = Math.max(0, d - P.leanWallMargin) / P.leanOffset;
-      if (-player.leanCurrent > allowed) player.leanCurrent = -allowed;
+      if (-player.leanCurrent > allowed) {
+        player.leanCurrent = Math.min(-allowed, player.leanCurrent + rate);
+      }
     }
   }
 
@@ -264,6 +314,12 @@ export function createPlayer(cfg, level) {
 
     // 本帧起始高度 —— 用于运动探针（见竖直段末尾）
     const frameStartY = player.pos.y;
+    // 本帧起始视角 —— 用于视角跳变探针
+    const viewBefore = {
+      yaw: player.yaw,
+      pitch: player.pitch,
+      lean: player.leanCurrent,
+    };
 
     const m = input.consumeMouse();
     if (m.dx || m.dy) applyLook(m.dx, m.dy);
@@ -468,9 +524,12 @@ export function createPlayer(cfg, level) {
     const lk = Math.min(1, dt * P.leanSpeed);
     player.leanCurrent += (player.leanTarget - player.leanCurrent) * lk;
     if (Math.abs(player.leanCurrent) < 0.002) player.leanCurrent = 0;
-    clampLeanByWall();
+    clampLeanByWall(dt);
 
     tickConsumable(nowMs);
+
+    // ---- 视角跳变探针（本帧末尾结算）----
+    probeView(viewBefore, m.dx, m.dy, dt);
   }
 
   return {

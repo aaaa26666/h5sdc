@@ -615,6 +615,95 @@ try {
   }
 
   // ============================================================
+  // ============================================================
+  group('⑪ 视角稳定性（"瞬移"的两条来源）');
+  {
+    await loadAndStart();
+    await ensureRunning('view');
+    await call('teleportToSafeSpot');
+    await sleep(400);
+
+    // ---- ① 异常鼠标事件必须被丢弃，不能把视角转掉几十度 ----
+    //
+    // 真实成因：指针锁定取得/失去时光标会被归位，浏览器可能把这次归位
+    // 也报成一次 movement，量级等于窗口尺寸。直接应用就是一次"瞬移"。
+    {
+      const probeDelta = async (px) => {
+        await call('resetViewProbe');
+        const a = await snap();
+        await page.evaluate((d) => window.__m2.injectMouseMove(d, 0), px);
+        await sleep(150);
+        const b = await snap();
+        return {
+          yawDeg: (Math.abs(b.player.yaw - a.player.yaw) * 180) / Math.PI,
+          spikes: b.player.inputProbe.spikeEvents,
+          lastSpike: b.player.inputProbe.lastSpikeDeltaPx,
+        };
+      };
+      const normal = await probeDelta(40);
+      check('正常鼠标移动会转动视角（不会被误杀）',
+        normal.yawDeg > 1 && normal.yawDeg < 15, `40px → ${normal.yawDeg.toFixed(2)}°`);
+      check('正常移动不被判定为异常事件', normal.spikes === 0, `丢弃数 ${normal.spikes}`);
+
+      const spike1 = await probeDelta(900);
+      const spike2 = await probeDelta(4000);
+      check('异常大的鼠标事件被整帧丢弃（视角不瞬移）',
+        spike1.yawDeg < 0.01 && spike2.yawDeg < 0.01,
+        `900px → ${spike1.yawDeg.toFixed(3)}°，4000px → ${spike2.yawDeg.toFixed(3)}°`);
+      check('异常事件被计数并记录幅度（便于事后诊断）',
+        spike1.spikes === 1 && spike2.spikes === 1 && spike2.lastSpike === 4000,
+        `丢弃数 ${spike1.spikes}/${spike2.spikes}，最后幅度 ${spike2.lastSpike}px`);
+    }
+
+    // ---- ② 满探头突然贴墙：不能单帧横向跳半米 ----
+    //
+    // 真实成因：探头量原本被墙面**瞬间裁剪**，而相机位置直接由它决定，
+    // 于是相机在一帧内横向跳最多 0.55m（实测隐含横向速度 78.6 m/s）。已改为限速收回。
+    //
+    // ★ 必须先复位朝向：探头的"左右"由 yaw 决定，而上面那个鼠标子测试
+    //   把视角转了几百度却没复原。结果就是"右"不再指向那面墙、裁剪压根不发生，
+    //   断言会以错误的方式失败。**改了全局状态的测试必须复原，否则后一个测试在测垃圾。**
+    {
+      await call('teleportToSafeSpot');
+      await call('resetAim', 0);
+      await sleep(300);
+      await page.keyboard.down('KeyE');
+      await sleep(1100);
+      const leaned = await snap();
+      check('在开阔地可以探头到接近满值', leaned.player.leanCurrent > 0.85,
+        `leanCurrent ${leaned.player.leanCurrent}（朝向 yaw=${leaned.player.yaw.toFixed(3)}）`);
+
+      await call('resetViewProbe');
+      const wall = await call('placeNextToWall', true);
+      check('找到贴墙位置且探头量未被复位',
+        !!wall && wall.leanCurrent > 0.85,
+        wall ? `距墙 ${wall.gapToWall}m，探头 ${wall.leanCurrent}` : '未找到');
+
+      let maxLeanJump = 0;
+      let maxLeanSpeed = 0;
+      for (let i = 0; i < 20; i++) {
+        const s = await snap();
+        maxLeanJump = Math.max(maxLeanJump, s.player.viewProbe.maxLeanJump);
+        maxLeanSpeed = Math.max(maxLeanSpeed, s.player.viewProbe.maxLeanSpeed);
+        await sleep(50);
+      }
+      await page.keyboard.up('KeyE');
+      await sleep(200);
+      const settled = await snap();
+      // 用**隐含横向速度**判定，而不是单帧变化量：
+      // 后者随帧率变化（rate×dt，帧长 30ms 时就是 0.24），拿固定阈值会误判。
+      // 限速后上限是 leanClampRate × leanOffset = 8 × 0.55 = 4.4 m/s，
+      // 与冲刺速度 7.5 m/s 同量级；未限速时 0.48m 在一帧内 ≈ 60 m/s。
+      check('探头被墙收回是渐进的（横向速度未超出物理量级）',
+        maxLeanSpeed > 0 && maxLeanSpeed < 12,
+        `隐含横向速度峰值 ${maxLeanSpeed.toFixed(2)} m/s（单帧最大变化 ${maxLeanJump.toFixed(4)}）；` +
+          `未限速时约 60 m/s`);
+      check('探头最终被收回到墙面允许的范围',
+        settled.player.leanCurrent < 0.3, `leanCurrent ${settled.player.leanCurrent}`);
+    }
+  }
+
+  // ============================================================
   group('⑩ M1-TEMP-3 台阶吸附：低掩体迈上 / 高掩体挡住');
   {
     const stats = await page.evaluate(() => window.__m2.coverStats());

@@ -58,7 +58,14 @@
     "leanHeadDrop": 0.12,
     "leanSpeed": 9,
     "leanWallMargin": 0.35,
-    "_stepHeight_comment": "可自动迈上的高度差。高掩体 1.05 与之配合，使跳跃可站上的余量在 30~165fps 全区间都 >=0.13m（见单测的不变量断言）"
+    "_stepHeight_comment": "可自动迈上的高度差。高掩体 1.05 与之配合，使跳跃可站上的余量在 30~165fps 全区间都 >=0.13m（见单测的不变量断言）",
+    "leanClampRate": 8,
+    "_leanClampRate_comment": "墙面限制时的收回速率（归一化单位/秒）。必须限速：瞬间裁剪会让相机单帧横向跳最多 0.55m。",
+    "mouseSpikeThresholdPx": 400,
+    "_mouseSpikeThresholdPx_comment": "单次 mousemove 事件超过此位移即判定为异常（光标归位/驱动注入）并整帧丢弃。依据：正常单次事件通常只有几十像素，400 留了一个数量级以上余量，不会误伤快速甩枪。",
+    "ignoreMovesAfterLockMs": 80,
+    "mouseMaxSpeedPxPerMs": 30,
+    "_mouseMaxSpeedPxPerMs_comment": "异常鼠标事件的判定阈值：隐含速度（位移/事件间隔）超过此值即判定为异常并丢弃。人手甩枪上限约 1000~1500°/s ≈ 8000~12000 px/s，取 30 px/ms(30000 px/s) 留约 2.5 倍余量。与帧率、鼠标回报率无关。"
   },
   "weapon": {
     "_comment": "M1 只有一把武器。禁止为多武器做抽象",
