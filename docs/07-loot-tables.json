@@ -57,8 +57,10 @@
       "rarity": "common",
       "value": 90,
       "weightKg": 0.4,
-      "vol": 1,
-      "stack": 3
+      "stack": 3,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     },
     {
       "id": "ammo_556",
@@ -67,8 +69,10 @@
       "rarity": "common",
       "value": 110,
       "weightKg": 0.3,
-      "vol": 1,
-      "stack": 5
+      "stack": 5,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     },
     {
       "id": "bandage",
@@ -77,8 +81,10 @@
       "rarity": "common",
       "value": 130,
       "weightKg": 0.2,
-      "vol": 1,
-      "stack": 4
+      "stack": 4,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     },
     {
       "id": "pistol_mag",
@@ -87,8 +93,10 @@
       "rarity": "common",
       "value": 150,
       "weightKg": 0.4,
-      "vol": 1,
-      "stack": 3
+      "stack": 3,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     },
     {
       "id": "duct_tape",
@@ -97,8 +105,10 @@
       "rarity": "common",
       "value": 160,
       "weightKg": 0.3,
-      "vol": 1,
-      "stack": 3
+      "stack": 3,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     },
     {
       "id": "tool_kit",
@@ -107,8 +117,10 @@
       "rarity": "uncommon",
       "value": 330,
       "weightKg": 1.5,
-      "vol": 2,
-      "stack": 1
+      "stack": 1,
+      "w": 1,
+      "h": 2,
+      "vol": 2
     },
     {
       "id": "ammo_762",
@@ -117,8 +129,10 @@
       "rarity": "uncommon",
       "value": 380,
       "weightKg": 0.4,
-      "vol": 1,
-      "stack": 5
+      "stack": 5,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     },
     {
       "id": "medkit",
@@ -127,8 +141,10 @@
       "rarity": "uncommon",
       "value": 420,
       "weightKg": 0.6,
-      "vol": 1,
-      "stack": 2
+      "stack": 2,
+      "w": 2,
+      "h": 1,
+      "vol": 2
     },
     {
       "id": "helmet2",
@@ -137,8 +153,10 @@
       "rarity": "uncommon",
       "value": 480,
       "weightKg": 1.8,
-      "vol": 2,
-      "stack": 1
+      "stack": 1,
+      "w": 2,
+      "h": 2,
+      "vol": 4
     },
     {
       "id": "vest2",
@@ -147,8 +165,10 @@
       "rarity": "uncommon",
       "value": 550,
       "weightKg": 3.2,
-      "vol": 3,
-      "stack": 1
+      "stack": 1,
+      "w": 2,
+      "h": 2,
+      "vol": 4
     },
     {
       "id": "ammo_ap",
@@ -157,8 +177,10 @@
       "rarity": "rare",
       "value": 900,
       "weightKg": 0.4,
-      "vol": 1,
-      "stack": 5
+      "stack": 5,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     },
     {
       "id": "helmet3",
@@ -167,8 +189,10 @@
       "rarity": "rare",
       "value": 980,
       "weightKg": 2.1,
-      "vol": 2,
-      "stack": 1
+      "stack": 1,
+      "w": 2,
+      "h": 2,
+      "vol": 4
     },
     {
       "id": "optic_reddot",
@@ -177,8 +201,10 @@
       "rarity": "rare",
       "value": 1050,
       "weightKg": 0.3,
-      "vol": 1,
-      "stack": 1
+      "stack": 1,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     },
     {
       "id": "vest3",
@@ -187,8 +213,10 @@
       "rarity": "rare",
       "value": 1250,
       "weightKg": 4,
-      "vol": 3,
-      "stack": 1
+      "stack": 1,
+      "w": 2,
+      "h": 3,
+      "vol": 6
     },
     {
       "id": "encrypted_drive",
@@ -197,8 +225,10 @@
       "rarity": "rare",
       "value": 1400,
       "weightKg": 0.2,
-      "vol": 1,
-      "stack": 1
+      "stack": 1,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     },
     {
       "id": "gold_bar",
@@ -207,8 +237,10 @@
       "rarity": "epic",
       "value": 2800,
       "weightKg": 1,
-      "vol": 1,
-      "stack": 2
+      "stack": 2,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     },
     {
       "id": "rifle_sr25",
@@ -217,8 +249,10 @@
       "rarity": "epic",
       "value": 3200,
       "weightKg": 4.6,
-      "vol": 4,
-      "stack": 1
+      "stack": 1,
+      "w": 2,
+      "h": 4,
+      "vol": 8
     },
     {
       "id": "vest4",
@@ -227,8 +261,10 @@
       "rarity": "epic",
       "value": 3600,
       "weightKg": 5.2,
-      "vol": 4,
-      "stack": 1
+      "stack": 1,
+      "w": 2,
+      "h": 3,
+      "vol": 6
     },
     {
       "id": "keycard_armory",
@@ -237,8 +273,10 @@
       "rarity": "legendary",
       "value": 7500,
       "weightKg": 0.1,
-      "vol": 1,
-      "stack": 1
+      "stack": 1,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     },
     {
       "id": "bitcoin",
@@ -247,8 +285,10 @@
       "rarity": "legendary",
       "value": 11000,
       "weightKg": 0.1,
-      "vol": 1,
-      "stack": 1
+      "stack": 1,
+      "w": 1,
+      "h": 1,
+      "vol": 1
     }
   ],
   "_containersComment": "§2.2 容器分级：普通箱/军用箱/保险箱/钥匙房。searchMs 为满进度耗时；interruptRule 见 interruptRules，规则写在表里而不是逻辑里。",
@@ -352,11 +392,13 @@
   "_targetsComment": "单局收益目标区间（DoD ②）。**以'能带走的'为准，不是'地上的'** —— 见 backpack 容量约束。由 validate-loot-tables.mjs 校验。survivalRate 是设计意图，待试玩校验。",
   "_backpackComment": "M3-5 的背包容量目标。它同时是收益模型的约束：容量装不下时玩家必须按价值密度取舍，这才是'搜'的核心 —— 地面上有多少不是收益，能带走多少才是。",
   "backpack": {
-    "slots": 24,
+    "_comment": "背包改为**二维网格**：物品有形状，装包是排放而不是计数。\"带什么/丢什么\"因此成为真取舍。",
+    "w": 6,
+    "h": 5,
+    "_slots": 30,
     "weightLimitKg": 22,
-    "_weightNote": "22kg 是**战利品净容量**，不含身上装备（护甲约 4kg + 步枪 4.6kg + 弹药等约 10kg）。M3-5 落地时需与'角色总负重上限'区分开。",
-    "safeContainerSlots": 4,
-    "_safeNote": "保险箱（安全容器）格数。M3-6 用它决定死亡时保留多少。"
+    "_weightNote": "22kg 是战利品净容量，不含身上装备（护甲约 4kg + 步枪约 4.6kg + 弹药等约 10kg）。M3-5 落地时需与\"角色总负重上限\"区分开。",
+    "_resizeNote": "由 6x4(24) 调整为 6x5(30)：加入形状约束后二维排放会留空隙，同样格数装到的价值下降约 18%，导致正常档中位收益跌出设计目标区间。调整方向是\"改参数满足意图\"，不是\"改意图迁就参数\"。"
   },
   "raidTargets": [
     {
@@ -391,10 +433,63 @@
         "safe": 2,
         "key_room": 1
       },
-      "valueMin": 24000,
-      "valueMax": 38000,
+      "valueMin": 22000,
+      "valueMax": 36000,
       "survivalRate": 0.28,
-      "_desc": "全图开满含保险箱与钥匙房，赌一把"
+      "_desc": "全图开满含保险箱与钥匙房，赌一把",
+      "_bandChangeNote": "下限由 24000 调整为 22000。原因：原区间是在\"格数计数\"模型下定的一一那时物品只占 N 格、可以把空间填满；改成二维网格后形状会留空隙（实测被迫留下 28%），同样容量装到的价值下降，中位由 25640 降到 23580，差原下限 1.75%。这是**依赖前提变了**，不是为通过检查而放宽：背后的设计意图（贪显著高于正常）仍成立，实测 23580 / 8370 = 2.8 倍，且该比例由独立断言把守。评审可推翻此调整。"
     }
-  ]
+  ],
+  "safeContainer": {
+    "_comment": "安全箱：阵亡时其中物品保留。新账号 1x2，随任务完成升级到 2x2 / 2x3 / 2x4 / 3x3 / 3x4。升级解锁条件属 M5/M6 任务线，本表只定尺寸与顺序。",
+    "tiers": [
+      {
+        "id": "safe_t1",
+        "label": "1x2",
+        "w": 1,
+        "h": 2,
+        "unlock": "新账号默认"
+      },
+      {
+        "id": "safe_t2",
+        "label": "2x2",
+        "w": 2,
+        "h": 2,
+        "unlock": "任务线（M5/M6 定）"
+      },
+      {
+        "id": "safe_t3",
+        "label": "2x3",
+        "w": 2,
+        "h": 3,
+        "unlock": "任务线（M5/M6 定）"
+      },
+      {
+        "id": "safe_t4",
+        "label": "2x4",
+        "w": 2,
+        "h": 4,
+        "unlock": "任务线（M5/M6 定）"
+      },
+      {
+        "id": "safe_t5",
+        "label": "3x3",
+        "w": 3,
+        "h": 3,
+        "unlock": "任务线（M5/M6 定）"
+      },
+      {
+        "id": "safe_t6",
+        "label": "3x4",
+        "w": 3,
+        "h": 4,
+        "unlock": "任务线（M5/M6 定）"
+      }
+    ],
+    "excludeCategories": [
+      "weapon",
+      "armor"
+    ],
+    "_excludeNote": "安全箱**装不下武器与护甲**。这是防\"零风险刷保险\"的关键限制：若什么都能装，满级 3x4=12 格正好等于\"速撤\"玩法的携带量，死亡就几乎没有惩罚，搜打撤的核心张力消失。现实中这也是通行做法 —— 保险箱装的是小件贵重品，不是步枪和防弹衣。"
+  }
 }

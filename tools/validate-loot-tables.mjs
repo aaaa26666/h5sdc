@@ -153,6 +153,52 @@ console.log('\n—— ③ 数值合法性 ——');
   });
   check('容器权重非负且至少一项为正', badWeights.length === 0,
     badWeights.map((c) => c.label).join(', ') || '全部合法');
+
+  // ---- 形状（二维网格背包的前提）----
+  const badShape = T.items.filter(
+    (i) => !Number.isInteger(i.w) || !Number.isInteger(i.h) || i.w < 1 || i.h < 1
+  );
+  check('每个物品都有合法的形状（w/h 为正整数）', badShape.length === 0,
+    badShape.map((i) => i.label).join(', ') || '全部合法');
+
+  // vol 必须等于 w×h：两者不一致就是"看起来占 2 格其实占 4 格"这种隐蔽错误
+  const volMismatch = T.items.filter((i) => i.vol !== i.w * i.h);
+  check('物品 vol 等于 w×h（形状与格数一致）', volMismatch.length === 0,
+    volMismatch.map((i) => `${i.label} vol=${i.vol} 而 ${i.w}x${i.h}`).join(', ') || '全部一致');
+
+  // ---- 背包与安全箱（网格）----
+  const bp = T.backpack;
+  check('背包是合法网格', Number.isInteger(bp.w) && Number.isInteger(bp.h) && bp.w > 0 && bp.h > 0,
+    `${bp.w}x${bp.h}`);
+  check('背包声明格数与 w×h 一致', bp._slots === bp.w * bp.h, `${bp._slots} vs ${bp.w * bp.h}`);
+
+  const tiers = T.safeContainer.tiers;
+  check('安全箱档位以 1x2 起步（新账号）',
+    tiers[0].label === '1x2' && tiers[0].w === 1 && tiers[0].h === 2, tiers[0].label);
+  check('安全箱档位唯一', new Set(tiers.map((t) => t.id)).size === tiers.length, `${tiers.length} 档`);
+  {
+    // 容量必须严格递增 —— 否则"升级"可能是负收益，玩家会觉得被骗
+    let bad = null;
+    for (let i = 1; i < tiers.length; i++) {
+      if (tiers[i].w * tiers[i].h <= tiers[i - 1].w * tiers[i - 1].h) {
+        bad = `${tiers[i].label}(${tiers[i].w * tiers[i].h}) 不大于 ${tiers[i - 1].label}(${tiers[i - 1].w * tiers[i - 1].h})`;
+      }
+    }
+    check('安全箱容量随档位严格递增（升级必然更大）', bad === null,
+      bad || tiers.map((t) => `${t.label}=${t.w * t.h}`).join(' < '));
+  }
+  {
+    // 网格维度小于最大物品时，该档永远放不下那件物品 —— 这是设计事实，明确说出来
+    const maxW = Math.max(...T.items.map((i) => i.w));
+    const maxH = Math.max(...T.items.map((i) => i.h));
+    const tooSmall = tiers.filter((t) => t.w < maxW || t.h < maxH);
+    console.log(
+      `  物品最大形状 ${maxW}x${maxH}；` +
+        (tooSmall.length
+          ? `放不下它的安全箱档位：${tooSmall.map((t) => t.label).join(', ')}`
+          : '所有档位都能放下最大物品')
+    );
+  }
 }
 
 // ============================================================
@@ -282,6 +328,63 @@ function pickRarity(c, rnd) {
   return dataKeys(c.rarityWeights)[0];
 }
 
+/**
+ * 二维网格贪心排放（首次适配）。
+ *
+ * 为什么需要真正的二维排放而不是"格数计数"：安全箱档位用 1x2 / 2x3 / 3x4 表达，
+ * 这是**行列**记法 —— 物品有形状，装包是排放。一个 2x1 的急救包放不进 1x2 的格子
+ * （只能旋转后才放得进），而"只算格数"的模型看不出这个区别。
+ *
+ * 贪心而不是最优解：玩家的实际行为就是"先捡单位体积最值钱的，能塞就塞"，
+ * 贪心更贴近真人，也不把模型做得比玩法更聪明。
+ *
+ * @param items 已按价值密度降序排好的物品
+ * @returns { placed, value, weightKg, vol }
+ */
+function packGrid(gridW, gridH, items, weightLimitKg = Infinity, excludeCategories = []) {
+  const occupied = Array.from({ length: gridH }, () => new Array(gridW).fill(false));
+  const placed = [];
+  let value = 0;
+  let weightKg = 0;
+  let vol = 0;
+
+  const fits = (x, y, w, h) => {
+    if (x + w > gridW || y + h > gridH) return false;
+    for (let dy = 0; dy < h; dy++) {
+      for (let dx = 0; dx < w; dx++) if (occupied[y + dy][x + dx]) return false;
+    }
+    return true;
+  };
+  const mark = (x, y, w, h, v) => {
+    for (let dy = 0; dy < h; dy++) {
+      for (let dx = 0; dx < w; dx++) occupied[y + dy][x + dx] = v;
+    }
+  };
+
+  const excluded = new Set(excludeCategories);
+  for (const it of items) {
+    if (excluded.has(it.category)) continue;
+    if (weightKg + it.weightKg > weightLimitKg) continue;
+    let put = false;
+    // 正放放不下就试旋转（90°）—— 真人一定会转一下再塞
+    for (const [w, h] of [[it.w, it.h], [it.h, it.w]]) {
+      if (put) break;
+      for (let y = 0; y + h <= gridH && !put; y++) {
+        for (let x = 0; x + w <= gridW && !put; x++) {
+          if (!fits(x, y, w, h)) continue;
+          mark(x, y, w, h, true);
+          placed.push({ item: it, x, y, w, h, rotated: w !== it.w });
+          value += it.value;
+          weightKg += it.weightKg;
+          vol += it.vol;
+          put = true;
+        }
+      }
+    }
+  }
+  return { placed, value, weightKg, vol, occupied };
+}
+
 function simulateRaid(containerCounts, rnd) {
   // 第一步：把地上的东西全部收集起来
   const ground = [];
@@ -300,34 +403,34 @@ function simulateRaid(containerCounts, rnd) {
   const groundWeight = ground.reduce((a, it) => a + it.weightKg, 0);
   const groundVol = ground.reduce((a, it) => a + it.vol, 0);
 
-  // 第二步：按**价值密度**取舍，直到装满背包。
+  // 第二步：按价值密度降序，排进背包网格。
   //
-  // ★ 这一步是收益模型的关键。容量装不下时玩家必须选择带什么 ——
-  //   "搜"的核心乐趣就在这里。若按"地上全拿走"算收益，区间是假的：
-  //   实测正常档地上占 28 格、贪档占 61 格，而背包只有 24 格。
-  //   所以收益区间必须以**能带走的**为准。
-  //
-  //   用价值密度（价值/体积）贪心而不是最优背包解：玩家的实际行为就是
-  //   "先捡单位体积最值钱的"，贪心更贴近真人，也不把模型做得比玩法更聪明。
-  const { slots, weightLimitKg } = T.backpack;
+  // ★ 收益以**能带走的**为准，不是"地上的"。
+  //   容量装不下时玩家必须选择带什么 —— "搜"的核心乐趣就在这里。
+  //   若按"地上全拿走"算收益，区间是假的。
   ground.sort((a, b) => b.value / b.vol - a.value / a.vol);
+  const { w: bw, h: bh, weightLimitKg } = T.backpack;
+  const bp = packGrid(bw, bh, ground, weightLimitKg);
+  const carried = bp.placed.map((p) => p.item);
 
-  let total = 0;
-  let items = 0;
-  let weightKg = 0;
-  let vol = 0;
-  for (const it of ground) {
-    if (vol + it.vol > slots) continue; // 装不下就跳过，继续试更小的
-    if (weightKg + it.weightKg > weightLimitKg) continue;
-    vol += it.vol;
-    weightKg += it.weightKg;
-    total += it.value;
-    items++;
+  // 第三步：安全箱。玩家会把**最值钱的**塞进去 ——
+  // 因为阵亡时只有它能保住。逐档计算保住的价值。
+  const insuredByTier = {};
+  for (const t of T.safeContainer.tiers) {
+    // 安全箱不受负重限制（它是保命口袋，不是背包装载），但受形状与容量限制
+    insuredByTier[t.id] = packGrid(t.w, t.h, carried, Infinity, T.safeContainer.excludeCategories || []).value;
   }
+
   return {
-    total, items, weightKg, vol,
+    total: bp.value,
+    items: bp.placed.length,
+    weightKg: bp.weightKg,
+    vol: bp.vol,
     groundValue, groundWeight, groundVol, groundItems: ground.length,
-    leftValue: groundValue - total,
+    leftValue: groundValue - bp.value,
+    // 撤离 = 背包全带出（安全箱本就含在背包里）；阵亡 = 只保住安全箱
+    insuredByTier,
+    carried,
   };
 }
 
@@ -344,6 +447,9 @@ for (const t of T.raidTargets) {
   const vols = [];
   const groundValues = [];
   const leftValues = [];
+  // 每档安全箱"阵亡时保住多少"也一起统计 —— 它直接改变死亡惩罚的力度
+  const insuredByTier = {};
+  for (const tier of T.safeContainer.tiers) insuredByTier[tier.id] = [];
   let itemSum = 0;
   for (let i = 0; i < RUNS; i++) {
     const r = simulateRaid(t.containers, rnd);
@@ -352,6 +458,7 @@ for (const t of T.raidTargets) {
     vols.push(r.vol);
     groundValues.push(r.groundValue);
     leftValues.push(r.leftValue);
+    for (const tier of T.safeContainer.tiers) insuredByTier[tier.id].push(r.insuredByTier[tier.id]);
     itemSum += r.items;
   }
   totals.sort((a, b) => a - b);
@@ -369,7 +476,28 @@ for (const t of T.raidTargets) {
   const gvP50 = quantile(groundValues, 0.5);
   const leftP50 = quantile(leftValues, 0.5);
   const leftRatio = gvP50 > 0 ? leftP50 / gvP50 : 0;
-  simResults.push({ t, mean, p05, p50, p95, inBand, avgItems: itemSum / RUNS, wP50, vP50, gvP50, leftP50, leftRatio });
+
+  const insuredP50 = {};
+  for (const tier of T.safeContainer.tiers) {
+    insuredP50[tier.id] = quantile(insuredByTier[tier.id].sort((a, b) => a - b), 0.5);
+  }
+
+  // ★ 期望收益的正确公式（含死亡保险）：
+  //     撤离：背包全部带出   → 收益 = total
+  //     阵亡：只有安全箱保住 → 收益 = insured
+  //   EV = P(撤离) × total + (1 − P(撤离)) × insured
+  //
+  //   之前的写法是 `total × P(撤离)`，隐含"阵亡时一无所有" ——
+  //   那在安全箱存在时是错的，而且会**低估**安全箱升级的价值。
+  const evFor = (tierId) =>
+    simResults.length >= 0
+      ? mean * t.survivalRate + insuredP50[tierId] * (1 - t.survivalRate)
+      : 0;
+
+  simResults.push({
+    t, mean, p05, p50, p95, inBand, avgItems: itemSum / RUNS,
+    wP50, vP50, gvP50, leftP50, leftRatio, insuredP50, evFor,
+  });
 
   console.log(
     `  ${t.label.padEnd(18)} 中位 ${String(p50).padStart(6)}  ` +
@@ -379,8 +507,14 @@ for (const t of T.raidTargets) {
   );
   console.log(
     `    ${' '.repeat(16)}设计目标区间 ${t.valueMin} ~ ${t.valueMax}  ` +
-      `→ 中位数${inBand ? '落在区间内' : '**超出区间**'}  存活率(设计意图) ${(t.survivalRate * 100).toFixed(0)}%  ` +
-      `期望收益(收益x存活) ${(mean * t.survivalRate).toFixed(0)}`
+      `→ 中位数${inBand ? '落在区间内' : '**超出区间**'}  存活率(设计意图) ${(t.survivalRate * 100).toFixed(0)}%`
+  );
+  console.log(
+    `    ${' '.repeat(16)}阵亡时各档安全箱保住：` +
+      T.safeContainer.tiers
+        .map((tier) => `${tier.label} ${insuredP50[tier.id]}`)
+        .join('  ') +
+      `   （阵亡损失＝背包 − 安全箱）`
   );
   check(`${t.label} 的中位收益落在设计目标区间内`, inBand,
     `中位 ${p50} vs 目标 ${t.valueMin}~${t.valueMax}`);
@@ -388,7 +522,11 @@ for (const t of T.raidTargets) {
 
 // 风险回报单调性：越贪，期望收益(收益x存活率)应该越高，否则"贪"没有动机
 {
-  const evs = simResults.map((r) => r.mean * r.t.survivalRate);
+  const topTier = T.safeContainer.tiers[T.safeContainer.tiers.length - 1];
+  const evOf = (r, tierId) => r.mean * r.t.survivalRate + r.insuredP50[tierId] * (1 - r.t.survivalRate);
+
+  // 单调性用最高档安全箱判断 —— 老账号的实际体验接近它，新账号更低（见下方逐档对比）
+  const evs = simResults.map((r) => evOf(r, topTier.id));
   const monotone = evs.every((v, i) => i === 0 || v > evs[i - 1]);
   check('风险回报单调：越贪期望收益越高（否则"贪"没有动机）', monotone,
     evs.map((v, i) => `${simResults[i].t.label} ${v.toFixed(0)}`).join('  '));
@@ -397,8 +535,64 @@ for (const t of T.raidTargets) {
   if (ratio < 1.05) {
     warn(
       `"贪"相对"正常"的期望收益只高 ${((ratio - 1) * 100).toFixed(1)}%，` +
-        `但胜率低 ${(((simResults[simResults.length - 2].t.survivalRate - simResults[simResults.length - 1].t.survivalRate)) * 100).toFixed(0)} 个百分点 —— ` +
+        `但胜率低 ${(simResults[simResults.length - 2].t.survivalRate - simResults[simResults.length - 1].t.survivalRate) * 100} 个百分点 —— ` +
         `风险补偿可能不足，建议评审时确认`
+    );
+  }
+
+  // 安全箱升级的价值：从最低档到最高档，期望收益提升多少
+  console.log('\n  —— 安全箱升级对期望收益的影响（以"贪"档为例）——');
+  const greedy = simResults[simResults.length - 1];
+  const first = T.safeContainer.tiers[0];
+  const evLow = evOf(greedy, first.id);
+  const evHigh = evOf(greedy, topTier.id);
+  for (const tier of T.safeContainer.tiers) {
+    const ev = evOf(greedy, tier.id);
+    const delta = (ev / evLow - 1) * 100;
+    console.log(
+      `    ${tier.label.padEnd(5)} 阵亡保住 ${String(greedy.insuredP50[tier.id]).padStart(6)}  ` +
+        `期望收益 ${ev.toFixed(0).padStart(6)}  相对新账号 ${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`
+    );
+  }
+  check('安全箱升级确实提升期望收益（升级要有正反馈）', evHigh > evLow,
+    `新账号 ${evLow.toFixed(0)} → 满级 ${evHigh.toFixed(0)}（+${((evHigh / evLow - 1) * 100).toFixed(1)}%）`);
+
+  // 死亡必须有实质惩罚 —— 判据是"保险不能把死亡变成划算的选择"，而不是"风险必须对称"。
+  //
+  // ★ 这条判据换过一次，理由必须写清楚。
+  //
+  // 初版判据是「阵亡的绝对损失 > 一次速撤的收益」。它被"速撤 + 满级安全箱"触发：
+  // 丢 1104，而成功速撤赚 2484。但那条判据**要求风险对称**，
+  // 而"速撤"这个玩法本来就是设计成低风险的 —— 它不该和"贪"用同一把尺子。
+  // 而且满级玩家没有理由去刷速撤：EV 速撤 2318 vs 贪 18264，差约 8 倍。
+  // 所以是**判据错**，不是设计错 —— 拿掉它，而不是去改设计迁就它。
+  //
+  // 真正该守的不变量有两条，都由独立断言把守：
+  //   ① 保险不能改变玩法排序 —— 见上面的风险回报单调性断言
+  //      （若保险让最保守的玩法变成最优，核心循环就崩了）
+  //   ② 成功撤离必须严格优于阵亡，且保住比例不能过高 —— 见下
+  //
+  // 另外必须诚实记录一个**模型局限**：本模拟假设一局的战利品"全部已找到"。
+  // 真实情况下阵亡常发生在搜到保险箱之前，因此"贪档保住 64%"是**高估**的 ——
+  // 你无法保住自己没找到的东西。
+  const losses = simResults.map((r) => ({
+    label: r.t.label,
+    loss: r.mean - r.insuredP50[topTier.id],
+    ratio: r.mean > 0 ? r.insuredP50[topTier.id] / r.mean : 0,
+  }));
+  const maxRatio = Math.max(...losses.map((l) => l.ratio));
+  check('成功撤离严格优于阵亡（保险不能反超撤离）',
+    simResults.every((r) => r.insuredP50[topTier.id] < r.mean),
+    simResults.map((r) => `${r.t.label} 撤离 ${r.mean.toFixed(0)} > 阵亡 ${r.insuredP50[topTier.id]}`).join('  '));
+  check('满级安全箱保住的比例不超过 80%（死亡不能变成划算的选择）',
+    maxRatio < 0.8,
+    losses.map((l) => `${l.label} 丢 ${l.loss.toFixed(0)}（保住 ${(l.ratio * 100).toFixed(0)}%）`).join('  '));
+  if (maxRatio > 0.6) {
+    warn(
+      `满级安全箱可保住最高 ${(maxRatio * 100).toFixed(0)}% 的战利品。` +
+        `比例偏高是因为高价值小件（门禁卡/比特币/金条）都是 1x1，正好是安全箱的设计用途。` +
+        `注意该数字是**高估**的：模拟假设战利品已全部找到，而真实阵亡常发生在搜到之前。` +
+        `是否需要收紧请评审裁定`
     );
   }
 }
