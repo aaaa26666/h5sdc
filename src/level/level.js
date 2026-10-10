@@ -30,6 +30,13 @@ import * as THREE from 'three';
 
 const KIND_WALL = 0;
 const KIND_COVER = 1;
+// 楼板：水平实心薄板。**下方是通的**（一层可以在二层楼板下行走）——
+// 这正是旧模型（"从地面实心到顶"）表达不了两层的原因。
+const KIND_SLAB = 2;
+// 斜坡：连续倾斜的可走表面（楼梯用它）。
+// 为什么楼梯必须是斜坡而不是台阶：层高 3.6m ÷ stepHeight 0.60m = 6 级 = 6 格 = 15m 长的楼梯，
+// 不可用；而真实级高 0.18m 要 20 级，更不可能。28° 斜坡的水平投影只有约 2.7 格。
+const KIND_RAMP = 3;
 
 export function createLevel(cfg, scene) {
   const map = cfg.map;
@@ -49,6 +56,21 @@ export function createLevel(cfg, scene) {
 
   const idx = (x, z) => z * W + x;
 
+  // ---------- 各层标高（必须最先声明）----------
+  // 墙、掩体、楼板、斜坡都要用它，而且它在**常量初始化顺序上**必须早于第一次调用。
+  // 我一度把它放在掩体之后，结果墙体循环先调到它 —— 报的是
+  // "Cannot access 'floorBases' before initialization"（TDZ），
+  // 而不是"读到 undefined"。函数声明会提升，但它引用的 const 不会。
+  const floorBases = (map.floors || [{ id: 0, baseY: 0 }]).map((f) => f.baseY);
+  const slabThickness = map.slabThickness || 0.3;
+  function floorBaseY(floorIdx) {
+    const i = floorIdx || 0;
+    if (i < 0 || i >= floorBases.length) {
+      throw new Error(`[level] 引用了不存在的地板层 ${floorIdx}`);
+    }
+    return floorBases[i];
+  }
+
   // 先按格收集临时列表（构建期用普通数组最直观，最后再压实成类型化数组）
   const perCellSpans = new Array(W * H);
   const pushSpan = (x, z, y0, y1, kind) => {
@@ -67,25 +89,86 @@ export function createLevel(cfg, scene) {
     pushSpan(W - 1, z, 0, wallHeight, KIND_WALL);
   }
   for (const b of map.walls) {
+    const baseY = floorBaseY(b.floor);
     for (let dz = 0; dz < b.h; dz++) {
       for (let dx = 0; dx < b.w; dx++) {
-        pushSpan(b.x + dx, b.z + dz, 0, wallHeight, KIND_WALL);
+        pushSpan(b.x + dx, b.z + dz, baseY, baseY + wallHeight, KIND_WALL);
       }
     }
   }
 
+  // 各层标高已在本文件靠前处声明（见"各层标高（必须最先声明）"）。
   const coverSpec = cfg.level.cover;
   const coverList = [];
   for (const c of map.cover || []) {
     const h = c.type === 'tall' ? coverSpec.tallHeight : coverSpec.lowHeight;
+    const baseY = floorBaseY(c.floor);
     for (let dz = 0; dz < c.h; dz++) {
       for (let dx = 0; dx < c.w; dx++) {
         const x = c.x + dx;
         const z = c.z + dz;
-        pushSpan(x, z, 0, h, KIND_COVER);
-        coverList.push({ cell: x, z, height: h, type: c.type });
+        pushSpan(x, z, baseY, baseY + h, KIND_COVER);
+        coverList.push({ cell: x, z, height: baseY + h, type: c.type, floor: c.floor || 0 });
       }
     }
+  }
+
+  // ---------- 楼板（二层地面）----------
+  //
+  // 楼板是 [baseY - thickness, baseY] 的**薄板**，不是从地面实心到顶。
+  // 下方留出的净高就是一层天花板高度 —— 一层因此可以在二层楼板下正常通行，
+  // 这是"两层"与"一个大台子"的本质区别。
+  const slabList = [];
+  for (const s of map.slabs || []) {
+    const top = floorBaseY(s.floor);
+    for (let dz = 0; dz < s.h; dz++) {
+      for (let dx = 0; dx < s.w; dx++) {
+        const x = s.x + dx;
+        const z = s.z + dz;
+        pushSpan(x, z, top - slabThickness, top, KIND_SLAB);
+        slabList.push({ cell: x, z, top, floor: s.floor });
+      }
+    }
+  }
+
+  // ---------- 斜坡（楼梯）----------
+  //
+  // 每格记录"沿 dir 进入该格时的表面高度 lo"与"离开时的表面高度 hi"，格内线性插值。
+  // 斜坡格**不产生实心跨度**（它是可走的斜面，不是盒子）——
+  // 否则人会撞在楼梯上。射线与实心判定改为按插值出的表面高度处理。
+  const rampLo = new Map();
+  const rampList = [];
+  const DIRS = { '+x': [1, 0], '-x': [-1, 0], '+z': [0, 1], '-z': [0, -1] };
+  for (const r of map.ramps || []) {
+    if (!DIRS[r.dir]) throw new Error(`[level] 斜坡 dir 非法：${r.dir}（应为 +x/-x/+z/-z）`);
+    const from = floorBaseY(r.floor);
+    const to = floorBaseY((r.floor || 0) + 1);
+    const alongX = r.dir === '+x' || r.dir === '-x';
+    const along = alongX ? r.w : r.h;
+    if (along < 1) throw new Error(`[level] 斜坡 (${r.x},${r.z}) 沿 ${r.dir} 方向长度为 0`);
+    const step = (to - from) / along;
+    for (let k = 0; k < along; k++) {
+      // 沿 dir 的方向推进格坐标；反向（-x/-z）时从矩形末端起步
+      const off = r.dir === '+x' || r.dir === '+z' ? k : along - 1 - k;
+      const cx = alongX ? r.x + off : r.x;
+      const cz = alongX ? r.z : r.z + off;
+      rampLo.set(cz * W + cx, { lo: from + step * k, hi: from + step * (k + 1), dir: r.dir });
+      rampList.push({ cell: cx, z: cz, lo: from + step * k, hi: from + step * (k + 1), dir: r.dir });
+    }
+  }
+
+  /** 斜坡格内的表面高度（按世界坐标在该格内的位置线性插值）。不是斜坡格返回 null。 */
+  function rampSurfaceAt(cx, cz, x, z) {
+    const r = rampLo.get(cz * W + cx);
+    if (!r) return null;
+    const fx = x / cell - cx;
+    const fz = z / cell - cz;
+    let t;
+    if (r.dir === '+x') t = fx;
+    else if (r.dir === '-x') t = 1 - fx;
+    else if (r.dir === '+z') t = fz;
+    else t = 1 - fz;
+    return r.lo + (r.hi - r.lo) * Math.min(1, Math.max(0, t));
   }
 
   // 压实成 CSR。
@@ -175,6 +258,10 @@ export function createLevel(cfg, scene) {
 
   /** 某点是否落在实心体内 */
   function solidAtPoint(cx, cz, y) {
+    // 斜坡：坡面以下是实心（楼梯是实体），按插值高度判定。
+    // 用格心近似即可 —— 这个函数只用于"射线起点是否已在实心内"和台阶吸附的探针。
+    const rs = rampSurfaceAt(cx, cz, (cx + 0.5) * cell, (cz + 0.5) * cell);
+    if (rs !== null && y >= 0 && y <= rs) return true;
     const r = spanRange(cx, cz);
     if (!r) return true;
     for (let s = r[0]; s < r[1]; s++) {
@@ -197,14 +284,19 @@ export function createLevel(cfg, scene) {
   function surfaceAt(x, z, feetY, stepHeight) {
     const cx = Math.floor(x / cell);
     const cz = Math.floor(z / cell);
-    const r = spanRange(cx, cz);
-    if (!r) return 0;
     const limit = feetY + stepHeight + 1e-6;
     let best = 0;
-    for (let s = r[0]; s < r[1]; s++) {
-      const top = spanY1f[s];
-      if (top <= limit && top > best) best = top;
+    const r = spanRange(cx, cz);
+    if (r) {
+      for (let s = r[0]; s < r[1]; s++) {
+        const top = spanY1f[s];
+        if (top <= limit && top > best) best = top;
+      }
     }
+    // 斜坡表面同样可以站：按世界坐标插值出该点的坡面高度。
+    // 这是斜坡与跨度唯一不同的地方 —— 它的顶面不是常数。
+    const rs = rampSurfaceAt(cx, cz, x, z);
+    if (rs !== null && rs <= limit && rs > best) best = rs;
     return best;
   }
 
@@ -413,27 +505,48 @@ export function createLevel(cfg, scene) {
       const tOut = Math.min(tMaxX, tMaxZ);
 
       const r = spanRange(cx, cz);
-      if (!r) continue;
       let best = Infinity;
-      for (let s = r[0]; s < r[1]; s++) {
-        const y0 = spanY0f[s];
-        const y1 = spanY1f[s];
-        let lo;
-        let hi;
+      // 斜坡：把该格视为"从 0 实心到坡面"，坡面高度按射线进入该格的位置插值。
+      // 这样子弹打在楼梯上会命中，而楼梯上方的空气不会误挡。
+      const px0 = ox + dx * tIn;
+      const pz0 = oz + dz * tIn;
+      const rampY = rampSurfaceAt(cx, cz, px0, pz0);
+      if (rampY !== null && rampY > 0) {
+        let lo2;
+        let hi2;
         if (dy === 0) {
-          // 水平射线：要么整个格子内都在跨度高度区间里，要么完全不在
-          if (oy < y0 || oy > y1) continue;
-          lo = 0;
-          hi = Infinity;
+          if (oy <= rampY) { lo2 = 0; hi2 = Infinity; } else { lo2 = 1; hi2 = 0; }
         } else {
-          const ta = (y0 - oy) / dy;
-          const tb = (y1 - oy) / dy;
-          lo = Math.min(ta, tb);
-          hi = Math.max(ta, tb);
+          const ta = (0 - oy) / dy;
+          const tb = (rampY - oy) / dy;
+          lo2 = Math.min(ta, tb);
+          hi2 = Math.max(ta, tb);
         }
-        const a = Math.max(tIn, lo);
-        const b = Math.min(tOut, hi);
-        if (a <= b && a <= maxDist && a < best) best = a;
+        const a2 = Math.max(tIn, lo2);
+        const b2 = Math.min(tOut, hi2);
+        if (a2 <= b2 && a2 <= maxDist && a2 < best) best = a2;
+      }
+      if (r) {
+        for (let s = r[0]; s < r[1]; s++) {
+          const y0 = spanY0f[s];
+          const y1 = spanY1f[s];
+          let lo;
+          let hi;
+          if (dy === 0) {
+            // 水平射线：要么整个格子内都在跨度高度区间里，要么完全不在
+            if (oy < y0 || oy > y1) continue;
+            lo = 0;
+            hi = Infinity;
+          } else {
+            const ta = (y0 - oy) / dy;
+            const tb = (y1 - oy) / dy;
+            lo = Math.min(ta, tb);
+            hi = Math.max(ta, tb);
+          }
+          const a = Math.max(tIn, lo);
+          const b = Math.min(tOut, hi);
+          if (a <= b && a <= maxDist && a < best) best = a;
+        }
       }
       if (best < Infinity) return best;
     }

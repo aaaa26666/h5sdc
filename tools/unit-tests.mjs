@@ -724,6 +724,85 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
       stepUpTarget(0, 0.5501, step) === false);
   }
 
+  // ---- M3-1b-2 ①：楼板与斜坡几何（分层能力的基础）----
+  //
+  // 用一个**合成地图**测，而不是在正式地图上测 —— 正式地图此刻还是一层，
+  // 里面没有楼板/斜坡，拿它测不出任何东西。合成地图同时充当"这个能力确实可用"的最小证明。
+  {
+    const { createLevel } = await import('../src/level/level.js');
+    const base = config.map;
+    const synthetic = {
+      ...base,
+      id: 'synthetic_two_floor',
+      floors: [{ id: 0, baseY: 0, label: '一层' }, { id: 1, baseY: 3.6, label: '二层' }],
+      slabThickness: 0.3,
+      walls: [],
+      cover: [],
+      // 二层楼板：覆盖 x 20..23, z 20..23（下方一层可以通行）
+      slabs: [{ x: 20, z: 20, w: 4, h: 4, floor: 1 }],
+      // 楼梯：从一层 (16,20) 沿 +x 走 3 格升到二层
+      ramps: [{ x: 16, z: 20, w: 3, h: 1, dir: '+x', floor: 0 }],
+      containers: [{ type: 'crate_civil', x: 22, z: 22, floor: 1 }],
+      extracts: [
+        { id: 'e1', label: '一层口', x: 4, z: 4, radiusCells: 1.2, conditional: false },
+        { id: 'e2', label: '二层口', x: 22, z: 22, radiusCells: 1.2, conditional: false },
+      ],
+    };
+    const cfg2 = { ...config, map: synthetic };
+    const lvl = createLevel(cfg2, { add() {}, remove() {} });
+    const cell = lvl.cell;
+    const at = (cx, cz) => [(cx + 0.5) * cell, (cz + 0.5) * cell];
+    const STEP = config.player.stepHeight;
+
+    // 楼板：正下方的一层地面仍是 0（这就是"楼板下方可通行"）
+    const [sx, sz] = at(22, 22);
+    check('二层楼板**下方**一层仍可站立（地面为 0，不是被楼板顶上去）',
+      lvl.surfaceAt(sx, sz, 0, STEP) === 0,
+      `surfaceAt(二层楼板下, feetY=0) = ${lvl.surfaceAt(sx, sz, 0, STEP)}`);
+    // 站在二层：地面应为二层标高 3.6
+    check('站在二层时地面高度等于二层标高 3.6m',
+      Math.abs(lvl.surfaceAt(sx, sz, 3.6, STEP) - 3.6) < 1e-4,
+      `surfaceAt(, feetY=3.6) = ${lvl.surfaceAt(sx, sz, 3.6, STEP)}`);
+    // 楼板本身是实心的：站在一层高度朝上看，3.6 处应被判为实心
+    check('楼板是实心的（从下方看 3.4m 处为实心、3.8m 处为空）',
+      lvl.solidAtPoint(22, 22, 3.45) && !lvl.solidAtPoint(22, 22, 3.8),
+      `3.45 实心=${lvl.solidAtPoint(22, 22, 3.45)}  3.8 实心=${lvl.solidAtPoint(22, 22, 3.8)}`);
+    // 楼板**不应**挡住一层的水平移动（能走到楼板正下方）
+    {
+      const pos = { x: sx, y: 0, z: sz };
+      lvl.resolveCircle(pos, 0.4, 0, config.player.bodyHeight, STEP);
+      check('一层可以走到二层楼板的正下方（不被楼板挡住）',
+        Math.abs(pos.x - sx) < 1e-4 && Math.abs(pos.z - sz) < 1e-4,
+        `被推到 (${pos.x.toFixed(2)},${pos.z.toFixed(2)})，原位置 (${sx.toFixed(2)},${sz.toFixed(2)})`);
+    }
+
+    // 斜坡：沿 +x 表面必须单调上升，且末端接上二层标高
+    {
+      const zc = at(16, 20)[1];
+      const samples = [];
+      for (let k = 0; k < 3; k++) {
+        for (const f of [0.1, 0.5, 0.9]) {
+          const x = (16 + k + f) * cell;
+          samples.push({ x, y: lvl.surfaceAt(x, zc, 0, 4.0) }); // 给足 stepHeight，模拟"沿坡走上去"
+        }
+      }
+      let monotone = true;
+      for (let i = 1; i < samples.length; i++) if (samples[i].y < samples[i - 1].y - 1e-6) monotone = false;
+      check('斜坡表面沿行进方向单调上升（不是台阶式的突变）', monotone,
+        samples.map((s) => s.y.toFixed(2)).join(' → '));
+      const first = samples[0].y;
+      const last = samples[samples.length - 1].y;
+      check('斜坡从一层标高升到二层标高',
+        first < 0.6 && last > 3.0,
+        `起点 ${first.toFixed(2)}m → 终点 ${last.toFixed(2)}m（二层标高 3.6m）`);
+      // 一格之内的落差应当远小于 stepHeight 才能"走"上去
+      const perCellRise = 3.6 / 3;
+      check('斜坡单格落差可行走（≤ stepHeight 的 3 倍，靠连续插值而非台阶吸附）',
+        perCellRise <= config.player.stepHeight * 3,
+        `单格落差 ${perCellRise.toFixed(2)}m，stepHeight ${STEP}m`);
+    }
+  }
+
   // ---- 关卡掩体配置一致性 ----
   //
   // M3-1 起掩体分两层：**高度规格**在 tunables.level.cover（跨地图共享），

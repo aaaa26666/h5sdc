@@ -1,7 +1,7 @@
 [
   {
     "raid": 1,
-    "ms": 5759,
+    "ms": 5745,
     "shots": 14,
     "hits": 3,
     "kills": 0,
@@ -9,12 +9,12 @@
     "aiAlive": 7,
     "decals": 11,
     "peakQueries": 2,
-    "peakPathMs": 0.365,
+    "peakPathMs": 0.335,
     "errs": 0
   },
   {
     "raid": 2,
-    "ms": 5661,
+    "ms": 5757,
     "shots": 14,
     "hits": 3,
     "kills": 0,
@@ -22,12 +22,12 @@
     "aiAlive": 7,
     "decals": 11,
     "peakQueries": 2,
-    "peakPathMs": 0.175,
+    "peakPathMs": 0.45,
     "errs": 0
   },
   {
     "raid": 3,
-    "ms": 5727,
+    "ms": 5742,
     "shots": 14,
     "hits": 3,
     "kills": 0,
@@ -35,12 +35,12 @@
     "aiAlive": 7,
     "decals": 11,
     "peakQueries": 2,
-    "peakPathMs": 0.34,
+    "peakPathMs": 0.39,
     "errs": 0
   },
   {
     "raid": 4,
-    "ms": 5731,
+    "ms": 5744,
     "shots": 14,
     "hits": 3,
     "kills": 0,
@@ -53,20 +53,20 @@
   },
   {
     "raid": 5,
-    "ms": 5729,
+    "ms": 5762,
     "shots": 14,
     "hits": 3,
     "kills": 0,
-    "health": 89.1,
+    "health": 100,
     "aiAlive": 7,
     "decals": 11,
     "peakQueries": 2,
-    "peakPathMs": 0.35,
+    "peakPathMs": 0.42,
     "errs": 0
   },
   {
     "raid": 6,
-    "ms": 5726,
+    "ms": 5734,
     "shots": 14,
     "hits": 3,
     "kills": 0,
@@ -74,12 +74,12 @@
     "aiAlive": 7,
     "decals": 11,
     "peakQueries": 2,
-    "peakPathMs": 0.505,
+    "peakPathMs": 0.335,
     "errs": 0
   },
   {
     "raid": 7,
-    "ms": 5719,
+    "ms": 5744,
     "shots": 14,
     "hits": 3,
     "kills": 0,
@@ -87,12 +87,12 @@
     "aiAlive": 7,
     "decals": 11,
     "peakQueries": 2,
-    "peakPathMs": 0.175,
+    "peakPathMs": 0.34,
     "errs": 0
   },
   {
     "raid": 8,
-    "ms": 5723,
+    "ms": 5743,
     "shots": 14,
     "hits": 3,
     "kills": 0,
@@ -100,12 +100,12 @@
     "aiAlive": 7,
     "decals": 11,
     "peakQueries": 2,
-    "peakPathMs": 0.36,
+    "peakPathMs": 0.34,
     "errs": 0
   },
   {
     "raid": 9,
-    "ms": 5736,
+    "ms": 5750,
     "shots": 14,
     "hits": 3,
     "kills": 0,
@@ -113,12 +113,12 @@
     "aiAlive": 7,
     "decals": 11,
     "peakQueries": 2,
-    "peakPathMs": 0.34,
+    "peakPathMs": 0.435,
     "errs": 0
   },
   {
     "raid": 10,
-    "ms": 5730,
+    "ms": 5759,
     "shots": 14,
     "hits": 3,
     "kills": 0,
@@ -126,7 +126,7 @@
     "aiAlive": 7,
     "decals": 11,
     "peakQueries": 2,
-    "peakPathMs": 0.34,
+    "peakPathMs": 0.4,
     "errs": 0
   }
 ]
