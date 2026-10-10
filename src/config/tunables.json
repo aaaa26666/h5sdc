@@ -1,0 +1,102 @@
+{
+  "_comment": "M1 临时数值表。硬性要求：M1 所有数值集中于此，禁止散落在逻辑代码中。字段命名与结构均为 M1 临时方案，M2 将迁移至正式配置表体系（见《流程文档》第 8 章）。",
+
+  "raid": {
+    "_comment": "单局规则",
+    "timeLimitMs": 240000
+  },
+
+  "level": {
+    "_comment": "灰盒关卡。网格驱动，M0-5 已验证网格方案可行",
+    "gridW": 40,
+    "gridH": 40,
+    "cell": 2.5,
+    "wallHeight": 3.5,
+    "blockRatio": 0.18,
+    "seed": 20260201,
+    "playerSpawnCell": [4, 4],
+    "aiSpawnMarginCells": 12
+  },
+
+  "player": {
+    "eyeHeight": 1.65,
+    "crouchEyeHeight": 1.0,
+    "radius": 0.4,
+    "walkSpeed": 5.0,
+    "sprintSpeed": 7.5,
+    "crouchSpeed": 2.4,
+    "jumpSpeed": 5.2,
+    "gravity": -20.0,
+    "mouseSensitivity": 0.0022,
+    "pitchLimitDeg": 89,
+
+    "leanOffset": 0.55,
+    "leanRollDeg": 14,
+    "leanHeadDrop": 0.12,
+    "leanSpeed": 9.0,
+    "leanWallMargin": 0.35
+  },
+
+  "weapon": {
+    "_comment": "M1 只有一把武器。禁止为多武器做抽象",
+    "displayName": "M1-临时步枪",
+    "damageBody": 24,
+    "damageHead": 60,
+    "fireIntervalMs": 110,
+    "magazineSize": 30,
+    "reserveAmmo": 120,
+    "reloadMs": 1800,
+    "range": 120,
+    "spreadDeg": 1.2
+  },
+
+  "ai": {
+    "_comment": "M1 只有一种 AI。禁止扩展兵种",
+    "count": 6,
+    "maxHealth": 80,
+    "radius": 0.45,
+    "bodyRadius": 0.6,
+    "headRadius": 0.32,
+    "bodyCenterY": 0.9,
+    "headCenterY": 1.65,
+    "moveSpeed": 2.8,
+    "viewRange": 30,
+    "viewAngleDeg": 100,
+    "reactMs": 400,
+    "thinkIntervalMs": 250,
+    "fireIntervalMs": 700,
+    "fireRange": 35,
+    "damage": 8,
+    "accuracyDeg": 5.0,
+    "patrolSpeedScale": 0.45
+  },
+
+  "loot": {
+    "_comment": "M1 只有一种容器。物品种类保持最小集",
+    "containerCount": 8,
+    "containerRadius": 0.7,
+    "searchMs": 2500,
+    "interactRange": 2.4,
+    "containerCells": [
+      [8, 6], [14, 9], [22, 7], [30, 12],
+      [10, 24], [18, 30], [27, 22], [33, 31]
+    ],
+    "items": [
+      { "id": "bandage", "label": "绷带", "value": 120, "weight": 40 },
+      { "id": "ammo_box", "label": "弹药盒", "value": 260, "weight": 35 },
+      { "id": "optic", "label": "瞄准镜", "value": 780, "weight": 20 },
+      { "id": "gold_watch", "label": "金表", "value": 1450, "weight": 5 }
+    ],
+    "itemsPerContainerMin": 1,
+    "itemsPerContainerMax": 3
+  },
+
+  "extract": {
+    "_comment": "M1 撤离点：常驻，无钥匙无时间窗",
+    "zones": [
+      { "cell": [37, 3], "radius": 3.5 },
+      { "cell": [3, 37], "radius": 3.5 }
+    ],
+    "countdownMs": 8000
+  }
+}

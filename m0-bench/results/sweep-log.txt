@@ -1,0 +1,114 @@
+﻿[m0-bench] Chrome : C:\Users\Administrator\AppData\Local\Google\Chrome\Application\chrome.exe
+[m0-bench] 服务   : http://127.0.0.1:54936/
+[m0-bench] 矩阵   : engines=ai mat=pbr gpu=default throttle=1,4,6 vsync=off repeats=2
+[m0-bench] 采样   : 预热 2s + 采样 6s
+      微基准: 计时器分辨率=0.005ms | A* 0.018358ms/次(路径25.5格) | 流场 0.07175ms/次 | 视线 0.000095ms/次
+  ok  ai n=50 mat=pbr sync=off gpu=default vsync=off throttle=1x rep=1  avgFps=971.8  low1%=557.34  cpuP95=1.04ms  [pf p95/max 0/1.015 | los 0/0.02 | move 0.015 | render 1.015 ms]
+      [页面告警] http 404: http://127.0.0.1:54936/favicon.ico | console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+      微基准: 计时器分辨率=0.005ms | A* 0.020902ms/次(路径25.5格) | 流场 0.06785ms/次 | 视线 0.000091ms/次
+  ok  ai n=50 mat=pbr sync=off gpu=default vsync=off throttle=1x rep=2  avgFps=474.33  low1%=278.36  cpuP95=2.185ms  [pf p95/max 0/2.91 | los 0/0.045 | move 0.035 | render 2.135 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.020477ms/次(路径25.5格) | 流场 0.071317ms/次 | 视线 0.000094ms/次
+  ok  ai n=50 mat=pbr sync=off gpu=default vsync=off throttle=4x rep=1  avgFps=142.43  low1%=55.78  cpuP95=10.58ms  [pf p95/max 0/6.41 | los 0.015/0.395 | move 0.2 | render 10.265 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.017692ms/次(路径25.5格) | 流场 0.070617ms/次 | 视线 0.000093ms/次
+  ok  ai n=50 mat=pbr sync=off gpu=default vsync=off throttle=4x rep=2  avgFps=132.57  low1%=50.19  cpuP95=10.24ms  [pf p95/max 0/6.88 | los 0.01/0.18 | move 0.2 | render 10.045 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018273ms/次(路径25.5格) | 流场 0.07ms/次 | 视线 0.000098ms/次
+  ok  ai n=50 mat=pbr sync=off gpu=default vsync=off throttle=6x rep=1  avgFps=108.52  low1%=29.45  cpuP95=15.61ms  [pf p95/max 0/10.745 | los 0.02/0.22 | move 0.23 | render 14.675 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.017902ms/次(路径25.5格) | 流场 0.069567ms/次 | 视线 0.000094ms/次
+  ok  ai n=50 mat=pbr sync=off gpu=default vsync=off throttle=6x rep=2  avgFps=96.35  low1%=29.88  cpuP95=18.07ms  [pf p95/max 0/8.18 | los 0.025/0.52 | move 0.245 | render 17.7 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018197ms/次(路径25.5格) | 流场 0.0738ms/次 | 视线 0.000097ms/次
+  ok  ai n=100 mat=pbr sync=off gpu=default vsync=off throttle=1x rep=1  avgFps=437.77  low1%=227.92  cpuP95=2.17ms  [pf p95/max 0/3.035 | los 0/0.05 | move 0.05 | render 2.1 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018162ms/次(路径25.5格) | 流场 0.07955ms/次 | 视线 0.000092ms/次
+  ok  ai n=100 mat=pbr sync=off gpu=default vsync=off throttle=1x rep=2  avgFps=435.67  low1%=229.66  cpuP95=2.18ms  [pf p95/max 0/2.965 | los 0/0.1 | move 0.05 | render 2.115 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.01855ms/次(路径25.5格) | 流场 0.074267ms/次 | 视线 0.000091ms/次
+  ok  ai n=100 mat=pbr sync=off gpu=default vsync=off throttle=4x rep=1  avgFps=108.38  low1%=44.6  cpuP95=11.995ms  [pf p95/max 0.01/11.79 | los 0.035/0.41 | move 0.385 | render 11.13 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018338ms/次(路径25.5格) | 流场 0.07745ms/次 | 视线 0.000105ms/次
+  ok  ai n=100 mat=pbr sync=off gpu=default vsync=off throttle=4x rep=2  avgFps=95.41  low1%=32.48  cpuP95=13.51ms  [pf p95/max 0.015/15.05 | los 0.185/0.56 | move 0.475 | render 12.68 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018395ms/次(路径25.5格) | 流场 0.0703ms/次 | 视线 0.000092ms/次
+  ok  ai n=100 mat=pbr sync=off gpu=default vsync=off throttle=6x rep=1  avgFps=72.76  low1%=24.1  cpuP95=22.11ms  [pf p95/max 0.015/21.27 | los 0.205/0.81 | move 0.62 | render 21.1 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.020165ms/次(路径25.5格) | 流场 0.071083ms/次 | 视线 0.000092ms/次
+  ok  ai n=100 mat=pbr sync=off gpu=default vsync=off throttle=6x rep=2  avgFps=77.05  low1%=24.19  cpuP95=21.23ms  [pf p95/max 0.015/21.605 | los 0.205/0.635 | move 0.605 | render 20.08 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.017928ms/次(路径25.5格) | 流场 0.069517ms/次 | 视线 0.000124ms/次
+  ok  ai n=200 mat=pbr sync=off gpu=default vsync=off throttle=1x rep=1  avgFps=386.42  low1%=162.06  cpuP95=2.635ms  [pf p95/max 0/5.57 | los 0/0.17 | move 0.13 | render 2.465 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018192ms/次(路径25.5格) | 流场 0.080533ms/次 | 视线 0.000091ms/次
+  ok  ai n=200 mat=pbr sync=off gpu=default vsync=off throttle=1x rep=2  avgFps=373.61  low1%=158.38  cpuP95=2.585ms  [pf p95/max 0/5.75 | los 0/0.1 | move 0.11 | render 2.435 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018267ms/次(路径25.5格) | 流场 0.084583ms/次 | 视线 0.000102ms/次
+  ok  ai n=200 mat=pbr sync=off gpu=default vsync=off throttle=4x rep=1  avgFps=85.83  low1%=24.78  cpuP95=14.775ms  [pf p95/max 0.17/23.7 | los 0.225/0.785 | move 0.78 | render 13.885 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018242ms/次(路径25.5格) | 流场 0.0727ms/次 | 视线 0.000092ms/次
+  ok  ai n=200 mat=pbr sync=off gpu=default vsync=off throttle=4x rep=2  avgFps=125.23  low1%=27.03  cpuP95=14.76ms  [pf p95/max 0.005/27.33 | los 0.07/0.795 | move 0.66 | render 13.51 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.017605ms/次(路径25.5格) | 流场 0.0688ms/次 | 视线 0.000089ms/次
+  ok  ai n=200 mat=pbr sync=off gpu=default vsync=off throttle=6x rep=1  avgFps=88.13  low1%=18.12  cpuP95=24.425ms  [pf p95/max 0.02/51.225 | los 0.2/0.89 | move 0.615 | render 19.095 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.01876ms/次(路径25.5格) | 流场 0.072583ms/次 | 视线 0.00009ms/次
+  ok  ai n=200 mat=pbr sync=off gpu=default vsync=off throttle=6x rep=2  avgFps=75.58  low1%=23.2  cpuP95=24.05ms  [pf p95/max 0.185/38.67 | los 0.3/1.075 | move 0.835 | render 21.955 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018325ms/次(路径25.5格) | 流场 0.06865ms/次 | 视线 0.000096ms/次
+  ok  ai n=300 mat=pbr sync=off gpu=default vsync=off throttle=1x rep=1  avgFps=332.97  low1%=120.07  cpuP95=3.075ms  [pf p95/max 0/8.125 | los 0/0.195 | move 0.17 | render 2.83 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018008ms/次(路径25.5格) | 流场 0.071417ms/次 | 视线 0.000089ms/次
+  ok  ai n=300 mat=pbr sync=off gpu=default vsync=off throttle=1x rep=2  avgFps=322.09  low1%=113.55  cpuP95=3.03ms  [pf p95/max 0/8.22 | los 0/0.175 | move 0.15 | render 2.815 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.017807ms/次(路径25.5格) | 流场 0.074133ms/次 | 视线 0.000101ms/次
+  ok  ai n=300 mat=pbr sync=off gpu=default vsync=off throttle=4x rep=1  avgFps=75.45  low1%=19.6  cpuP95=18.055ms  [pf p95/max 0.215/35.24 | los 0.37/1.315 | move 0.815 | render 16.15 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.01884ms/次(路径25.5格) | 流场 0.0903ms/次 | 视线 0.000096ms/次
+  ok  ai n=300 mat=pbr sync=off gpu=default vsync=off throttle=4x rep=2  avgFps=74.01  low1%=19.26  cpuP95=17.275ms  [pf p95/max 0.27/33.825 | los 0.39/0.87 | move 0.9 | render 15.215 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.017972ms/次(路径25.5格) | 流场 0.0727ms/次 | 视线 0.000092ms/次
+  ok  ai n=300 mat=pbr sync=off gpu=default vsync=off throttle=6x rep=1  avgFps=53.38  low1%=15.71  cpuP95=32.81ms  [pf p95/max 0.465/57.915 | los 0.605/1.555 | move 1.25 | render 28.58 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.01784ms/次(路径25.5格) | 流场 0.071967ms/次 | 视线 0.000091ms/次
+  ok  ai n=300 mat=pbr sync=off gpu=default vsync=off throttle=6x rep=2  avgFps=109.53  low1%=23.08  cpuP95=17.585ms  [pf p95/max 0.03/48.2 | los 0.09/0.795 | move 0.735 | render 16.425 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018448ms/次(路径25.5格) | 流场 0.075817ms/次 | 视线 0.000091ms/次
+  ok  ai n=400 mat=pbr sync=off gpu=default vsync=off throttle=1x rep=1  avgFps=294.75  low1%=95.53  cpuP95=3.325ms  [pf p95/max 0/9.815 | los 0/0.26 | move 0.205 | render 3.025 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018665ms/次(路径25.5格) | 流场 0.06905ms/次 | 视线 0.000088ms/次
+  ok  ai n=400 mat=pbr sync=off gpu=default vsync=off throttle=1x rep=2  avgFps=301.13  low1%=97.82  cpuP95=3.24ms  [pf p95/max 0/9.54 | los 0/0.245 | move 0.205 | render 2.96 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018643ms/次(路径25.5格) | 流场 0.070767ms/次 | 视线 0.000094ms/次
+  ok  ai n=400 mat=pbr sync=off gpu=default vsync=off throttle=4x rep=1  avgFps=73.65  low1%=17.7  cpuP95=19.65ms  [pf p95/max 0.39/44.465 | los 0.43/1.115 | move 1.04 | render 17.34 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018777ms/次(路径25.5格) | 流场 0.070433ms/次 | 视线 0.000093ms/次
+  ok  ai n=400 mat=pbr sync=off gpu=default vsync=off throttle=4x rep=2  avgFps=70.94  low1%=19.53  cpuP95=19.48ms  [pf p95/max 0.27/34.265 | los 0.45/1.1 | move 1.02 | render 17.165 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018072ms/次(路径25.5格) | 流场 0.068833ms/次 | 视线 0.000089ms/次
+  ok  ai n=400 mat=pbr sync=off gpu=default vsync=off throttle=6x rep=1  avgFps=74.56  low1%=12.85  cpuP95=16.225ms  [pf p95/max 0.275/72.07 | los 0.4/1.615 | move 0.95 | render 12.85 ms]
+      微基准: 计时器分辨率=0.005ms | A* 0.018475ms/次(路径25.5格) | 流场 0.068817ms/次 | 视线 0.000088ms/次
+  ok  ai n=400 mat=pbr sync=off gpu=default vsync=off throttle=6x rep=2  avgFps=79.3  low1%=14.01  cpuP95=28.875ms  [pf p95/max 0.2/64.505 | los 0.275/2.66 | move 1.215 | render 23.265 ms]
+
+===== 汇总（各组取重复次数的中位数）=====
+┌─────────┬────────┬───────────────┬───────┬───────┬────────┬───────────┬───────┬──────────┬─────────┬─────────┬─────────┬──────────┬──────────┬──────────┬────────┬────────┬────────────┬───────┬────────┬─────────┬───────────┬────────┬────────┬────────────┬─────────────────┬──────────────────┬─────────────┬──────────────┬──────────────┬─────────────────────┬────────────────────────────────────────────────────────────────────────────────────────┬───────────┬────────┬──────────────┬─────────┬─────────┬─────────┐
+│ (index) │ engine │ engineVersion │ mat   │ sync  │ agents │ gpu       │ vsync │ throttle │ samples │ avgFps  │ low1Fps │ frameP50 │ frameP95 │ frameP99 │ cpuP50 │ cpuP95 │ heapPeakMB │ pfP95 │ losP95 │ moveP95 │ renderP95 │ pfMax  │ losMax │ timerResMs │ astarPerQueryMs │ flowPerComputeMs │ losPerRayMs │ engineInitMs │ sceneBuildMs │ firstFrameFromNavMs │ renderer                                                                               │ rafCapFps │ capped │ headroomVs60 │ meets60 │ meets45 │ meets30 │
+├─────────┼────────┼───────────────┼───────┼───────┼────────┼───────────┼───────┼──────────┼─────────┼─────────┼─────────┼──────────┼──────────┼──────────┼────────┼────────┼────────────┼───────┼────────┼─────────┼───────────┼────────┼────────┼────────────┼─────────────────┼──────────────────┼─────────────┼──────────────┼──────────────┼─────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┼───────────┼────────┼──────────────┼─────────┼─────────┼─────────┤
+│ 0       │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 100    │ 'default' │ 'off' │ 1        │ 2       │ 436.72  │ 228.79  │ 2.25     │ 2.542    │ 2.96     │ 1.917  │ 2.175  │ 22.345     │ 0     │ 0      │ 0.05    │ 2.107     │ 3      │ 0.075  │ 0.005      │ 0.018           │ 0.077            │ 0           │ 11.88        │ 4.26         │ 96.15               │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 6.56         │ true    │ true    │ true    │
+│ 1       │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 100    │ 'default' │ 'off' │ 4        │ 2       │ 101.895 │ 38.54   │ 10.135   │ 13.782   │ 22.9     │ 9.377  │ 12.752 │ 18.545     │ 0.013 │ 0.11   │ 0.43    │ 11.905    │ 13.42  │ 0.485  │ 0.005      │ 0.018           │ 0.076            │ 0           │ 9.67         │ 3.42         │ 87.35               │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 1.21         │ true    │ true    │ true    │
+│ 2       │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 100    │ 'default' │ 'off' │ 6        │ 2       │ 74.905  │ 24.145  │ 11.31    │ 32.858   │ 35.067   │ 12.162 │ 21.67  │ 16.44      │ 0.015 │ 0.205  │ 0.613   │ 20.59     │ 21.438 │ 0.723  │ 0.005      │ 0.019           │ 0.071            │ 0           │ 13.19        │ 3.38         │ 114.39              │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 0.51         │ false   │ false   │ true    │
+│ 3       │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 200    │ 'default' │ 'off' │ 1        │ 2       │ 380.015 │ 160.22  │ 2.583    │ 2.915    │ 3.178    │ 2.322  │ 2.61   │ 23.455     │ 0     │ 0      │ 0.12    │ 2.45      │ 5.66   │ 0.135  │ 0.005      │ 0.018           │ 0.075            │ 0           │ 13.46        │ 4.16         │ 117.42              │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 5.72         │ true    │ true    │ true    │
+│ 4       │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 200    │ 'default' │ 'off' │ 4        │ 2       │ 105.53  │ 25.905  │ 8.945    │ 15.985   │ 31.817   │ 8.23   │ 14.768 │ 19.9       │ 0.088 │ 0.148  │ 0.72    │ 13.697    │ 25.515 │ 0.79   │ 0.005      │ 0.018           │ 0.079            │ 0           │ 12.49        │ 5.91         │ 104.1               │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 1.04         │ true    │ true    │ true    │
+│ 5       │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 200    │ 'default' │ 'off' │ 6        │ 2       │ 81.855  │ 20.66   │ 10.835   │ 29.43    │ 39.51    │ 10.058 │ 24.238 │ 17.925     │ 0.102 │ 0.25   │ 0.725   │ 20.525    │ 44.948 │ 0.982  │ 0.005      │ 0.018           │ 0.071            │ 0           │ 8.75         │ 3.53         │ 84.21               │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 0.57         │ false   │ false   │ true    │
+│ 6       │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 300    │ 'default' │ 'off' │ 1        │ 2       │ 327.53  │ 116.81  │ 2.98     │ 3.397    │ 3.808    │ 2.697  │ 3.053  │ 26.13      │ 0     │ 0      │ 0.16    │ 2.822     │ 8.172  │ 0.185  │ 0.005      │ 0.018           │ 0.07             │ 0           │ 12.73        │ 4.18         │ 116.45              │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 4.91         │ true    │ true    │ true    │
+│ 7       │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 300    │ 'default' │ 'off' │ 4        │ 2       │ 74.73   │ 19.43   │ 13.085   │ 30.602   │ 49.157   │ 12.58  │ 17.665 │ 18.985     │ 0.242 │ 0.38   │ 0.857   │ 15.682    │ 34.532 │ 1.093  │ 0.005      │ 0.018           │ 0.082            │ 0           │ 14.41        │ 5.49         │ 108.85              │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 0.54         │ false   │ false   │ true    │
+│ 8       │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 300    │ 'default' │ 'off' │ 6        │ 2       │ 81.455  │ 19.395  │ 13.425   │ 27.648   │ 40.918   │ 12.023 │ 25.198 │ 18.615     │ 0.247 │ 0.347  │ 0.992   │ 22.502    │ 53.058 │ 1.175  │ 0.005      │ 0.018           │ 0.072            │ 0           │ 12.14        │ 5.1          │ 107.13              │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 0.6          │ false   │ false   │ true    │
+│ 9       │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 400    │ 'default' │ 'off' │ 1        │ 2       │ 297.94  │ 96.675  │ 3.27     │ 3.705    │ 4.232    │ 2.91   │ 3.283  │ 23.4       │ 0     │ 0      │ 0.205   │ 2.992     │ 9.677  │ 0.253  │ 0.005      │ 0.019           │ 0.072            │ 0           │ 11.69        │ 4.19         │ 127.85              │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 4.5          │ true    │ true    │ true    │
+│ 10      │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 400    │ 'default' │ 'off' │ 4        │ 2       │ 72.295  │ 18.615  │ 13.075   │ 30.492   │ 50.413   │ 12.372 │ 19.565 │ 19.88      │ 0.33  │ 0.44   │ 1.03    │ 17.252    │ 39.365 │ 1.107  │ 0.005      │ 0.019           │ 0.071            │ 0           │ 12.75        │ 4.25         │ 119.41              │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 0.55         │ false   │ false   │ true    │
+│ 11      │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 400    │ 'default' │ 'off' │ 6        │ 2       │ 76.93   │ 13.43   │ 10.49    │ 26.315   │ 58.278   │ 9.57   │ 22.55  │ 19.62      │ 0.238 │ 0.338  │ 1.083   │ 18.058    │ 68.287 │ 2.138  │ 0.005      │ 0.018           │ 0.069            │ 0           │ 13.02        │ 4.62         │ 118.59              │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 0.63         │ false   │ false   │ true    │
+│ 12      │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 50     │ 'default' │ 'off' │ 1        │ 2       │ 723.065 │ 417.85  │ 1.575    │ 1.907    │ 2.252    │ 1.328  │ 1.613  │ 20.275     │ 0     │ 0      │ 0.025   │ 1.575     │ 1.962  │ 0.033  │ 0.005      │ 0.02            │ 0.07             │ 0           │ 10.38        │ 3.37         │ 252.41              │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 8.74         │ true    │ true    │ true    │
+│ 13      │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 50     │ 'default' │ 'off' │ 4        │ 2       │ 137.5   │ 52.985  │ 6.885    │ 11.418   │ 14.07    │ 6.205  │ 10.41  │ 20.025     │ 0     │ 0.013  │ 0.2     │ 10.155    │ 6.645  │ 0.287  │ 0.005      │ 0.019           │ 0.071            │ 0           │ 10.51        │ 3.78         │ 89.82               │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 1.46         │ true    │ true    │ true    │
+│ 14      │ 'ai'   │ '186'         │ 'pbr' │ 'off' │ 50     │ 'default' │ 'off' │ 6        │ 2       │ 102.435 │ 29.665  │ 8.848    │ 19.557   │ 32.335   │ 8.193  │ 16.84  │ 17.285     │ 0     │ 0.022  │ 0.237   │ 16.188    │ 9.462  │ 0.37   │ 0.005      │ 0.018           │ 0.07             │ 0           │ 12.07        │ 4.06         │ 92.43               │ 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)' │ null      │ false  │ 0.85         │ false   │ true    │ true    │
+└─────────┴────────┴───────────────┴───────┴───────┴────────┴───────────┴───────┴──────────┴─────────┴─────────┴─────────┴──────────┴──────────┴──────────┴────────┴────────┴────────────┴───────┴────────┴─────────┴───────────┴────────┴────────┴────────────┴─────────────────┴──────────────────┴─────────────┴──────────────┴──────────────┴─────────────────────┴────────────────────────────────────────────────────────────────────────────────────────┴───────────┴────────┴──────────────┴─────────┴─────────┴─────────┘
+
+===== 帧预算判定（判据为 frameP95 帧时间，而非 FPS）=====
+本机 rAF 天花板（仅 vsync=on 下测得）: 未测
+┌─────────┬────────┬─────┬───────┬───────┬───────────┬───────┬──────────┬────────┬─────────┬────────────┬──────────┬───────┬────────┬─────────┬───────────┬───────────┬─────────┬─────────┬─────────┐
+│ (index) │ engine │ n   │ mat   │ sync  │ gpu       │ vsync │ throttle │ capped │ avgFps  │ frameP95ms │ cpuP95ms │ pfP95 │ losP95 │ moveP95 │ renderP95 │ 60fps余量 │ meets60 │ meets45 │ meets30 │
+├─────────┼────────┼─────┼───────┼───────┼───────────┼───────┼──────────┼────────┼─────────┼────────────┼──────────┼───────┼────────┼─────────┼───────────┼───────────┼─────────┼─────────┼─────────┤
+│ 0       │ 'ai'   │ 100 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 1        │ 'no'   │ 436.72  │ 2.542      │ 2.175    │ 0     │ 0      │ 0.05    │ 2.107     │ 6.56      │ 'PASS'  │ 'PASS'  │ 'PASS'  │
+│ 1       │ 'ai'   │ 100 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 4        │ 'no'   │ 101.895 │ 13.782     │ 12.752   │ 0.013 │ 0.11   │ 0.43    │ 11.905    │ 1.21      │ 'PASS'  │ 'PASS'  │ 'PASS'  │
+│ 2       │ 'ai'   │ 100 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 6        │ 'no'   │ 74.905  │ 32.858     │ 21.67    │ 0.015 │ 0.205  │ 0.613   │ 20.59     │ 0.51      │ 'FAIL'  │ 'FAIL'  │ 'PASS'  │
+│ 3       │ 'ai'   │ 200 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 1        │ 'no'   │ 380.015 │ 2.915      │ 2.61     │ 0     │ 0      │ 0.12    │ 2.45      │ 5.72      │ 'PASS'  │ 'PASS'  │ 'PASS'  │
+│ 4       │ 'ai'   │ 200 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 4        │ 'no'   │ 105.53  │ 15.985     │ 14.768   │ 0.088 │ 0.148  │ 0.72    │ 13.697    │ 1.04      │ 'PASS'  │ 'PASS'  │ 'PASS'  │
+│ 5       │ 'ai'   │ 200 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 6        │ 'no'   │ 81.855  │ 29.43      │ 24.238   │ 0.102 │ 0.25   │ 0.725   │ 20.525    │ 0.57      │ 'FAIL'  │ 'FAIL'  │ 'PASS'  │
+│ 6       │ 'ai'   │ 300 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 1        │ 'no'   │ 327.53  │ 3.397      │ 3.053    │ 0     │ 0      │ 0.16    │ 2.822     │ 4.91      │ 'PASS'  │ 'PASS'  │ 'PASS'  │
+│ 7       │ 'ai'   │ 300 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 4        │ 'no'   │ 74.73   │ 30.602     │ 17.665   │ 0.242 │ 0.38   │ 0.857   │ 15.682    │ 0.54      │ 'FAIL'  │ 'FAIL'  │ 'PASS'  │
+│ 8       │ 'ai'   │ 300 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 6        │ 'no'   │ 81.455  │ 27.648     │ 25.198   │ 0.247 │ 0.347  │ 0.992   │ 22.502    │ 0.6       │ 'FAIL'  │ 'FAIL'  │ 'PASS'  │
+│ 9       │ 'ai'   │ 400 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 1        │ 'no'   │ 297.94  │ 3.705      │ 3.283    │ 0     │ 0      │ 0.205   │ 2.992     │ 4.5       │ 'PASS'  │ 'PASS'  │ 'PASS'  │
+│ 10      │ 'ai'   │ 400 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 4        │ 'no'   │ 72.295  │ 30.492     │ 19.565   │ 0.33  │ 0.44   │ 1.03    │ 17.252    │ 0.55      │ 'FAIL'  │ 'FAIL'  │ 'PASS'  │
+│ 11      │ 'ai'   │ 400 │ 'pbr' │ 'off' │ 'default' │ 'off' │ 6        │ 'no'   │ 76.93   │ 26.315     │ 22.55    │ 0.238 │ 0.338  │ 1.083   │ 18.058    │ 0.63      │ 'FAIL'  │ 'FAIL'  │ 'PASS'  │
+│ 12      │ 'ai'   │ 50  │ 'pbr' │ 'off' │ 'default' │ 'off' │ 1        │ 'no'   │ 723.065 │ 1.907      │ 1.613    │ 0     │ 0      │ 0.025   │ 1.575     │ 8.74      │ 'PASS'  │ 'PASS'  │ 'PASS'  │
+│ 13      │ 'ai'   │ 50  │ 'pbr' │ 'off' │ 'default' │ 'off' │ 4        │ 'no'   │ 137.5   │ 11.418     │ 10.41    │ 0     │ 0.013  │ 0.2     │ 10.155    │ 1.46      │ 'PASS'  │ 'PASS'  │ 'PASS'  │
+│ 14      │ 'ai'   │ 50  │ 'pbr' │ 'off' │ 'default' │ 'off' │ 6        │ 'no'   │ 102.435 │ 19.557     │ 16.84    │ 0     │ 0.022  │ 0.237   │ 16.188    │ 0.85      │ 'FAIL'  │ 'PASS'  │ 'PASS'  │
+└─────────┴────────┴─────┴───────┴───────┴───────────┴───────┴──────────┴────────┴─────────┴────────────┴──────────┴───────┴────────┴─────────┴───────────┴───────────┴─────────┴─────────┴─────────┘
+原始数据: G:\H5\m0-bench\results\raw-ai-sweep.json
+汇总数据: G:\H5\m0-bench\results\summary-ai-sweep.csv
+逐次数据: G:\H5\m0-bench\results\raw-ai-sweep.csv
+
+各引擎实际使用的 WebGL 渲染器：
+  ai: ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)

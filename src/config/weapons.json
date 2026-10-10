@@ -1,0 +1,216 @@
+{
+  "_comment": "M2 武器数值表。硬性要求：后坐力曲线、开镜时间、扩散恢复速率等手感参数必须可量化并写在此处，禁止散落在逻辑代码中。所有伤害为『未计算护甲与距离衰减』的基础值。",
+
+  "weapons": [
+    {
+      "id": "pistol_p9",
+      "label": "P9 手枪",
+      "class": "pistol",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "semi",
+      "fireIntervalMs": 130,
+      "magazineSize": 15,
+      "reloadMs": 1600,
+      "reloadTacticalMs": 1250,
+      "adsMs": 150,
+      "adsFovDeg": 58,
+      "hipSpreadDeg": 2.6,
+      "adsSpreadDeg": 0.45,
+      "spreadPerShotDeg": 0.42,
+      "maxSpreadDeg": 5.2,
+      "spreadRecoveryPerSec": 7.5,
+      "moveSpreadScale": 1.5,
+      "recoil": {
+        "pattern": [[0.0, 0.75], [0.18, 0.85], [-0.22, 0.8], [0.3, 0.7], [-0.26, 0.72], [0.22, 0.68]],
+        "recoveryPerSec": 9.0,
+        "adsScale": 0.8,
+        "randomYawDeg": 0.12
+      },
+      "damage": { "head": 52, "chest": 30, "stomach": 27, "limb": 21 },
+      "falloff": { "startM": 18, "endM": 55, "minScale": 0.5 },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.62
+    },
+    {
+      "id": "smg_v9",
+      "label": "V9 冲锋枪",
+      "class": "smg",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "auto",
+      "fireIntervalMs": 75,
+      "magazineSize": 30,
+      "reloadMs": 1900,
+      "reloadTacticalMs": 1500,
+      "adsMs": 180,
+      "adsFovDeg": 60,
+      "hipSpreadDeg": 3.4,
+      "adsSpreadDeg": 0.6,
+      "spreadPerShotDeg": 0.34,
+      "maxSpreadDeg": 6.0,
+      "spreadRecoveryPerSec": 8.5,
+      "moveSpreadScale": 1.3,
+      "recoil": {
+        "pattern": [[0.0, 0.55], [0.16, 0.62], [-0.2, 0.6], [0.28, 0.52], [-0.24, 0.55], [0.2, 0.5], [-0.18, 0.48], [0.26, 0.45]],
+        "recoveryPerSec": 8.0,
+        "adsScale": 0.78,
+        "randomYawDeg": 0.2
+      },
+      "damage": { "head": 42, "chest": 24, "stomach": 22, "limb": 17 },
+      "falloff": { "startM": 15, "endM": 45, "minScale": 0.45 },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.66
+    },
+    {
+      "id": "rifle_m4",
+      "label": "M4 突击步枪",
+      "class": "rifle",
+      "slot": 1,
+      "ammoType": "5.56",
+      "fireMode": "auto",
+      "fireIntervalMs": 92,
+      "magazineSize": 30,
+      "reloadMs": 2200,
+      "reloadTacticalMs": 1750,
+      "adsMs": 230,
+      "adsFovDeg": 50,
+      "hipSpreadDeg": 3.0,
+      "adsSpreadDeg": 0.32,
+      "spreadPerShotDeg": 0.26,
+      "maxSpreadDeg": 4.6,
+      "spreadRecoveryPerSec": 6.2,
+      "moveSpreadScale": 1.7,
+      "recoil": {
+        "pattern": [[0.0, 0.85], [0.14, 1.0], [-0.18, 0.95], [0.3, 0.82], [-0.26, 0.78], [0.34, 0.7], [-0.3, 0.68], [0.28, 0.62], [-0.22, 0.6], [0.32, 0.55], [-0.28, 0.52], [0.24, 0.5]],
+        "recoveryPerSec": 7.2,
+        "adsScale": 0.7,
+        "randomYawDeg": 0.16
+      },
+      "damage": { "head": 60, "chest": 33, "stomach": 30, "limb": 23 },
+      "falloff": { "startM": 45, "endM": 110, "minScale": 0.55 },
+      "range": 220,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.5
+    },
+    {
+      "id": "shotgun_m590",
+      "label": "M590 霰弹枪",
+      "class": "shotgun",
+      "slot": 1,
+      "ammoType": "12ga",
+      "fireMode": "semi",
+      "fireIntervalMs": 780,
+      "magazineSize": 7,
+      "reloadMs": 3200,
+      "reloadTacticalMs": 3200,
+      "adsMs": 260,
+      "adsFovDeg": 62,
+      "hipSpreadDeg": 5.6,
+      "adsSpreadDeg": 3.4,
+      "spreadPerShotDeg": 0.5,
+      "maxSpreadDeg": 8.0,
+      "spreadRecoveryPerSec": 5.0,
+      "moveSpreadScale": 1.2,
+      "recoil": {
+        "pattern": [[0.0, 3.4], [0.4, 3.6], [-0.45, 3.5], [0.5, 3.3]],
+        "recoveryPerSec": 5.5,
+        "adsScale": 0.85,
+        "randomYawDeg": 0.6
+      },
+      "damage": { "head": 26, "chest": 19, "stomach": 17, "limb": 13 },
+      "falloff": { "startM": 8, "endM": 26, "minScale": 0.18 },
+      "range": 60,
+      "pellets": 9,
+      "adsMoveSpeedScale": 0.55
+    },
+    {
+      "id": "dmr_sr25",
+      "label": "SR-25 精确射手步枪",
+      "class": "dmr",
+      "slot": 1,
+      "ammoType": "7.62",
+      "fireMode": "semi",
+      "fireIntervalMs": 260,
+      "magazineSize": 20,
+      "reloadMs": 2600,
+      "reloadTacticalMs": 2100,
+      "adsMs": 300,
+      "adsFovDeg": 35,
+      "hipSpreadDeg": 4.2,
+      "adsSpreadDeg": 0.12,
+      "spreadPerShotDeg": 0.75,
+      "maxSpreadDeg": 6.5,
+      "spreadRecoveryPerSec": 4.5,
+      "moveSpreadScale": 2.2,
+      "recoil": {
+        "pattern": [[0.0, 1.9], [0.2, 2.1], [-0.24, 2.0], [0.3, 1.85], [-0.28, 1.8]],
+        "recoveryPerSec": 5.0,
+        "adsScale": 0.72,
+        "randomYawDeg": 0.1
+      },
+      "damage": { "head": 105, "chest": 58, "stomach": 52, "limb": 40 },
+      "falloff": { "startM": 80, "endM": 200, "minScale": 0.72 },
+      "range": 300,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.42
+    }
+  ],
+
+  "ammo": [
+    { "id": "9mm", "label": "9mm 手枪弹", "damageScale": 1.0, "armorPenetration": 1 },
+    { "id": "5.56", "label": "5.56mm 步枪弹", "damageScale": 1.0, "armorPenetration": 2 },
+    { "id": "7.62", "label": "7.62mm 步枪弹", "damageScale": 1.0, "armorPenetration": 3 },
+    { "id": "12ga", "label": "12 号霰弹", "damageScale": 1.0, "armorPenetration": 1 }
+  ],
+
+  "startLoadout": {
+    "_comment": "M2 开局固定携带，用于让战斗循环可反复跑；真正的配装系统属 M5",
+    "primary": "rifle_m4",
+    "secondary": "pistol_p9",
+    "reserveByAmmo": { "9mm": 60, "5.56": 120, "7.62": 40, "12ga": 24 }
+  },
+
+  "_designTargets": {
+    "_comment": "手感设计目标，**按武器类别分别设定**。tools/ttk.mjs 据此判定并报告偏差，是『手感主观』的对策依据。",
+    "_whyPerClass": "首版用了单一全局区间（0.32~0.62s），工具立刻报出 6 项『未达标』—— 但那些全是类别差异（霰弹枪、精确射手步枪的 TTK 本来就该与步枪不同），不是缺陷。一个把正常差异也报成失败的报表，会让人很快不再看它。",
+
+    "byClass": {
+      "pistol": {
+        "ttkBodySecMin": 0.30, "ttkBodySecMax": 0.55,
+        "ttkHeadshotsMax": 2, "adsMsMax": 220,
+        "spreadRecoverySecMax": 0.80, "benchmarkRangeM": 15
+      },
+      "smg": {
+        "ttkBodySecMin": 0.26, "ttkBodySecMax": 0.45,
+        "ttkHeadshotsMax": 3, "adsMsMax": 220,
+        "spreadRecoverySecMax": 0.80, "benchmarkRangeM": 15
+      },
+      "rifle": {
+        "ttkBodySecMin": 0.26, "ttkBodySecMax": 0.50,
+        "ttkHeadshotsMax": 2, "adsMsMax": 280,
+        "spreadRecoverySecMax": 0.90, "benchmarkRangeM": 15
+      },
+      "shotgun": {
+        "_comment": "霰弹枪的基准距离是 6m 而不是 15m —— 在 15m 外它本就不该高效",
+        "ttkBodySecMin": 0.00, "ttkBodySecMax": 0.35,
+        "ttkHeadshotsMax": 1, "adsMsMax": 300,
+        "spreadRecoverySecMax": 1.20, "benchmarkRangeM": 6
+      },
+      "dmr": {
+        "_comment": "精确射手步枪允许更慢的扩散恢复 —— 它就是慢慢打的武器",
+        "ttkBodySecMin": 0.15, "ttkBodySecMax": 0.40,
+        "ttkHeadshotsMax": 1, "adsMsMax": 340,
+        "spreadRecoverySecMax": 1.60, "benchmarkRangeM": 30
+      }
+    },
+
+    "_globalLimits": {
+      "_comment": "与类别无关的硬上限",
+      "ttkArmoredSecMax": 1.20,
+      "nearEdgeRatio": 0.10
+    }
+  }
+}

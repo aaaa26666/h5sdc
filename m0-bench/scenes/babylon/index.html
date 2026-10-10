@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>M0 等价场景 · Babylon.js</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #101418; overflow: hidden; }
+      canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+      #hud {
+        position: fixed; left: 8px; top: 8px; color: #9fe; z-index: 9;
+        font: 12px/1.5 ui-monospace, Consolas, monospace; white-space: pre;
+        background: rgba(0,0,0,.55); padding: 6px 8px; border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hud">babylon: loading…</div>
+    <script src="/vendor/babylon.js"></script>
+    <script type="module" src="./scene.js"></script>
+  </body>
+</html>

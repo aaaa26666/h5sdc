@@ -1,0 +1,138 @@
+﻿
+=============== chrome · 策略 default —— 默认策略：要求用户手势 ===============
+
+-- 手势前 --
+  AudioContext.state            : suspended
+  AudioContext 创建耗时         : 29.92 ms
+  sampleRate / baseLatency      : 48000 Hz / 0.01
+  outputLatency                 : 0
+  userActivation                : {"isActive":false,"hasBeenActive":false}
+  resume() 结果                 : PENDING（无手势时永不 settle）
+  <audio>.play() 结果           : rejected: NotAllowedError
+
+-- 手势后 --
+  手势类型                      : pointerdown
+  手势时 userActivation.isActive: {"isActive":true,"hasBeenActive":true}
+  resume() 耗时                 : 15.59 ms
+  AudioContext.state            : running
+  <audio>.play() 结果           : played
+  解锁总耗时                    : 15.69 ms
+  解码 30s 立体声 WAV           : 60.44 ms（源 5168 KB）
+
+-- 音频格式支持（canPlayType）--
+  MP3 (audio/mpeg)             probably
+  AAC (audio/mp4; mp4a.40.2)   probably
+  OGG Vorbis                   probably
+  OGG Opus                     probably
+  WebM Opus                    probably
+  FLAC                         probably
+  WAV (PCM)                    probably
+
+-- 错误 --
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+
+=============== chrome · 策略 no-gesture-required —— 放宽策略：无需手势 ===============
+
+-- 手势前 --
+  AudioContext.state            : running
+  AudioContext 创建耗时         : 25.69 ms
+  sampleRate / baseLatency      : 48000 Hz / 0.01
+  outputLatency                 : 0
+  userActivation                : {"isActive":false,"hasBeenActive":false}
+  resume() 结果                 : resolved
+  <audio>.play() 结果           : played
+
+-- 手势后 --
+  手势类型                      : pointerdown
+  手势时 userActivation.isActive: {"isActive":true,"hasBeenActive":true}
+  resume() 耗时                 : 0.1 ms
+  AudioContext.state            : running
+  <audio>.play() 结果           : played
+  解锁总耗时                    : 1.06 ms
+  解码 30s 立体声 WAV           : 59.38 ms（源 5168 KB）
+
+-- 音频格式支持（canPlayType）--
+  MP3 (audio/mpeg)             probably
+  AAC (audio/mp4; mp4a.40.2)   probably
+  OGG Vorbis                   probably
+  OGG Opus                     probably
+  WebM Opus                    probably
+  FLAC                         probably
+  WAV (PCM)                    probably
+
+-- 错误 --
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+
+=============== edge · 策略 default —— 默认策略：要求用户手势 ===============
+
+-- 手势前 --
+  AudioContext.state            : suspended
+  AudioContext 创建耗时         : 43.22 ms
+  sampleRate / baseLatency      : 48000 Hz / 0.01
+  outputLatency                 : 0
+  userActivation                : {"isActive":false,"hasBeenActive":false}
+  resume() 结果                 : PENDING（无手势时永不 settle）
+  <audio>.play() 结果           : rejected: NotAllowedError
+
+-- 手势后 --
+  手势类型                      : pointerdown
+  手势时 userActivation.isActive: {"isActive":true,"hasBeenActive":true}
+  resume() 耗时                 : 25.12 ms
+  AudioContext.state            : running
+  <audio>.play() 结果           : played
+  解锁总耗时                    : 25.39 ms
+  解码 30s 立体声 WAV           : 59.07 ms（源 5168 KB）
+
+-- 音频格式支持（canPlayType）--
+  MP3 (audio/mpeg)             probably
+  AAC (audio/mp4; mp4a.40.2)   probably
+  OGG Vorbis                   probably
+  OGG Opus                     probably
+  WebM Opus                    probably
+  FLAC                         probably
+  WAV (PCM)                    probably
+
+-- 错误 --
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+
+=============== edge · 策略 no-gesture-required —— 放宽策略：无需手势 ===============
+
+-- 手势前 --
+  AudioContext.state            : running
+  AudioContext 创建耗时         : 39.11 ms
+  sampleRate / baseLatency      : 48000 Hz / 0.01
+  outputLatency                 : 0
+  userActivation                : {"isActive":false,"hasBeenActive":false}
+  resume() 结果                 : resolved
+  <audio>.play() 结果           : played
+
+-- 手势后 --
+  手势类型                      : pointerdown
+  手势时 userActivation.isActive: {"isActive":true,"hasBeenActive":true}
+  resume() 耗时                 : 0.06 ms
+  AudioContext.state            : running
+  <audio>.play() 结果           : played
+  解锁总耗时                    : 1.83 ms
+  解码 30s 立体声 WAV           : 50.35 ms（源 5168 KB）
+
+-- 音频格式支持（canPlayType）--
+  MP3 (audio/mpeg)             probably
+  AAC (audio/mp4; mp4a.40.2)   probably
+  OGG Vorbis                   probably
+  OGG Opus                     probably
+  WebM Opus                    probably
+  FLAC                         probably
+  WAV (PCM)                    probably
+
+-- 错误 --
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+
+================ 对照结论 ================
+  chrome/default             手势前 state=suspended resume=PENDING（无手势时永不 settle） play=rejected: NotAllowedError || 手势后 play=played 解锁=15.69ms
+  chrome/no-gesture-required 手势前 state=running resume=resolved play=played || 手势后 play=played 解锁=1.06ms
+  edge/default               手势前 state=suspended resume=PENDING（无手势时永不 settle） play=rejected: NotAllowedError || 手势后 play=played 解锁=25.39ms
+  edge/no-gesture-required   手势前 state=running resume=resolved play=played || 手势后 play=played 解锁=1.83ms
+
+明细已写入 G:\H5\m0-bench\results\audio-probe-1791549077936.json

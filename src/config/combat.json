@@ -1,0 +1,93 @@
+{
+  "_comment": "M2 防护与消耗品数值表。护甲按『部位覆盖 + 等级减伤 + 耐久消耗』建模。",
+
+  "armor": [
+    {
+      "id": "none",
+      "label": "无防护",
+      "class": 0,
+      "durability": 0,
+      "damageAbsorb": 0.0,
+      "durabilityLossPerHit": 0,
+      "covers": []
+    },
+    {
+      "id": "vest2",
+      "label": "二级防弹衣",
+      "class": 2,
+      "durability": 55,
+      "damageAbsorb": 0.35,
+      "durabilityLossPerHit": 1.6,
+      "covers": ["chest", "stomach"]
+    },
+    {
+      "id": "vest3",
+      "label": "三级防弹衣",
+      "class": 3,
+      "durability": 80,
+      "damageAbsorb": 0.48,
+      "durabilityLossPerHit": 2.1,
+      "covers": ["chest", "stomach"]
+    },
+    {
+      "id": "helmet2",
+      "label": "二级头盔",
+      "class": 2,
+      "durability": 40,
+      "damageAbsorb": 0.4,
+      "durabilityLossPerHit": 1.4,
+      "covers": ["head"]
+    },
+    {
+      "id": "helmet3",
+      "label": "三级头盔",
+      "class": 3,
+      "durability": 60,
+      "damageAbsorb": 0.55,
+      "durabilityLossPerHit": 1.8,
+      "covers": ["head"]
+    }
+  ],
+
+  "armorRules": {
+    "_comment": "护甲被打穿后的行为。penetrationRatio >= 1 表示弹药穿透等级足够，减伤按剩余耐久打折。",
+    "minAbsorbWhenBroken": 0.0,
+    "durabilityToAbsorbScale": 0.6,
+    "penetrationLevelBonus": 0.12
+  },
+
+  "hitZones": {
+    "_comment": "命中部位划分。几何用于射线求交，倍率来自各武器的 damage 字段。护甲覆盖关系由 armor.covers 直接按部位名声明，此处不再重复一层 armorSlot 映射（避免出现无人读取的字段）。",
+    "head": { "radius": 0.30, "centerY": 1.62, "label": "头部" },
+    "chest": { "radius": 0.42, "centerY": 1.18, "label": "胸部" },
+    "stomach": { "radius": 0.34, "centerY": 0.88, "label": "腹部" },
+    "limb": { "radius": 0.30, "centerY": 0.50, "label": "四肢" }
+  },
+
+  "consumables": [
+    {
+      "id": "bandage",
+      "label": "绷带",
+      "healAmount": 18,
+      "useMs": 1400,
+      "maxHealthCap": 45,
+      "stopOnDamage": true
+    },
+    {
+      "id": "medkit",
+      "label": "急救包",
+      "healAmount": 65,
+      "useMs": 3000,
+      "maxHealthCap": 100,
+      "stopOnDamage": true
+    }
+  ],
+
+  "playerVitals": {
+    "_comment": "M2 玩家生命、护甲与初始消耗品。负重/背包等属 M3。",
+    "maxHealth": 100,
+    "startArmor": { "body": "vest2", "head": "helmet2" },
+    "startConsumables": { "bandage": 3, "medkit": 2 },
+    "headshotInstantDeathChance": 0.0
+  }
+}

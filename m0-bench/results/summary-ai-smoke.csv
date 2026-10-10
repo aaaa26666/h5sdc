@@ -1,0 +1,2 @@
+engine,engineVersion,mat,sync,agents,gpu,vsync,throttle,samples,avgFps,low1Fps,frameP50,frameP95,frameP99,cpuP50,cpuP95,heapPeakMB,pfP95,losP95,moveP95,renderP95,engineInitMs,sceneBuildMs,firstFrameFromNavMs,renderer,rafCapFps,capped,headroomVs60,meets60,meets45,meets30
+ai,186,pbr,off,100,default,off,1,1,907.55,393.87,1.1,1.4,1.7,0.9,1.1,21.64,0,0,0.1,1.1,9.5,4.2,507.3,ANGLE (NVIDIA; NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0; D3D11),,false,11.91,true,true,true

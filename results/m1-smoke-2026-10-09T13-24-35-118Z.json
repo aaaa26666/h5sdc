@@ -1,0 +1,404 @@
+{
+  "url": "http://127.0.0.1:5180/",
+  "results": [
+    {
+      "group": "启动与状态机",
+      "name": "点击\"进入战区\"后进入 raid 状态",
+      "pass": true,
+      "detail": "flow=raid"
+    },
+    {
+      "group": "启动与状态机",
+      "name": "关卡已生成且有可通行格",
+      "pass": true,
+      "detail": "free=1188 walls=412"
+    },
+    {
+      "group": "启动与状态机",
+      "name": "AI 已生成",
+      "pass": true,
+      "detail": "ai=6 alive=6"
+    },
+    {
+      "group": "启动与状态机",
+      "name": "容器已生成",
+      "pass": true,
+      "detail": "containers=8"
+    },
+    {
+      "group": "启动与状态机",
+      "name": "撤离点已生成",
+      "pass": true,
+      "detail": "zones=2"
+    },
+    {
+      "group": "启动与状态机",
+      "name": "初始位置不在墙内",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "启动与状态机",
+      "name": "点击进入后指针锁定实际生效",
+      "pass": true,
+      "detail": "已锁定"
+    },
+    {
+      "group": "M1-2 移动与碰撞",
+      "name": "按 W 后玩家产生位移",
+      "pass": true,
+      "detail": "位移=4.91 世界单位"
+    },
+    {
+      "group": "M1-2 移动与碰撞",
+      "name": "移动过程中未穿进墙体",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "M1-2 移动方向与视角一致性",
+      "name": "8 个朝向下按 W 均朝视线正前方移动",
+      "pass": true,
+      "detail": "全部一致"
+    },
+    {
+      "group": "M1-2 蹲下与浏览器保留键规避",
+      "name": "按 C 进入蹲下状态",
+      "pass": true,
+      "detail": "crouching=true"
+    },
+    {
+      "group": "M1-2 蹲下与浏览器保留键规避",
+      "name": "蹲下时视点高度降低",
+      "pass": true,
+      "detail": "1.65 → 1.008"
+    },
+    {
+      "group": "M1-2 蹲下与浏览器保留键规避",
+      "name": "松开 C 后恢复站立",
+      "pass": true,
+      "detail": "1.008 → 1.646"
+    },
+    {
+      "group": "新增：冲刺/蹲下的按住与切换模式",
+      "name": "按住模式下：按下 Shift 冲刺生效",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：冲刺/蹲下的按住与切换模式",
+      "name": "按住模式下：松开 Shift 冲刺失效",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：冲刺/蹲下的按住与切换模式",
+      "name": "切换模式下：按一次 Shift 持续冲刺",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：冲刺/蹲下的按住与切换模式",
+      "name": "切换模式下：再按一次 Shift 取消冲刺",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：冲刺/蹲下的按住与切换模式",
+      "name": "切换模式下：按一次 C 持续蹲下",
+      "pass": true,
+      "detail": "crouching=true"
+    },
+    {
+      "group": "新增：冲刺/蹲下的按住与切换模式",
+      "name": "切换模式下：再按一次 C 结束蹲下",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：冲刺/蹲下的按住与切换模式",
+      "name": "从切换切回按住后，不会残留常开状态",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：Q/E 左右探头",
+      "name": "未按键时不探头",
+      "pass": true,
+      "detail": "lean=0"
+    },
+    {
+      "group": "新增：Q/E 左右探头",
+      "name": "按 Q 向左探头（横向偏移为负）",
+      "pass": true,
+      "detail": "target=-1 横向=-0.522"
+    },
+    {
+      "group": "新增：Q/E 左右探头",
+      "name": "左探头时相机侧倾方向正确（正向 roll）",
+      "pass": true,
+      "detail": "roll=13.28°"
+    },
+    {
+      "group": "新增：Q/E 左右探头",
+      "name": "松开 Q 后自动回正",
+      "pass": true,
+      "detail": "lean=-0.015"
+    },
+    {
+      "group": "新增：Q/E 左右探头",
+      "name": "按 E 向右探头（横向偏移为正）",
+      "pass": true,
+      "detail": "target=1 横向=0.521"
+    },
+    {
+      "group": "新增：Q/E 左右探头",
+      "name": "右探头时相机侧倾方向正确（负向 roll）",
+      "pass": true,
+      "detail": "roll=-13.27°"
+    },
+    {
+      "group": "新增：Q/E 左右探头",
+      "name": "可找到贴墙位置用于验证探头限制",
+      "pass": true,
+      "detail": "格 3,1 墙面 x=10"
+    },
+    {
+      "group": "新增：Q/E 左右探头",
+      "name": "贴墙时探头被限制在墙内（不会伸进墙里）",
+      "pass": true,
+      "detail": "横向偏移=0.07（未限制时应约 0.55）"
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "暂停前处于运行状态",
+      "pass": true,
+      "detail": "paused=false"
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "解锁指针后进入暂停",
+      "pass": true,
+      "detail": "paused=true"
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "暂停时显示暂停界面",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "暂停期间局内剩余时间冻结",
+      "pass": true,
+      "detail": "227550 → 227550 ms"
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "暂停期间 AI 停止行动",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "暂停期间玩家不会掉血",
+      "pass": true,
+      "detail": "100 → 100"
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "可从暂停界面打开设置",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "设置页点击可改变设置并即时生效",
+      "pass": true,
+      "detail": "sprintMode=toggle"
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "关闭设置后回到暂停界面",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "点击继续后恢复运行",
+      "pass": true,
+      "detail": "paused=false"
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "恢复后计时继续推进（暂停时长不计入）",
+      "pass": true,
+      "detail": "227550 → 227155 ms"
+    },
+    {
+      "group": "新增：暂停（Esc 解锁指针）",
+      "name": "恢复后 AI 重新行动",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：设置的持久化与非法值防御",
+      "name": "刷新后设置仍然保留",
+      "pass": true,
+      "detail": "{\"sprintMode\":\"toggle\",\"crouchMode\":\"toggle\"}"
+    },
+    {
+      "group": "新增：设置的持久化与非法值防御",
+      "name": "刷新后设置界面高亮与存储一致",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "新增：设置的持久化与非法值防御",
+      "name": "存储被篡改后回落默认值且不影响启动",
+      "pass": true,
+      "detail": "{\"sprintMode\":\"hold\",\"crouchMode\":\"hold\"}"
+    },
+    {
+      "group": "新增：设置的持久化与非法值防御",
+      "name": "存储为损坏 JSON 时仍能正常启动",
+      "pass": true,
+      "detail": "{\"sprintMode\":\"hold\",\"crouchMode\":\"hold\"}"
+    },
+    {
+      "group": "新增：设置的持久化与非法值防御",
+      "name": "刷新与篡改存储后仍可正常开局",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "M1-3 射击命中与伤害",
+      "name": "可找到对 AI 有视线的射击位置",
+      "pass": true,
+      "detail": "距离 3.5，方位 0°"
+    },
+    {
+      "group": "M1-3 射击命中与伤害",
+      "name": "开火造成了 AI 伤害或击杀",
+      "pass": true,
+      "detail": "开火 14 次, 存活 AI 6→5"
+    },
+    {
+      "group": "M1-3 射击命中与伤害",
+      "name": "射击确实消耗了弹药",
+      "pass": true,
+      "detail": "弹匣 29→16"
+    },
+    {
+      "group": "M1-3 击杀路径",
+      "name": "全部 AI 可被击杀",
+      "pass": true,
+      "detail": "剩余 0"
+    },
+    {
+      "group": "M1-3 击杀路径",
+      "name": "击杀计数正确",
+      "pass": true,
+      "detail": "kills=6 / 总数=6"
+    },
+    {
+      "group": "M1-3 击杀路径",
+      "name": "击杀后玩家仍存活（未误判死亡）",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "M1-5 搜刮",
+      "name": "按 E 确实在探头（键位已改由探头接管）",
+      "pass": true,
+      "detail": "按住时 leanTarget=1"
+    },
+    {
+      "group": "M1-5 搜刮",
+      "name": "按 E 不再触发搜刮（E 已专属右探头）",
+      "pass": true,
+      "detail": "已开启 0 → 0"
+    },
+    {
+      "group": "M1-5 搜刮",
+      "name": "容器可被搜索开启（按 F）",
+      "pass": true,
+      "detail": "已开启 2/8"
+    },
+    {
+      "group": "M1-5 搜刮",
+      "name": "搜索后背包有物品",
+      "pass": true,
+      "detail": "物品数=2"
+    },
+    {
+      "group": "M1-5 搜刮",
+      "name": "物品产生估值",
+      "pass": true,
+      "detail": "估值=240"
+    },
+    {
+      "group": "M1-6 撤离与结算",
+      "name": "进入撤离区被识别（未立即结算）",
+      "pass": true,
+      "detail": "flow=raid"
+    },
+    {
+      "group": "M1-6 撤离与结算",
+      "name": "停留倒计时后完成撤离",
+      "pass": true,
+      "detail": "flow=ended reason=extracted"
+    },
+    {
+      "group": "M1-6 撤离与结算",
+      "name": "撤离时玩家存活",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "M1-6 撤离与结算",
+      "name": "状态迁移序列合法",
+      "pass": true,
+      "detail": "ready->raid, raid->ended"
+    },
+    {
+      "group": "失败路径：阵亡",
+      "name": "生命归零后判定阵亡",
+      "pass": true,
+      "detail": "reason=dead"
+    },
+    {
+      "group": "失败路径：阵亡",
+      "name": "阵亡后玩家状态为死亡",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "失败路径：超时",
+      "name": "超过时限判定超时",
+      "pass": true,
+      "detail": "reason=timeout"
+    },
+    {
+      "group": "重开一局",
+      "name": "重开后状态回到 raid 且世界已重建",
+      "pass": true,
+      "detail": "flow=raid kills=0 inventory=0"
+    },
+    {
+      "group": "运行时错误",
+      "name": "运行期间无页面异常",
+      "pass": true,
+      "detail": "无"
+    },
+    {
+      "group": "运行时错误",
+      "name": "无 4xx/5xx 资源请求",
+      "pass": true,
+      "detail": "无"
+    }
+  ],
+  "pageErrors": [],
+  "badResponses": [],
+  "pauseRecoveries": []
+}

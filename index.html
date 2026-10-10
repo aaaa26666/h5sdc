@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>H5 搜打撤 PVE · M2 战斗</title>
+    <style>
+      :root { --ink: #cfe3ea; --dim: #7c8f98; --warn: #ffcc66; --bad: #ff6b5a; --ok: #7fe0a0; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #0d1115; color: var(--ink);
+        font: 13px/1.6 ui-monospace, Consolas, "Cascadia Mono", monospace; overflow: hidden; }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; }
+
+      .overlay { position: fixed; inset: 0; pointer-events: none; }
+
+      /* 局内 HUD */
+      #hud { display: none; }
+      #hud.on { display: block; }
+      #hud .panel { position: absolute; background: rgba(8,12,16,.62); padding: 8px 12px;
+        border-radius: 6px; border: 1px solid rgba(120,160,180,.22); }
+      #hud .tl { left: 14px; top: 14px; min-width: 210px; }
+      #hud .tr { right: 14px; top: 14px; text-align: right; min-width: 170px; }
+      #hud .bl { left: 14px; bottom: 14px; min-width: 210px; }
+      .k { color: var(--dim); }
+      .v { color: var(--ink); }
+      .bar { height: 6px; background: rgba(255,255,255,.10); border-radius: 3px; overflow: hidden; margin: 3px 0 6px; }
+      .bar > i { display: block; height: 100%; background: var(--ok); transition: width .12s linear; }
+      .bar.hp > i { background: #6fd08a; }
+      .bar.armor > i { background: #6fa8d0; }
+      .bar.search > i { background: var(--warn); }
+      .bar.use > i { background: #d0c06f; }
+
+      /* 击杀提示 */
+      #killfeed { position: absolute; right: 14px; bottom: 14px; text-align: right; }
+      #killfeed div { color: var(--ok); background: rgba(8,12,16,.62); padding: 3px 9px;
+        border-radius: 4px; margin-top: 4px; animation: kf .25s ease-out; }
+      @keyframes kf { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
+
+      /* 受击方向指示：绕屏幕中心旋转的扇形 */
+      #dmgDir { position: absolute; left: 50%; top: 50%; width: 0; height: 0;
+        opacity: 0; transition: opacity .2s; }
+      #dmgDir.on { opacity: 1; }
+      #dmgDir .arc { position: absolute; left: -32px; top: -104px; width: 64px; height: 22px;
+        border-radius: 32px 32px 0 0; background: linear-gradient(to top, rgba(255,80,60,0), rgba(255,80,60,.85)); }
+
+      /* 使用消耗品进度 */
+      #useBar { position: absolute; left: 50%; bottom: 28%; transform: translateX(-50%);
+        width: 200px; height: 6px; background: rgba(255,255,255,.14); border-radius: 3px;
+        overflow: hidden; display: none; }
+      #useBar.on { display: block; }
+      #useBar > i { display: block; height: 100%; width: 0%; background: #d0c06f; }
+
+      #crosshair { position: absolute; left: 50%; top: 50%; width: 16px; height: 16px;
+        margin: -8px 0 0 -8px; }
+      #crosshair::before, #crosshair::after { content: ""; position: absolute; background: rgba(220,240,250,.8); }
+      #crosshair::before { left: 7px; top: 0; width: 2px; height: 16px; }
+      #crosshair::after { left: 0; top: 7px; width: 16px; height: 2px; }
+      #hitmark { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+        color: var(--bad); font-size: 22px; opacity: 0; transition: opacity .1s; }
+      #hitmark.on { opacity: 1; }
+
+      #prompt { position: absolute; left: 50%; bottom: 22%; transform: translateX(-50%);
+        text-align: center; padding: 6px 14px; border-radius: 6px;
+        background: rgba(8,12,16,.72); border: 1px solid rgba(120,160,180,.25); display: none; }
+      #prompt.on { display: block; }
+
+      #toast { position: absolute; left: 50%; top: 18%; transform: translateX(-50%);
+        text-align: center; color: var(--ok); opacity: 0; transition: opacity .25s; }
+      #toast.on { opacity: 1; }
+
+      #damageFlash { position: absolute; inset: 0; background: radial-gradient(circle,
+        rgba(255,60,40,0) 45%, rgba(255,60,40,.42) 100%); opacity: 0; transition: opacity .18s; }
+      #damageFlash.on { opacity: 1; }
+
+      /* 覆盖式界面（开始 / 结算 / 死亡） */
+      .screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+        background: rgba(6,9,12,.9); z-index: 20; }
+      .screen.on { display: flex; }
+      .card { width: min(620px, 90vw); background: #10161c; border: 1px solid rgba(120,160,180,.25);
+        border-radius: 10px; padding: 26px 30px; }
+      .card h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .06em; }
+      .card h2 { font-size: 15px; margin: 0 0 18px; color: var(--dim); font-weight: normal; }
+      .card p { margin: 6px 0; }
+      .row { display: flex; justify-content: space-between; border-bottom: 1px dashed rgba(120,160,180,.18);
+        padding: 5px 0; }
+      .btn { margin-top: 20px; display: inline-block; padding: 9px 22px; cursor: pointer;
+        border: 1px solid rgba(140,200,225,.5); border-radius: 6px; color: var(--ink);
+        background: rgba(80,150,190,.14); pointer-events: auto; user-select: none; }
+      .btn:hover { background: rgba(80,150,190,.26); }
+      .muted { color: var(--dim); font-size: 12px; }
+      .warn { color: var(--warn); }
+      .bad { color: var(--bad); }
+      .ok { color: var(--ok); }
+      ul.items { margin: 6px 0 0; padding-left: 18px; }
+      ul.items li { color: var(--ink); }
+
+      /* 设置项的分段选择器 */
+      .seg { display: inline-block; padding: 3px 14px; margin-left: 6px; cursor: pointer;
+        border: 1px solid rgba(140,200,225,.32); border-radius: 4px; color: var(--dim);
+        pointer-events: auto; user-select: none; }
+      .seg:hover { border-color: rgba(140,200,225,.6); }
+      .seg.on { background: rgba(80,150,190,.32); color: var(--ink); border-color: rgba(140,200,225,.85); }
+      .row.opt { align-items: center; }
+      .keycap { display: inline-block; padding: 1px 7px; border: 1px solid rgba(140,200,225,.3);
+        border-radius: 3px; color: var(--ink); font-size: 12px; }
+      .btns { display: flex; gap: 10px; flex-wrap: wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="hud" class="overlay">
+      <div id="damageFlash"></div>
+      <div class="panel tl">
+        <div><span class="k">生命</span> <span class="v" id="hpText">100 / 100</span></div>
+        <div class="bar hp"><i id="hpBar" style="width:100%"></i></div>
+        <div><span class="k">护甲</span> <span class="v" id="armorText">胸 -- / 头 --</span></div>
+        <div class="bar armor"><i id="armorBar" style="width:0%"></i></div>
+        <div><span class="k">武器</span> <span class="v" id="weaponText">--</span></div>
+        <div><span class="k">弹药</span> <span class="v" id="ammoText">30 / 120</span></div>
+        <div class="muted" id="reloadText">&nbsp;</div>
+      </div>
+      <div class="panel tr">
+        <div><span class="k">剩余时间</span> <span class="v" id="timeText">04:00</span></div>
+        <div><span class="k">敌人剩余</span> <span class="v" id="aiText">6</span></div>
+        <div><span class="k">已搜刮</span> <span class="v" id="lootText">0 件</span></div>
+        <div><span class="k">估值</span> <span class="v" id="valueText">0</span></div>
+      </div>
+      <div class="panel bl">
+        <div class="k">撤离点</div>
+        <div class="muted" id="extractText">未在撤离区内</div>
+        <div class="k" style="margin-top:8px">消耗品</div>
+        <div class="muted" id="consumableText">3 绷带 · 4 急救包</div>
+      </div>
+      <div id="killfeed"></div>
+      <div id="dmgDir"></div>
+      <div id="useBar"><i id="useBarFill"></i></div>
+      <div id="crosshair"></div>
+      <div id="hitmark">✕</div>
+      <div id="prompt"></div>
+      <div id="toast"></div>
+    </div>
+
+    <div class="screen on" id="screenStart">
+      <div class="card">
+        <h1>H5 搜打撤 · PVE</h1>
+        <h2>M2 战斗手感 —— 多武器 · 后坐力 · 护甲 · AI 状态机</h2>
+        <p class="muted">目标：进入战区搜刮物资，与 AI 交战，带着战利品撤离</p>
+        <div class="row"><span class="k">移动 / 视角</span><span>W A S D · 鼠标</span></div>
+        <div class="row"><span class="k">射击 / 开镜</span><span>鼠标左键 · 鼠标右键（按住）</span></div>
+        <div class="row"><span class="k">切枪 / 换弹</span><span>1 主武器 · 2 副武器 · 滚轮 · R</span></div>
+        <div class="row"><span class="k">奔跑 / 蹲下</span><span>Shift / C（可在设置里改成按住或切换）</span></div>
+        <div class="row"><span class="k">跳跃</span><span>Space</span></div>
+        <div class="row"><span class="k">左右探头</span><span>Q / E（按住；射击从探头位置出膛）</span></div>
+        <div class="row"><span class="k">搜索容器</span><span>靠近后按住 F</span></div>
+        <div class="row"><span class="k">医疗</span><span>3 绷带 · 4 急救包（受击会打断）</span></div>
+        <div class="row"><span class="warn">注意</span><span class="warn">请勿使用 Ctrl 组合键（浏览器保留，无法拦截）</span></div>
+        <div class="row"><span class="k">撤离</span><span>走进撤离区并停留</span></div>
+        <div class="row"><span class="k">暂停 / 设置</span><span>Esc 解锁指针后可打开设置</span></div>
+        <div class="btns">
+          <div class="btn" id="btnStart">进入战区</div>
+          <div class="btn" id="btnSettingsFromStart">设置</div>
+        </div>
+        <p class="muted" style="margin-top:14px">
+          本次为 M1 灰盒：无音效、无特效、无正式美术资源。临时实现清单见 M1-TEMP-REGISTRY.md
+        </p>
+      </div>
+    </div>
+
+    <div class="screen" id="screenPause">
+      <div class="card">
+        <h1>已暂停</h1>
+        <h2>指针已解锁，局内计时与 AI 均已冻结</h2>
+        <p class="muted">继续游戏会重新锁定鼠标指针。暂停时长不计入单局时限。</p>
+        <div class="btns">
+          <div class="btn" id="btnResume">继续游戏</div>
+          <div class="btn" id="btnSettingsFromPause">设置</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="screen" id="screenSettings">
+      <div class="card">
+        <h1>设置</h1>
+        <h2>M1 灰盒 —— 仅列出已实现的设置项</h2>
+
+        <div class="row opt">
+          <span class="k">冲刺 <span class="keycap">Shift</span></span>
+          <span>
+            <span class="seg" data-group="sprintMode" data-value="hold">按住</span>
+            <span class="seg" data-group="sprintMode" data-value="toggle">切换</span>
+          </span>
+        </div>
+        <div class="row opt">
+          <span class="k">蹲下 <span class="keycap">C</span></span>
+          <span>
+            <span class="seg" data-group="crouchMode" data-value="hold">按住</span>
+            <span class="seg" data-group="crouchMode" data-value="toggle">切换</span>
+          </span>
+        </div>
+        <div class="row opt">
+          <span class="k">左右探头 <span class="keycap">Q</span> <span class="keycap">E</span></span>
+          <span class="muted">固定为按住（探头需即时回正）</span>
+        </div>
+
+        <p class="muted" style="margin-top:16px">
+          设置保存在本机浏览器，刷新后仍有效。篡改或旧版本写入的非法取值会被校验并回落默认值。<br />
+          按键自定义（改键）尚未实现 —— 属 M2 范围，届时必须拒绝 Ctrl / Alt / Meta 组合键：
+          这类组合由浏览器保留、页面无法拦截，绑定它会导致游戏内按键直接关闭页面。
+        </p>
+        <div class="btn" id="btnSettingsClose">返回</div>
+      </div>
+    </div>
+
+    <div class="screen" id="screenEnd">
+      <div class="card">
+        <h1 id="endTitle">结算</h1>
+        <h2 id="endSubtitle"></h2>
+        <div id="endBody"></div>
+        <div class="btn" id="btnRestart">再进一局</div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

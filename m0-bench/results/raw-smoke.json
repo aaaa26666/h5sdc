@@ -1,0 +1,169 @@
+{
+  "runId": "smoke",
+  "chromePath": "C:\\Users\\Administrator\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe",
+  "args": {
+    "engines": [
+      "three",
+      "babylon"
+    ],
+    "mats": [
+      "pbr"
+    ],
+    "throttles": [
+      1
+    ],
+    "vsync": [
+      "on"
+    ],
+    "gpu": [
+      "default"
+    ],
+    "warmupMs": 2000,
+    "durationMs": 6000,
+    "repeats": 1,
+    "headless": false,
+    "tag": "smoke"
+  },
+  "engineInfo": {
+    "three": {
+      "engine": "three",
+      "engineVersion": "186",
+      "matMode": "pbr",
+      "gl": {
+        "ok": true,
+        "isWebGL2": true,
+        "vendor": "Google Inc. (NVIDIA)",
+        "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "maxTextureSize": 16384
+      },
+      "engineInitMs": 69.6,
+      "sceneBuildMs": 4.5,
+      "firstFrameMs": 490.2,
+      "firstFrameFromNavMs": 492.4,
+      "counts": {
+        "obstacles": 200,
+        "dynamics": 150,
+        "particles": 400,
+        "drawCallsApprox": 353
+      },
+      "navStartOffsetMs": 305
+    },
+    "babylon": {
+      "engine": "babylon",
+      "engineVersion": "9.30.0",
+      "matMode": "pbr",
+      "gl": {
+        "ok": true,
+        "isWebGL2": true,
+        "vendor": "Google Inc. (NVIDIA)",
+        "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "maxTextureSize": 16384
+      },
+      "engineInitMs": 16.6,
+      "sceneBuildMs": 85.7,
+      "firstFrameMs": 293.7,
+      "firstFrameFromNavMs": 296.3,
+      "counts": {
+        "obstacles": 200,
+        "dynamics": 150,
+        "particles": 400,
+        "drawCallsApprox": 353
+      },
+      "navStartOffsetMs": 170.4
+    }
+  },
+  "rows": [
+    {
+      "engine": "three",
+      "engineVersion": "186",
+      "mat": "pbr",
+      "gpu": "default",
+      "vsync": "on",
+      "throttle": 1,
+      "repeat": 1,
+      "avgFps": 165.02,
+      "low1Fps": 160.77,
+      "frameP50": 6.1,
+      "frameP95": 6.2,
+      "frameP99": 6.2,
+      "cpuP50": 2.1,
+      "cpuP95": 2.4,
+      "frames": 990,
+      "heapPeakMB": 15.69,
+      "heapEndMB": 13.31,
+      "engineInitMs": 69.6,
+      "sceneBuildMs": 4.5,
+      "firstFrameFromNavMs": 492.4,
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    },
+    {
+      "engine": "babylon",
+      "engineVersion": "9.30.0",
+      "mat": "pbr",
+      "gpu": "default",
+      "vsync": "on",
+      "throttle": 1,
+      "repeat": 1,
+      "avgFps": 165.01,
+      "low1Fps": 161.29,
+      "frameP50": 6.1,
+      "frameP95": 6.2,
+      "frameP99": 6.2,
+      "cpuP50": 3.5,
+      "cpuP95": 4.7,
+      "frames": 990,
+      "heapPeakMB": 47.26,
+      "heapEndMB": 41.5,
+      "engineInitMs": 16.6,
+      "sceneBuildMs": 85.7,
+      "firstFrameFromNavMs": 296.3,
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    }
+  ],
+  "summary": [
+    {
+      "engine": "babylon",
+      "engineVersion": "9.30.0",
+      "mat": "pbr",
+      "gpu": "default",
+      "vsync": "on",
+      "throttle": 1,
+      "samples": 1,
+      "avgFps": 165.01,
+      "low1Fps": 161.29,
+      "frameP50": 6.1,
+      "frameP95": 6.2,
+      "frameP99": 6.2,
+      "cpuP50": 3.5,
+      "cpuP95": 4.7,
+      "heapPeakMB": 47.26,
+      "engineInitMs": 16.6,
+      "sceneBuildMs": 85.7,
+      "firstFrameFromNavMs": 296.3,
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    },
+    {
+      "engine": "three",
+      "engineVersion": "186",
+      "mat": "pbr",
+      "gpu": "default",
+      "vsync": "on",
+      "throttle": 1,
+      "samples": 1,
+      "avgFps": 165.02,
+      "low1Fps": 160.77,
+      "frameP50": 6.1,
+      "frameP95": 6.2,
+      "frameP99": 6.2,
+      "cpuP50": 2.1,
+      "cpuP95": 2.4,
+      "heapPeakMB": 15.69,
+      "engineInitMs": 69.6,
+      "sceneBuildMs": 4.5,
+      "firstFrameFromNavMs": 492.4,
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    }
+  ]
+}

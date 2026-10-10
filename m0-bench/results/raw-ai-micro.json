@@ -1,0 +1,142 @@
+{
+  "runId": "ai-micro",
+  "chromePath": "C:\\Users\\Administrator\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe",
+  "args": {
+    "engines": [
+      "ai"
+    ],
+    "mats": [
+      "pbr"
+    ],
+    "syncs": [
+      "off"
+    ],
+    "agents": [
+      "100"
+    ],
+    "throttles": [
+      1
+    ],
+    "vsync": [
+      "off"
+    ],
+    "gpu": [
+      "default"
+    ],
+    "warmupMs": 2000,
+    "durationMs": 5000,
+    "repeats": 1,
+    "headless": false,
+    "tag": "ai-micro"
+  },
+  "engineInfo": {
+    "ai": {
+      "engine": "three-ai",
+      "engineVersion": "186",
+      "gl": {
+        "ok": true,
+        "isWebGL2": true,
+        "vendor": "Google Inc. (NVIDIA)",
+        "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "maxTextureSize": 16384
+      },
+      "agentCount": 100,
+      "pfMode": "astar",
+      "walls": 661,
+      "replanMs": 500,
+      "losMs": 100,
+      "syncMode": false,
+      "engineInitMs": 9.55,
+      "sceneBuildMs": 3.31,
+      "firstFrameMs": 543.21,
+      "firstFrameFromNavMs": 545.79,
+      "grid": {
+        "W": 48,
+        "H": 48,
+        "cell": 2.5,
+        "freeCells": 1643
+      },
+      "navStartOffsetMs": 471.82
+    }
+  },
+  "rows": [
+    {
+      "engine": "ai",
+      "engineVersion": "186",
+      "mat": "pbr",
+      "sync": "off",
+      "agents": 100,
+      "gpu": "default",
+      "vsync": "off",
+      "throttle": 1,
+      "repeat": 1,
+      "avgFps": 915.68,
+      "low1Fps": 502.95,
+      "frameP50": 1.06,
+      "frameP95": 1.295,
+      "frameP99": 1.46,
+      "cpuP50": 0.9,
+      "cpuP95": 1.09,
+      "frames": 4578,
+      "heapPeakMB": 21.91,
+      "heapEndMB": 15.58,
+      "engineInitMs": 9.55,
+      "sceneBuildMs": 3.31,
+      "firstFrameFromNavMs": 545.79,
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "pfP95": 0,
+      "losP95": 0,
+      "moveP95": 0.025,
+      "renderP95": 1.055,
+      "pfMax": 1.85,
+      "losMax": 0.03,
+      "timerResMs": 0.005,
+      "astarPerQueryMs": 0.017855,
+      "astarAvgPathCells": 25.5,
+      "flowPerComputeMs": 0.07215,
+      "losPerRayMs": 0.000093
+    }
+  ],
+  "summary": [
+    {
+      "engine": "ai",
+      "engineVersion": "186",
+      "mat": "pbr",
+      "sync": "off",
+      "agents": 100,
+      "gpu": "default",
+      "vsync": "off",
+      "throttle": 1,
+      "samples": 1,
+      "avgFps": 915.68,
+      "low1Fps": 502.95,
+      "frameP50": 1.06,
+      "frameP95": 1.295,
+      "frameP99": 1.46,
+      "cpuP50": 0.9,
+      "cpuP95": 1.09,
+      "heapPeakMB": 21.91,
+      "pfP95": 0,
+      "losP95": 0,
+      "moveP95": 0.025,
+      "renderP95": 1.055,
+      "pfMax": 1.85,
+      "losMax": 0.03,
+      "timerResMs": 0.005,
+      "astarPerQueryMs": 0.017855,
+      "flowPerComputeMs": 0.07215,
+      "losPerRayMs": 0.000093,
+      "engineInitMs": 9.55,
+      "sceneBuildMs": 3.31,
+      "firstFrameFromNavMs": 545.79,
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "rafCapFps": null,
+      "capped": false,
+      "headroomVs60": 12.87,
+      "meets60": true,
+      "meets45": true,
+      "meets30": true
+    }
+  ]
+}

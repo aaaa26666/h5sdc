@@ -1,0 +1,15 @@
+{
+  "name": "m0-bundle",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "description": "M0-6 首包体积与分包策略验证。一次性验证工程，用完即弃。",
+  "scripts": {
+    "build:all": "node build.mjs",
+    "measure": "node measure.mjs"
+  },
+  "devDependencies": {
+    "three": "^0.186.1",
+    "vite": "^8.3.4"
+  }
+}

@@ -1,0 +1,2 @@
+engine,mat,sync,agents,gpu,vsync,throttle,repeat,avgFps,low1Fps,frameP50,frameP95,frameP99,cpuP50,cpuP95,frames,heapPeakMB,heapEndMB,pfP95,losP95,moveP95,renderP95,error
+ai,pbr,off,100,default,off,1,1,907.55,393.87,1.1,1.4,1.7,0.9,1.1,5445,21.64,15.54,0,0,0.1,1.1,

@@ -1,0 +1,79 @@
+{
+  "_comment": "M0 等价场景规格 v1。Three.js 与 Babylon.js 两端必须读取同一份规格，保证可比性。任何一端偏离此规格，对比结论作废。",
+
+  "seed": 20260101,
+
+  "ground": {
+    "size": 120,
+    "divisions": 60
+  },
+
+  "staticObstacles": {
+    "count": 200,
+    "footprint": 2.0,
+    "spread": 55,
+    "heightMin": 1.0,
+    "heightMax": 6.0
+  },
+
+  "dynamicBodies": {
+    "count": 150,
+    "size": 0.8,
+    "orbitRadiusMin": 8,
+    "orbitRadiusMax": 50,
+    "angleSpeedMin": 0.2,
+    "angleSpeedMax": 0.8,
+    "bobAmplitudeMin": 0.5,
+    "bobAmplitudeMax": 3.0,
+    "bobSpeedMin": 0.5,
+    "bobSpeedMax": 1.5
+  },
+
+  "particles": {
+    "count": 400,
+    "size": 0.35,
+    "spread": 60,
+    "riseSpeed": 2.0,
+    "wrapHeight": 25
+  },
+
+  "lighting": {
+    "directional": true,
+    "ambient": true,
+    "shadows": true,
+    "shadowMapSize": 1024,
+    "directionalIntensity": 2.0,
+    "ambientIntensity": 0.35
+  },
+
+  "camera": {
+    "fov": 75,
+    "near": 0.1,
+    "far": 400,
+    "orbitRadius": 45,
+    "orbitSpeed": 0.12,
+    "height": 12,
+    "lookAtHeight": 3
+  },
+
+  "render": {
+    "antialias": true,
+    "pixelRatio": 1,
+    "clearColor": "#101418",
+    "proceduralTextureSize": 512
+  },
+
+  "run": {
+    "warmupMs": 3000,
+    "durationMs": 20000,
+    "repeats": 3
+  },
+
+  "notes": [
+    "两端一律使用独立 Mesh，禁止使用实例化(InstancedMesh/ThinInstances)或合并几何，否则两边优化程度不对等。",
+    "两端阴影算法无法完全等价：Three 用 PCFSoft，Babylon 用 PCF。此项差异必须在《技术选型结论》中作为已知不可比项列出。",
+    "两端材质模型无法完全等价：Three 用 MeshStandardMaterial，Babylon 用 PBRMaterial(metallic=0, roughness=0.8)。同样作为已知不可比项。",
+    "像素比固定为 1，用于隔离设备像素比造成的干扰。",
+    "抖动/随机一律使用 seed 驱动的确定性伪随机，保证每次运行布局完全一致。"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "h5-extraction-pve",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "H5 3D 搜打撤 PVE 射击游戏。M1 阶段：灰盒最小闭环。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.13.0",
+    "vite": "^8.3.4"
+  }
+}

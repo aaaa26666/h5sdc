@@ -1,0 +1,133 @@
+{
+  "_comment": "M2 AI 数值表。硬性要求：AI 更新频率必须支持分级（距离玩家远的 AI 降频更新）；难度必须可分级，禁止只靠命中率调难度。",
+
+  "tiers": [
+    {
+      "id": "scav",
+      "label": "游荡者",
+      "maxHealth": 80,
+      "moveSpeed": 2.4,
+      "viewRange": 26,
+      "viewAngleDeg": 95,
+      "reactMs": 620,
+      "aimTimeMs": 320,
+      "accuracyDeg": 8.0,
+      "burstShots": 3,
+      "burstPauseMs": 900,
+      "fireIntervalMs": 260,
+      "fireRange": 30,
+      "damagePerShot": 7,
+      "armorPen": 1,
+      "armor": { "body": "none", "head": "none" },
+      "searchDurationMs": 6000,
+      "retreatHealthRatio": 0.18,
+      "color": "0x8a9aa8",
+      "weight": 55
+    },
+    {
+      "id": "guard",
+      "label": "守卫",
+      "maxHealth": 100,
+      "moveSpeed": 2.7,
+      "viewRange": 32,
+      "viewAngleDeg": 105,
+      "reactMs": 470,
+      "aimTimeMs": 260,
+      "accuracyDeg": 5.6,
+      "burstShots": 4,
+      "burstPauseMs": 780,
+      "fireIntervalMs": 230,
+      "fireRange": 38,
+      "damagePerShot": 8,
+      "armorPen": 2,
+      "armor": { "body": "vest2", "head": "none" },
+      "searchDurationMs": 7500,
+      "retreatHealthRatio": 0.22,
+      "color": "0x9aa88a",
+      "weight": 30
+    },
+    {
+      "id": "elite",
+      "label": "精英",
+      "maxHealth": 130,
+      "moveSpeed": 3.1,
+      "viewRange": 38,
+      "viewAngleDeg": 120,
+      "reactMs": 330,
+      "aimTimeMs": 190,
+      "accuracyDeg": 3.6,
+      "burstShots": 5,
+      "burstPauseMs": 620,
+      "fireIntervalMs": 190,
+      "fireRange": 46,
+      "damagePerShot": 10,
+      "armorPen": 3,
+      "armor": { "body": "vest3", "head": "helmet2" },
+      "searchDurationMs": 9000,
+      "retreatHealthRatio": 0.3,
+      "color": "0xc98a5a",
+      "weight": 15
+    }
+  ],
+
+  "spawnRules": {
+    "_comment": "M2 刷新规则：只做数量与配置，出生点选取逻辑见 aiManager。禁止扩展兵种以外的东西。",
+    "totalCount": 7,
+    "minDistanceFromPlayerCells": 12,
+    "minDistanceBetweenAiCells": 3,
+    "difficultyRamp": {
+      "_comment": "开局前 N 秒降低难度，避免玩家一出生就被围攻。这是『可分级』的一部分。",
+      "graceMs": 20000,
+      "accuracyScaleDuringGrace": 1.8,
+      "reactScaleDuringGrace": 1.6
+    }
+  },
+
+  "updateTiers": [
+    {
+      "_comment": "近距：每帧更新（intervalMs=0），完整感知与寻路",
+      "maxDistanceM": 28,
+      "intervalMs": 0,
+      "pathBudgetShare": 1.0
+    },
+    {
+      "_comment": "中距：约 8Hz",
+      "maxDistanceM": 65,
+      "intervalMs": 120,
+      "pathBudgetShare": 0.5
+    },
+    {
+      "_comment": "远距：约 2.5Hz，只做最低限度维护",
+      "maxDistanceM": 100000,
+      "intervalMs": 400,
+      "pathBudgetShare": 0.0
+    }
+  ],
+
+  "pathBudget": {
+    "_comment": "M0-TECH-01 约束 C-1/C-2：每帧寻路查询必须限流。这两个值是硬上限，超出即排队到后续帧。",
+    "maxQueriesPerFrame": 2,
+    "maxMsPerFrame": 2.0,
+    "replanIntervalMs": 550,
+    "replanIntervalJitterMs": 220,
+    "losIntervalMs": 90,
+    "losIntervalJitterMs": 60,
+    "maxPathWaypoints": 512
+  },
+
+  "perception": {
+    "_comment": "M2 感知记忆：看到后会记住最后已知位置并去搜索，不再是 M1 的『永久警觉』。",
+    "memoryMs": 9000,
+    "hearingGunshotRangeM": 45,
+    "hearingFootstepRangeM": 14
+  },
+
+  "combat": {
+    "_comment": "交战距离控制与撤退。",
+    "preferredRangeM": 12,
+    "minRangeM": 5,
+    "strafeSpeedScale": 0.6,
+    "retreatDistanceM": 18,
+    "hitChancePenaltyOnMove": 1.25
+  }
+}

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>M0-7 音频自动播放限制探针</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #101418; color: #9fe;
+        font: 13px/1.6 ui-monospace, Consolas, monospace; }
+      #hud { padding: 12px 16px; white-space: pre-wrap; }
+      #hint { position: fixed; left: 16px; bottom: 16px; color: #ffd9a0; }
+    </style>
+  </head>
+  <body>
+    <div id="hud">M0-7 探针已加载，等待自动结果…</div>
+    <div id="hint">请在此页面任意位置点击一次（用于触发用户手势解锁）</div>
+    <script type="module" src="./probe.js"></script>
+    <script type="module">
+      const hud = document.getElementById('hud');
+      const tick = () => {
+        const p = window.__audioProbe;
+        if (!p) return;
+        hud.textContent =
+          `beforeGesture: ${JSON.stringify(p.beforeGesture, null, 2)}\n\n` +
+          `afterGesture: ${p.afterGesture ? JSON.stringify(p.afterGesture, null, 2) : '(等待手势…)'}\n\n` +
+          `errors: ${JSON.stringify(p.errors)}`;
+      };
+      setInterval(tick, 400);
+      tick();
+    </script>
+  </body>
+</html>

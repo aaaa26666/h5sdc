@@ -1,0 +1,320 @@
+{
+  "url": "http://127.0.0.1:5180/",
+  "results": [
+    {
+      "group": "① 加载与状态机",
+      "name": "进入 raid",
+      "pass": true,
+      "detail": "flow=raid"
+    },
+    {
+      "group": "① 加载与状态机",
+      "name": "关卡生成",
+      "pass": true,
+      "detail": "可通行 1188 / 墙 412"
+    },
+    {
+      "group": "① 加载与状态机",
+      "name": "AI 已生成且分难度等级",
+      "pass": true,
+      "detail": "7 个，分级 scav,guard"
+    },
+    {
+      "group": "① 加载与状态机",
+      "name": "武器槽 ≥ 2（M2-1 多武器）",
+      "pass": true,
+      "detail": "rifle_m4/pistol_p9"
+    },
+    {
+      "group": "① 加载与状态机",
+      "name": "玩家有护甲（M2-4）",
+      "pass": true,
+      "detail": "胸 vest2(55)"
+    },
+    {
+      "group": "① 加载与状态机",
+      "name": "初始位置不在墙内",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "① 加载与状态机",
+      "name": "指针锁定生效",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "⑦ 音频解锁门（M0 约束 C-8）",
+      "name": "点击进入战区后音频已解锁",
+      "pass": true,
+      "detail": "unlocked=true"
+    },
+    {
+      "group": "⑦ 音频解锁门（M0 约束 C-8）",
+      "name": "解锁发生在用户手势内（有播放请求被记录）",
+      "pass": true,
+      "detail": "请求 0 / 已播 0"
+    },
+    {
+      "group": "② M2-2 后坐力与开镜",
+      "name": "连发时枪口上跳（后坐力生效）",
+      "pass": true,
+      "detail": "pitch 0.0000 → 0.0191"
+    },
+    {
+      "group": "② M2-2 后坐力与开镜",
+      "name": "连发使扩散增大",
+      "pass": true,
+      "detail": "spread 3 → 3.109"
+    },
+    {
+      "group": "② M2-2 后坐力与开镜",
+      "name": "按住右键开镜（M2-2）",
+      "pass": true,
+      "detail": "adsT=1"
+    },
+    {
+      "group": "② M2-2 后坐力与开镜",
+      "name": "开镜使 FOV 变小",
+      "pass": true,
+      "detail": "75° → 50°"
+    },
+    {
+      "group": "② M2-2 后坐力与开镜",
+      "name": "开镜射击扩散小于腰射",
+      "pass": true,
+      "detail": "腰射 3.109 vs 开镜 0.542"
+    },
+    {
+      "group": "② M2-2 后坐力与开镜",
+      "name": "松开右键退镜",
+      "pass": true,
+      "detail": "adsT=0"
+    },
+    {
+      "group": "② M2-1 切枪与换弹",
+      "name": "按 2 切到副武器",
+      "pass": true,
+      "detail": "M4 突击步枪 → P9 手枪"
+    },
+    {
+      "group": "② M2-1 切枪与换弹",
+      "name": "副武器使用不同弹药（M2-1 弹药类型）",
+      "pass": true,
+      "detail": "备弹 120 → 60"
+    },
+    {
+      "group": "② M2-1 切枪与换弹",
+      "name": "按 1 切回主武器",
+      "pass": true,
+      "detail": "M4 突击步枪"
+    },
+    {
+      "group": "② M2-1 切枪与换弹",
+      "name": "按 R 触发换弹",
+      "pass": true,
+      "detail": "reloading=true"
+    },
+    {
+      "group": "② M2-1 切枪与换弹",
+      "name": "换弹完成后弹匣补满",
+      "pass": true,
+      "detail": "弹匣 12 → 30"
+    },
+    {
+      "group": "④ M2-4 部位伤害与护甲耐久",
+      "name": "找到有视线的射击位",
+      "pass": true,
+      "detail": "scav @ 56°"
+    },
+    {
+      "group": "④ M2-4 部位伤害与护甲耐久",
+      "name": "射击使 AI 掉血（M2-4）",
+      "pass": true,
+      "detail": "scav 80 → 0.0"
+    },
+    {
+      "group": "④ M2-4 部位伤害与护甲耐久",
+      "name": "命中数与伤害被统计（M2-3/4）",
+      "pass": true,
+      "detail": "命中 3 次 / 伤害 99.0"
+    },
+    {
+      "group": "④ 回归：隔墙打不中（M1-TEMP-16 已修）",
+      "name": "找到\"玩家—墙—AI\"三点一线位置",
+      "pass": true,
+      "detail": "玩家格 15,22 墙格 15,21"
+    },
+    {
+      "group": "④ 回归：隔墙打不中（M1-TEMP-16 已修）",
+      "name": "隔着墙射击不会命中墙后的 AI",
+      "pass": true,
+      "detail": "血量 80 → 80（若减少即为穿墙命中）"
+    },
+    {
+      "group": "⑥ M2-6 AI 状态机与寻路",
+      "name": "AI 会移动（寻路生效，M1-TEMP-6 已修）",
+      "pass": true,
+      "detail": "5/7 个 AI 产生了位移"
+    },
+    {
+      "group": "⑥ M2-6 AI 状态机与寻路",
+      "name": "AI 状态机产生非 patrol 状态",
+      "pass": true,
+      "detail": "状态集合 dead,patrol,search"
+    },
+    {
+      "group": "⑥ M2-6 AI 状态机与寻路",
+      "name": "AI 通过调度器获得了路点",
+      "pass": true,
+      "detail": "最长路径 40 点"
+    },
+    {
+      "group": "⑥ M2 硬性要求：AI 更新频率分级 + 寻路限流（C-1/C-2）",
+      "name": "每个 AI 都有更新分级",
+      "pass": true,
+      "detail": "7/7"
+    },
+    {
+      "group": "⑥ M2 硬性要求：AI 更新频率分级 + 寻路限流（C-1/C-2）",
+      "name": "更新分级确实按距离区分（存在不同间隔）",
+      "pass": true,
+      "detail": "出现的间隔集合 0,120ms"
+    },
+    {
+      "group": "⑥ M2 硬性要求：AI 更新频率分级 + 寻路限流（C-1/C-2）",
+      "name": "寻路每帧查询数不超上限（C-1）",
+      "pass": true,
+      "detail": "峰值 2 次/帧（上限 2）"
+    },
+    {
+      "group": "⑥ M2 硬性要求：AI 更新频率分级 + 寻路限流（C-1/C-2）",
+      "name": "单帧寻路耗时不超上限（C-2）",
+      "pass": true,
+      "detail": "峰值 0.265ms（上限 2ms，留了测量余量）"
+    },
+    {
+      "group": "③ M2-3 命中反馈（弹孔 / 统计）",
+      "name": "射击在地面或墙上留下弹孔",
+      "pass": true,
+      "detail": "已放置 33 个"
+    },
+    {
+      "group": "⑤ M2-5 医疗与消耗品",
+      "name": "被 AI 击中会掉血并消耗护甲耐久",
+      "pass": true,
+      "detail": "生命 94.5 → 83.5；胸甲 53.4 → 53.4"
+    },
+    {
+      "group": "⑤ M2-5 医疗与消耗品",
+      "name": "护甲承受伤害后耐久下降（M2-4）",
+      "pass": true,
+      "detail": "53.4 → 53.4"
+    },
+    {
+      "group": "⑤ M2-5 医疗与消耗品",
+      "name": "找到远离所有 AI 的安全位置用于测治疗",
+      "pass": true,
+      "detail": "距最近 AI 46.2m"
+    },
+    {
+      "group": "⑤ M2-5 医疗与消耗品",
+      "name": "按 4 开始使用急救包",
+      "pass": true,
+      "detail": "using=true"
+    },
+    {
+      "group": "⑤ M2-5 医疗与消耗品",
+      "name": "使用后回血（M2-5）",
+      "pass": true,
+      "detail": "83.5 → 100.0"
+    },
+    {
+      "group": "⑤ M2-5 医疗与消耗品",
+      "name": "治疗不会降低生命（回归：绷带把人治到上限的 bug）",
+      "pass": true,
+      "detail": "83.5 → 100.0"
+    },
+    {
+      "group": "⑤ M2-5 医疗与消耗品",
+      "name": "消耗品数量减少",
+      "pass": true,
+      "detail": "急救包 2 → 1"
+    },
+    {
+      "group": "⑤ M2-5 医疗与消耗品",
+      "name": "血量高于绷带上限时使用绷带会被拒绝（不浪费）",
+      "pass": true,
+      "detail": "绷带 3 → 3, using=false"
+    },
+    {
+      "group": "① 闭环：搜刮 → 撤离 → 结算",
+      "name": "容器可被搜索开启（按 F）",
+      "pass": true,
+      "detail": "2/8"
+    },
+    {
+      "group": "① 闭环：搜刮 → 撤离 → 结算",
+      "name": "搜到物品并产生估值",
+      "pass": true,
+      "detail": "2 件 / 估值 240"
+    },
+    {
+      "group": "① 闭环：搜刮 → 撤离 → 结算",
+      "name": "完成撤离并结算（等待流程结束）",
+      "pass": true,
+      "detail": "已结束"
+    },
+    {
+      "group": "① 闭环：搜刮 → 撤离 → 结算",
+      "name": "撤离成功且原因为 extracted",
+      "pass": true,
+      "detail": "flow=ended reason=extracted"
+    },
+    {
+      "group": "① 失败路径",
+      "name": "生命归零判定阵亡",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "① 失败路径",
+      "name": "超时判定失败",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "group": "⑨ M2 DoD：连续 10 局无致命问题",
+      "name": "连续 10 局未出现致命问题",
+      "pass": true,
+      "detail": "10 局全部正常"
+    },
+    {
+      "group": "⑨ M2 DoD：连续 10 局无致命问题",
+      "name": "10 局内累计造成命中（武器系统稳定可用）",
+      "pass": true,
+      "detail": "累计命中 30 次"
+    },
+    {
+      "group": "⑨ M2 DoD：连续 10 局无致命问题",
+      "name": "10 局内寻路限流始终有效（C-1）",
+      "pass": true,
+      "detail": "最大 2 次/帧"
+    },
+    {
+      "group": "运行时错误",
+      "name": "运行期间无页面异常",
+      "pass": true,
+      "detail": "无"
+    },
+    {
+      "group": "运行时错误",
+      "name": "无 4xx/5xx 资源请求",
+      "pass": true,
+      "detail": "无"
+    }
+  ],
+  "pageErrors": [],
+  "badResponses": [],
+  "pauseRecoveries": []
+}

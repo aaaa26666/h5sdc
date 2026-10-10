@@ -1,0 +1,19 @@
+# 统一换行符处理，避免跨平台协作时的无意义 diff
+* text=auto eol=lf
+
+# .bat 必须保持 CRLF：cmd.exe 对 LF-only 的批处理文件处理不正常
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不做换行转换
+*.zip   binary
+*.crx   binary
+*.png   binary
+*.jpg   binary
+*.woff  binary
+*.woff2 binary
+
+# 生成的 JSON 报表不参与 diff 统计（改动频繁且人不需要逐行看）
+results/*.json linguist-generated=true
+results/*.jsonl linguist-generated=true
+release/*.zip  linguist-generated=true

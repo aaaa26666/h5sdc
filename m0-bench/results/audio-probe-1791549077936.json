@@ -1,0 +1,212 @@
+{
+  "chrome/default": {
+    "browser": "chrome",
+    "policy": "default",
+    "label": "默认策略：要求用户手势",
+    "before": {
+      "contextState": "suspended",
+      "contextCreateMs": 29.92,
+      "sampleRate": 48000,
+      "baseLatency": 0.01,
+      "outputLatency": 0,
+      "maxChannelCount": 8,
+      "userActivation": {
+        "isActive": false,
+        "hasBeenActive": false
+      },
+      "resumeSettled": "PENDING（无手势时永不 settle）",
+      "audioElPlay": "rejected: NotAllowedError"
+    },
+    "after": {
+      "gestureType": "pointerdown",
+      "contextStateAtGesture": "suspended",
+      "userActivationAtGesture": {
+        "isActive": true,
+        "hasBeenActive": true
+      },
+      "resumeMs": 15.59,
+      "contextStateAfterResume": "running",
+      "audioElPlayAfterResume": "played",
+      "totalUnlockMs": 15.69,
+      "decode": {
+        "sourceBytes": 5292044,
+        "sourceKB": 5168,
+        "decodeMs": 60.44,
+        "decodedSeconds": 30,
+        "decodedChannels": 2,
+        "decodedSampleRate": 48000
+      }
+    },
+    "formats": {
+      "MP3 (audio/mpeg)": "probably",
+      "AAC (audio/mp4; mp4a.40.2)": "probably",
+      "OGG Vorbis": "probably",
+      "OGG Opus": "probably",
+      "WebM Opus": "probably",
+      "FLAC": "probably",
+      "WAV (PCM)": "probably"
+    },
+    "errors": [],
+    "pageIssues": [
+      "console.error: Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "console.error: Failed to load resource: the server responded with a status of 404 (Not Found)"
+    ]
+  },
+  "chrome/no-gesture-required": {
+    "browser": "chrome",
+    "policy": "no-gesture-required",
+    "label": "放宽策略：无需手势",
+    "before": {
+      "contextState": "running",
+      "contextCreateMs": 25.69,
+      "sampleRate": 48000,
+      "baseLatency": 0.01,
+      "outputLatency": 0,
+      "maxChannelCount": 8,
+      "userActivation": {
+        "isActive": false,
+        "hasBeenActive": false
+      },
+      "resumeSettled": "resolved",
+      "audioElPlay": "played"
+    },
+    "after": {
+      "gestureType": "pointerdown",
+      "contextStateAtGesture": "running",
+      "userActivationAtGesture": {
+        "isActive": true,
+        "hasBeenActive": true
+      },
+      "resumeMs": 0.1,
+      "contextStateAfterResume": "running",
+      "audioElPlayAfterResume": "played",
+      "totalUnlockMs": 1.06,
+      "decode": {
+        "sourceBytes": 5292044,
+        "sourceKB": 5168,
+        "decodeMs": 59.38,
+        "decodedSeconds": 30,
+        "decodedChannels": 2,
+        "decodedSampleRate": 48000
+      }
+    },
+    "formats": {
+      "MP3 (audio/mpeg)": "probably",
+      "AAC (audio/mp4; mp4a.40.2)": "probably",
+      "OGG Vorbis": "probably",
+      "OGG Opus": "probably",
+      "WebM Opus": "probably",
+      "FLAC": "probably",
+      "WAV (PCM)": "probably"
+    },
+    "errors": [],
+    "pageIssues": [
+      "console.error: Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "console.error: Failed to load resource: the server responded with a status of 404 (Not Found)"
+    ]
+  },
+  "edge/default": {
+    "browser": "edge",
+    "policy": "default",
+    "label": "默认策略：要求用户手势",
+    "before": {
+      "contextState": "suspended",
+      "contextCreateMs": 43.22,
+      "sampleRate": 48000,
+      "baseLatency": 0.01,
+      "outputLatency": 0,
+      "maxChannelCount": 8,
+      "userActivation": {
+        "isActive": false,
+        "hasBeenActive": false
+      },
+      "resumeSettled": "PENDING（无手势时永不 settle）",
+      "audioElPlay": "rejected: NotAllowedError"
+    },
+    "after": {
+      "gestureType": "pointerdown",
+      "contextStateAtGesture": "suspended",
+      "userActivationAtGesture": {
+        "isActive": true,
+        "hasBeenActive": true
+      },
+      "resumeMs": 25.12,
+      "contextStateAfterResume": "running",
+      "audioElPlayAfterResume": "played",
+      "totalUnlockMs": 25.39,
+      "decode": {
+        "sourceBytes": 5292044,
+        "sourceKB": 5168,
+        "decodeMs": 59.07,
+        "decodedSeconds": 30,
+        "decodedChannels": 2,
+        "decodedSampleRate": 48000
+      }
+    },
+    "formats": {
+      "MP3 (audio/mpeg)": "probably",
+      "AAC (audio/mp4; mp4a.40.2)": "probably",
+      "OGG Vorbis": "probably",
+      "OGG Opus": "probably",
+      "WebM Opus": "probably",
+      "FLAC": "probably",
+      "WAV (PCM)": "probably"
+    },
+    "errors": [],
+    "pageIssues": [
+      "console.error: Failed to load resource: the server responded with a status of 404 (Not Found)"
+    ]
+  },
+  "edge/no-gesture-required": {
+    "browser": "edge",
+    "policy": "no-gesture-required",
+    "label": "放宽策略：无需手势",
+    "before": {
+      "contextState": "running",
+      "contextCreateMs": 39.11,
+      "sampleRate": 48000,
+      "baseLatency": 0.01,
+      "outputLatency": 0,
+      "maxChannelCount": 8,
+      "userActivation": {
+        "isActive": false,
+        "hasBeenActive": false
+      },
+      "resumeSettled": "resolved",
+      "audioElPlay": "played"
+    },
+    "after": {
+      "gestureType": "pointerdown",
+      "contextStateAtGesture": "running",
+      "userActivationAtGesture": {
+        "isActive": true,
+        "hasBeenActive": true
+      },
+      "resumeMs": 0.06,
+      "contextStateAfterResume": "running",
+      "audioElPlayAfterResume": "played",
+      "totalUnlockMs": 1.83,
+      "decode": {
+        "sourceBytes": 5292044,
+        "sourceKB": 5168,
+        "decodeMs": 50.35,
+        "decodedSeconds": 30,
+        "decodedChannels": 2,
+        "decodedSampleRate": 48000
+      }
+    },
+    "formats": {
+      "MP3 (audio/mpeg)": "probably",
+      "AAC (audio/mp4; mp4a.40.2)": "probably",
+      "OGG Vorbis": "probably",
+      "OGG Opus": "probably",
+      "WebM Opus": "probably",
+      "FLAC": "probably",
+      "WAV (PCM)": "probably"
+    },
+    "errors": [],
+    "pageIssues": [
+      "console.error: Failed to load resource: the server responded with a status of 404 (Not Found)"
+    ]
+  }
+}

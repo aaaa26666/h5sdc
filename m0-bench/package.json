@@ -1,0 +1,15 @@
+{
+  "name": "m0-bench",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "description": "M0 一次性技术验证台。用完即弃，不属于游戏产物。",
+  "scripts": {
+    "bench": "node harness/run.mjs"
+  },
+  "dependencies": {
+    "babylonjs": "^9.30.0",
+    "puppeteer-core": "^25.13.0",
+    "three": "^0.186.1"
+  }
+}

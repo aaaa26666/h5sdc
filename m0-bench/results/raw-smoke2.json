@@ -1,0 +1,158 @@
+{
+  "runId": "smoke2",
+  "chromePath": "C:\\Users\\Administrator\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe",
+  "args": {
+    "engines": [
+      "three",
+      "babylon"
+    ],
+    "mats": [
+      "pbr"
+    ],
+    "syncs": [
+      "off",
+      "on"
+    ],
+    "throttles": [
+      1
+    ],
+    "vsync": [
+      "on"
+    ],
+    "gpu": [
+      "default"
+    ],
+    "warmupMs": 2000,
+    "durationMs": 6000,
+    "repeats": 1,
+    "headless": false,
+    "tag": "smoke2"
+  },
+  "engineInfo": {
+    "three": {
+      "engine": "three",
+      "engineVersion": "186",
+      "matMode": "pbr",
+      "syncMode": false,
+      "gl": {
+        "ok": true,
+        "isWebGL2": true,
+        "vendor": "Google Inc. (NVIDIA)",
+        "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "maxTextureSize": 16384
+      },
+      "engineInitMs": 11.4,
+      "sceneBuildMs": 4.7,
+      "firstFrameMs": 369.2,
+      "firstFrameFromNavMs": 371.8,
+      "counts": {
+        "obstacles": 200,
+        "dynamics": 150,
+        "particles": 400,
+        "drawCallsApprox": 353
+      },
+      "navStartOffsetMs": 235.4
+    }
+  },
+  "rows": [
+    {
+      "engine": "three",
+      "engineVersion": "186",
+      "mat": "pbr",
+      "sync": "off",
+      "gpu": "default",
+      "vsync": "on",
+      "throttle": 1,
+      "repeat": 1,
+      "avgFps": 165.01,
+      "low1Fps": 161.03,
+      "frameP50": 6.1,
+      "frameP95": 6.2,
+      "frameP99": 6.2,
+      "cpuP50": 2.1,
+      "cpuP95": 2.5,
+      "frames": 990,
+      "heapPeakMB": 14.82,
+      "heapEndMB": 10.06,
+      "engineInitMs": 11.4,
+      "sceneBuildMs": 4.7,
+      "firstFrameFromNavMs": 371.8,
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    },
+    {
+      "engine": "three",
+      "engineVersion": "186",
+      "mat": "pbr",
+      "sync": "on",
+      "gpu": "default",
+      "vsync": "on",
+      "throttle": 1,
+      "repeat": 1,
+      "avgFps": 165.01,
+      "low1Fps": 161.03,
+      "frameP50": 6.1,
+      "frameP95": 6.2,
+      "frameP99": 6.2,
+      "cpuP50": 1.9,
+      "cpuP95": 2.4,
+      "frames": 990,
+      "heapPeakMB": 14.95,
+      "heapEndMB": 9.58,
+      "engineInitMs": 14.3,
+      "sceneBuildMs": 4.3,
+      "firstFrameFromNavMs": 120.9,
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    },
+    {
+      "engine": "babylon",
+      "mat": "pbr",
+      "sync": "off",
+      "gpu": "default",
+      "vsync": "on",
+      "throttle": 1,
+      "repeat": 1,
+      "error": "Waiting failed: 120000ms exceeded"
+    },
+    {
+      "engine": "babylon",
+      "mat": "pbr",
+      "sync": "on",
+      "gpu": "default",
+      "vsync": "on",
+      "throttle": 1,
+      "repeat": 1,
+      "error": "Waiting failed: 120000ms exceeded"
+    }
+  ],
+  "summary": [
+    {
+      "engine": "three",
+      "engineVersion": "186",
+      "mat": "pbr",
+      "sync": "default",
+      "gpu": "on",
+      "vsync": "1",
+      "throttle": null,
+      "samples": 2,
+      "avgFps": 165.01,
+      "low1Fps": 161.03,
+      "frameP50": 6.1,
+      "frameP95": 6.2,
+      "frameP99": 6.2,
+      "cpuP50": 2,
+      "cpuP95": 2.45,
+      "heapPeakMB": 14.885,
+      "engineInitMs": 11.4,
+      "sceneBuildMs": 4.7,
+      "firstFrameFromNavMs": 371.8,
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "rafCapFps": null,
+      "capped": false,
+      "headroomVs60": 2.69,
+      "meets60": true,
+      "meets45": true,
+      "meets30": true
+    }
+  ]
+}
