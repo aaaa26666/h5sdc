@@ -3,37 +3,28 @@
 // M1 明确"禁止优化性能，不设性能门禁，只记录数据"。本脚本只做记录，不做判定。
 // 采用**外部注入**的 rAF 采样器，不修改任何游戏代码 —— 避免为了测性能而污染 M1 代码。
 //
-// 用法：另开终端跑 npm run dev，然后 node tools/m1-perf.mjs [url] [采样秒数]
+// 用法：另开终端跑 npm run dev，然后 node tools/m1-perf.mjs [url] [采样秒数] [--headed]
+//
+// ★ 默认**无头**（不占用你的鼠标与焦点）。但请注意：
+//   M0/M1 的基线数据是在**有头**模式下测的。无头的窗口与合成路径不同，
+//   帧时间数字不能直接与旧基线比较 —— 要么用 --headed 复现旧口径，
+//   要么明确标注这是无头口径下的新基线，不要混着比。
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { launch } from 'puppeteer-core';
+import { launchBrowser, describeMode, ROOT as REPO_ROOT } from './lib/browser.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(HERE, '..');
-const URL_BASE = process.argv[2] || 'http://127.0.0.1:5180/';
-const SAMPLE_SEC = Number(process.argv[3] || 8);
+const ROOT = REPO_ROOT;
+const URL_BASE = process.argv.find((a) => a.startsWith('http')) || 'http://127.0.0.1:5180/';
+const SAMPLE_SEC = Number(process.argv.find((a) => /^\d+$/.test(a)) || 8);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function findChrome() {
-  const c = [
-    process.env.CHROME_PATH,
-    'C:\\Users\\Administrator\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
-  ].filter(Boolean);
-  for (const p of c) if (fs.existsSync(p)) return p;
-  throw new Error('找不到 Chrome');
-}
-
-const browser = await launch({
-  executablePath: findChrome(),
-  headless: false,
-  defaultViewport: null,
-  args: [
-    '--no-first-run',
-    '--window-size=1600,1000',
-    '--disable-background-timer-throttling',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-features=CalculateNativeWinOcclusion',
+const browser = await launchBrowser({
+  width: 1600,
+  height: 1000,
+  protocolTimeout: 120000,
+  extraArgs: [
     '--enable-precise-memory-info',
     // 必须关掉垂直同步：本机显示器 165Hz，开着会把帧时间锁在 6.06ms，
     // 于是"待机"和"交战"测出来一模一样，等于没测出任何性能余量。
@@ -41,8 +32,8 @@ const browser = await launch({
     '--disable-gpu-vsync',
     '--disable-frame-rate-limit',
   ],
-  protocolTimeout: 120000,
 });
+console.log(`  运行模式: ${describeMode()}`);
 
 const page = await browser.newPage();
 await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });

@@ -49,7 +49,7 @@
     "crouchAccelScale": 0.75,
     "sprintAccelScale": 0.72,
     "stepHeight": 0.55,
-    "stepSmooth": 14.0,
+    "stepClimbSpeed": 3.5,
 
     "jumpBufferMs": 150,
     "coyoteMs": 110,

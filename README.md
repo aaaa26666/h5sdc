@@ -115,13 +115,20 @@ Windows 上也可以直接双击 **`启动游戏.bat`** —— 它会自动检�
 
 ```bash
 node tools/unit-tests.mjs                          # 纯逻辑单测       111 项
-node tools/smoke.mjs http://127.0.0.1:5180/        # 端到端（含连续10局）76 项
+node tools/smoke.mjs                              # 端到端（含连续10局）79 项
 node tools/ttk.mjs                                 # 手感量化报表 + 设计目标判定
 node tools/audit-keybindings.mjs                   # 按键审计（禁用修饰键、禁止重复绑定）
 node tools/verify-prod-bundle.mjs                  # 验证调试接口已从生产产物剔除
 node tools/measure-bundle.mjs                      # 首包体积门禁（预算 200 KB brotli）
 node tools/test-portable.mjs                       # 便携版在 file:// 下真的能玩
 ```
+
+**所有测试默认无头（headless）运行** —— 有头模式下指针锁定会抓走鼠标并抢占窗口焦点，
+跑测试期间电脑基本没法用。需要人眼旁观时加 `--headed`。
+
+已实测确认无头下走的是**硬件** GPU（ANGLE/D3D11，约 122fps，不是软件渲染）、
+指针锁定可以成功、CDP 输入照常生效，因此测试结论与有头一致。
+（例外：`m1-perf.mjs` 的帧时间不能与 M0/M1 的**有头**基线直接混比 —— 合成路径不同。）
 
 几个工具存在的理由值得单独说：
 

@@ -1,30 +1,13 @@
 // 快速加载自检：确认页面能起来、无异常、关键系统已初始化
 // 用途：M2 改动量大，先跑这个再跑完整冒烟，避免在"根本没启动"的情况下等长测试
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { launch } from 'puppeteer-core';
+// 用法：node tools/load-check.mjs [url] [--headed]   默认无头，不占用你的鼠标与焦点
+import { launchBrowser, describeMode } from './lib/browser.mjs';
 
-const URL_BASE = process.argv[2] || 'http://127.0.0.1:5180/';
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+const URL_BASE = process.argv.find((a) => a.startsWith('http')) || 'http://127.0.0.1:5180/';
 
-function findChrome() {
-  const c = [
-    process.env.CHROME_PATH,
-    'C:\\Users\\Administrator\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
-  ].filter(Boolean);
-  for (const p of c) if (fs.existsSync(p)) return p;
-  throw new Error('找不到 Chrome');
-}
-
-const browser = await launch({
-  executablePath: findChrome(),
-  headless: false,
-  defaultViewport: null,
-  args: ['--no-first-run', '--window-size=1280,860'],
-  protocolTimeout: 120000,
-});
+const browser = await launchBrowser({ protocolTimeout: 120000 });
 const page = await browser.newPage();
+console.log(`  运行模式: ${describeMode()}`);
 const errs = [];
 page.on('pageerror', (e) => errs.push('pageerror: ' + e.message));
 page.on('console', (m) => {

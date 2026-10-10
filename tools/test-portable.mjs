@@ -13,24 +13,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
-import { launch } from 'puppeteer-core';
+import { launchBrowser, describeMode, ROOT as REPO_ROOT } from './lib/browser.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(HERE, '..');
+const ROOT = REPO_ROOT;
 // 允许指定路径：这样可以测试"解压出来的那一份"，而不是只测构建目录里的原件
-const GAME = process.argv[2]
-  ? path.resolve(process.argv[2])
+const pathArg = process.argv.slice(2).find((a) => !a.startsWith('--'));
+const GAME = pathArg
+  ? path.resolve(pathArg)
   : path.join(ROOT, 'release', '搜打撤PVE-M2-免安装', 'game.html');
-
-function findChrome() {
-  const c = [
-    process.env.CHROME_PATH,
-    'C:\\Users\\Administrator\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  ].filter(Boolean);
-  for (const p of c) if (fs.existsSync(p)) return p;
-  throw new Error('找不到 Chrome');
-}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
@@ -48,15 +39,10 @@ const url = pathToFileURL(GAME).href;
 console.log('\n================ 便携版 file:// 实测 ================');
 console.log('  文件: ' + GAME);
 console.log('  URL : ' + url);
+console.log(`  运行模式: ${describeMode()}`);
 console.log('  （不附加任何 Chrome 特殊参数，与朋友机器一致）\n');
 
-const browser = await launch({
-  executablePath: findChrome(),
-  headless: false,
-  defaultViewport: null,
-  args: ['--no-first-run', '--no-default-browser-check', '--window-size=1280,860'],
-  protocolTimeout: 120000,
-});
+const browser = await launchBrowser({ protocolTimeout: 120000 });
 
 const page = await browser.newPage();
 const errors = [];

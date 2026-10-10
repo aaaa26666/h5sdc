@@ -63,6 +63,13 @@ export function createPlayer(cfg, level) {
     lastStepUpAt: -1e9,
     stepUps: 0,
     steppingUp: false,
+    // 运动探针：单帧脚底高度最大变化量，用于把"画面跳变"变成可断言的值
+    lastFrameDY: 0,
+    maxFrameDY: 0,
+    maxFrameDYAt: 0,
+    lastFrameDYSpeed: 0,
+    maxFrameDYSpeed: 0,
+    maxFrameDYSpeedAt: 0,
   };
 
   const jumpState = createJumpState();
@@ -202,6 +209,9 @@ export function createPlayer(cfg, level) {
   function update(dt, input, nowMs) {
     if (!player.alive) return;
 
+    // 本帧起始高度 —— 用于运动探针（见竖直段末尾）
+    const frameStartY = player.pos.y;
+
     const m = input.consumeMouse();
     if (m.dx || m.dy) applyLook(m.dx, m.dy);
 
@@ -254,18 +264,86 @@ export function createPlayer(cfg, level) {
     player.pos.z += player.vel.z * dt;
     level.resolveCircle(player.pos, P.radius, player.pos.y, P.stepHeight);
 
-    // ---- 竖直：台阶吸附 / 站立 / 下落 ----
+    // ---- 竖直：抬升（台阶 / 跳上高台） / 站立 / 下落 ----
+    //
+    // ★ 这里曾经有一个导致"跳上高箱子时画面不自然卡顿"的 bug。
+    //
+    // 碰撞层允许"脚底位于阻挡体顶面下方 stepHeight 以内"就进入该格 ——
+    // 这是必需的，否则永远跳不上 1.15m 的箱子（跳跃最高只有约 0.68m）。
+    // 但进入该格后 groundY 会**突然**变成箱顶高度，而那一刻玩家是**离地**状态，
+    // 于是走了"落地对齐"那条路：pos.y 从约 0.6 一步对齐到 1.15，
+    // **相机单帧向上跳了近半米** —— 就是不自然卡顿的来源。
+    //
+    // 根因是"抬升"只在 onGround 分支里做了平滑，而跳上箱子的瞬间不在那个分支。
+    // 修法：把"地面高于脚底"的处理提到 onGround 判断之前，
+    // 让离地与在地面时走**同一条平滑抬升**路径 ——
+    // 跳上高台与走上台阶因此共用一套逻辑，不需要分别处理。
+    //
+    // ★★ 顺序上有两个必须小心的地方（我在修上面这个问题时踩过）：
+    //   ① 起跳只设置了 vel.y 与 onGround=false，**pos.y 当帧仍是地面高度**。
+    //      如果"站在地面上"的判定不排除"有向上速度"，下一帧就会把起跳速度清零 ——
+    //      表现为**跳跃完全无效**。
+    //   ② 落地冲击必须在这里也结算一次。否则从低处落到台面上时，
+    //      "站在地面上"分支会先接管，重力段根本没机会跑，落地缓冲就丢了。
+    const wasAirborneAtFrameStart = !player.onGround;
+    // 积分前的脚底高度。用于区分"落地"与"地面升到我脚下" —— 见下方说明。
+    const yBeforeIntegration = player.pos.y;
+
+    // 1) 先积分竖直速度：离地中，或刚获得向上速度（起跳的那一帧之后）
+    if (!player.onGround || player.vel.y > 0) {
+      player.vel.y += P.gravity * dt;
+      player.pos.y += player.vel.y * dt;
+    }
+
     const groundY = level.groundHeightAt(player.pos.x, player.pos.z);
 
-    if (player.onGround) {
+    // ★ 判断顺序至关重要：**必须先判落地，再判抬升**。
+    //
+    // 我第一版把 `groundY > pos.y`（地面高于脚底）放在最前面当"抬升"，
+    // 结果它把**正常落地**也吞了：玩家落到地面时脚底会略微穿过地面
+    // （pos.y 约 -0.01），于是 `0 > -0.01` 成立，被当成"地面升到脚下"走了平滑抬升，
+    // 于是 ①落地冲击永远不触发（落地缓冲恒为 0）②从低位落到台面也被当成爬升。
+    //
+    // 区分依据是"本帧是否穿过了脚下的地面"：
+    //   落地   ：积分前在地面之上，积分后在地面之下 → 穿过 → 应当吸附并结算冲击
+    //   抬升   ：积分前后**都**在地面之下（地面是突然出现在脚下的，例如迈台阶
+    //            或跳上高台时进入了该格）→ 没有"穿过"这回事 → 应当平滑抬升
+    const crossedGround =
+      player.vel.y <= 0 &&
+      yBeforeIntegration >= groundY - 1e-4 &&
+      player.pos.y <= groundY + 1e-4;
+
+    if (crossedGround) {
+      // 2) 落地。超调量最多 |vy|·dt（165Hz 下约 0.03m），瞬间对齐不可见。
+      const impactSpeed = wasAirborneAtFrameStart ? Math.max(0, -player.vel.y) : 0;
+      player.pos.y = groundY;
+      player.vel.y = 0;
+      player.onGround = true;
+      player.steppingUp = false;
+      if (impactSpeed > 0) {
+        applyLandingImpact(landing, impactSpeed, P.landingDipMax, P.landingDipPerSpeed);
+      }
+    } else if (groundY > player.pos.y + 1e-4) {
+      // 3) 地面高于脚底：迈台阶，或跳跃中落到了高台的格子里。
+      //    这是**平滑抬升**而不是瞬间对齐 —— 后者会造成一次近半米的单帧相机位移，
+      //    也就是"跳上高箱子时画面不自然卡顿"。
       const target = stepUpTarget(player.pos.y, groundY, P.stepHeight);
       if (target !== false) {
-        // 平滑抬升：瞬间对齐会让高低差在画面上"跳"一下，
-        // 而台阶吸附的全部意义就是让这一步看起来是走上去的。
-        const k = Math.min(1, dt * P.stepSmooth);
-        player.pos.y += (target - player.pos.y) * k;
-        if (target - player.pos.y < 0.02) player.pos.y = target;
+        // 以**恒定速度**爬升，而不是指数逼近（pos.y += 差值 × k）。
+        //
+        // 指数逼近的每帧比例 k = dt × stepSmooth 会随帧率变化：
+        // 帧率一低 k 就趋近 1，高差大时单帧位移重新变大 ——
+        // 实测同一份代码：有头 165Hz 下单帧最大 0.041m，无头 122Hz 下变成 0.212m。
+        // 也就是说**在配置较差的机器上卡顿会回来**，而用户的机器恰好是高刷屏，
+        // 所以只有低帧率场景才会暴露。
+        // 恒定速度则保证爬升耗时只与高差有关（0.55m ÷ 3.5m/s ≈ 0.16s），与帧率无关。
+        const delta = target - player.pos.y;
+        player.pos.y += Math.min(delta, P.stepClimbSpeed * dt);
+        if (target - player.pos.y < 0.005) player.pos.y = target;
+        // 抬升期间视为**受支撑**：否则重力会在爬升途中把人往下拉，
+        // 抬升与下落互相拉扯，表现为抖动。
         player.vel.y = 0;
+        player.onGround = true;
         player.lastStepUpAt = nowMs;
         // 计数器只在**开始**一次抬升时 +1。
         // 平滑抬升会持续多帧，若每帧都计数，"台阶吸附了 36 次"这种读数
@@ -275,31 +353,43 @@ export function createPlayer(cfg, level) {
           player.stepUps++;
         }
       } else {
+        // 高出可迈上限：正常不应发生（碰撞层已阻止进入该格）。
+        // 兜底**不做瞬间抬高** —— 那正是要避免的行为 —— 只清掉标记，
+        // 交给碰撞与重力处理。
         player.steppingUp = false;
-        if (player.pos.y > groundY + 1e-4) {
-          // 脚下的地面消失了（走下台子）→ 交给重力，不吸附下降
-          player.onGround = false;
-        } else {
-          player.pos.y = groundY;
-          player.vel.y = 0;
-        }
       }
+    } else if (player.pos.y <= groundY + 1e-4 && player.vel.y <= 0) {
+      // 4) 停在地面上（未离地，也没有下落）
+      player.pos.y = groundY;
+      player.vel.y = 0;
+      player.onGround = true;
+      player.steppingUp = false;
+    } else {
+      // 5) 在空中。走到这里必然是以下两者之一：
+      //      · pos.y 明显高于地面，或 · 有向上的速度
+      //    两者都表示离地，直接判定为空中即可。
+      player.steppingUp = false;
+      player.onGround = false;
     }
 
-    if (!player.onGround) {
-      player.vel.y += P.gravity * dt;
-      player.pos.y += player.vel.y * dt;
-      const gy = level.groundHeightAt(player.pos.x, player.pos.z);
-      if (player.pos.y <= gy) {
-        const impactSpeed = Math.max(0, -player.vel.y);
-        player.pos.y = gy;
-        player.vel.y = 0;
-        const wasAirborne = !player.onGround;
-        player.onGround = true;
-        if (wasAirborne) {
-          applyLandingImpact(landing, impactSpeed, P.landingDipMax, P.landingDipPerSpeed);
-        }
+    // ---- 运动探针：记录单帧脚底高度的最大变化量 ----
+    // 用途：把"画面有没有跳变"变成可断言的数字。
+    // 靠肉眼判断"这算不算卡顿"既不可靠也无法回归，单帧位移可以直接断言上限。
+    //
+    // 注意：**单帧位移本身是随帧率变化的量**（同样 3.5m/s 的爬升，165Hz 下每帧 0.021m，
+    // 30Hz 下每帧 0.117m），拿固定阈值去卡它在不同机器上会误判。
+    // 因此同时记录**隐含的竖直速度** Δy/Δt —— 它才与帧率无关，
+    // 也是"跳变"的本质：瞬间对齐会产生一个物理上不可能的速度（几十 m/s）。
+    {
+      const dy = Math.abs(player.pos.y - frameStartY);
+      if (dy > player.maxFrameDY) player.maxFrameDY = dy;
+      const speed = dt > 1e-6 ? dy / dt : 0;
+      if (speed > player.maxFrameDYSpeed) {
+        player.maxFrameDYSpeed = speed;
+        player.maxFrameDYSpeedAt = nowMs;
       }
+      player.lastFrameDY = dy;
+      player.lastFrameDYSpeed = speed;
     }
 
     // ---- 跳跃（缓冲 + 土狼时间）----
@@ -349,6 +439,15 @@ export function createPlayer(cfg, level) {
     landingDip,
     landingState: landing,
     jumpState,
+    /** 重置运动探针（测试用）：返回重置前的峰值，便于同一次会话里分段测量 */
+    resetMotionProbe() {
+      const peak = { maxDY: player.maxFrameDY, maxSpeed: player.maxFrameDYSpeed };
+      player.maxFrameDY = 0;
+      player.lastFrameDY = 0;
+      player.maxFrameDYSpeed = 0;
+      player.lastFrameDYSpeed = 0;
+      return peak;
+    },
     onGround: () => player.onGround,
     horizontalSpeed: () => Math.hypot(player.vel.x, player.vel.z),
     get maxHealth() {

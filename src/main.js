@@ -481,6 +481,12 @@ if (import.meta.env.DEV) {
           lastImpactSpeed: +player.landingState.lastImpactSpeed.toFixed(3),
           stepUps: player.state.stepUps,
           groundY: +level.groundHeightAt(player.state.pos.x, player.state.pos.z).toFixed(4),
+          // 运动探针：单帧脚底高度最大变化量。用于断言"画面没有跳变"。
+          // maxFrameDYSpeed 是与帧率无关的指标（Δy/Δt），"跳变"的本质就是
+          // 出现了一个物理上不可能的竖直速度。
+          lastFrameDY: +player.state.lastFrameDY.toFixed(4),
+          maxFrameDY: +player.state.maxFrameDY.toFixed(4),
+          maxFrameDYSpeed: +player.state.maxFrameDYSpeed.toFixed(3),
         },
         weapon: (() => {
           const w = weaponSys.active();
@@ -668,6 +674,10 @@ if (import.meta.env.DEV) {
     /** 直接查询关卡的视线判定，用于验证掩体是否真的挡子弹 */
     probeLineOfSight(ax, ay, az, bx, by, bz) {
       return level.hasLineOfSight(ax, ay, az, bx, by, bz);
+    },
+    /** 重置运动探针并返回重置前的峰值（单帧脚底高度最大变化量） */
+    resetMotionProbe() {
+      return player.resetMotionProbe();
     },
     /** 查询某点的地面高度（0 = 地面，>0 = 掩体顶面） */
     groundAt(x, z) {

@@ -12,24 +12,18 @@
 //   ⑨ **M2 DoD：连续 10 局无卡死/穿墙/无伤害等致命问题**
 //
 // 依赖 DEV-only 调试接口 window.__m2（生产构建中不存在，见 tools/verify-prod-bundle.mjs）。
-// 用法：node tools/smoke.mjs [url]
+// 用法：node tools/smoke.mjs [url] [--headed]
+//
+// 默认**无头**运行：有头模式下指针锁定会抓走鼠标并抢占焦点，跑测试时电脑没法用。
+// 需要人眼旁观时加 --headed。
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { launch } from 'puppeteer-core';
+import { launchBrowser, describeMode, ROOT as REPO_ROOT } from './lib/browser.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(HERE, '..');
-const URL_BASE = process.argv[2] || 'http://127.0.0.1:5180/';
-
-function findChrome() {
-  const c = [
-    process.env.CHROME_PATH,
-    'C:\\Users\\Administrator\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
-  ].filter(Boolean);
-  for (const p of c) if (fs.existsSync(p)) return p;
-  throw new Error('找不到 Chrome');
-}
+const ROOT = REPO_ROOT;
+const URL_BASE = process.argv.find((a) => a.startsWith('http')) || 'http://127.0.0.1:5180/';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -44,20 +38,8 @@ function check(name, pass, detail) {
   console.log(`  [${pass ? 'PASS' : 'FAIL'}] ${name}${detail ? '  —— ' + detail : ''}`);
 }
 
-const browser = await launch({
-  executablePath: findChrome(),
-  headless: false,
-  defaultViewport: null,
-  args: [
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--window-size=1280,860',
-    '--disable-background-timer-throttling',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-features=CalculateNativeWinOcclusion',
-  ],
-  protocolTimeout: 600000,
-});
+const browser = await launchBrowser();
+console.log(`  运行模式: ${describeMode()}`);
 
 const page = await browser.newPage();
 const pageErrors = [];
@@ -627,20 +609,46 @@ try {
       // ★ 必须**贴住掩体再跳**：空中控制被刻意限制得很弱（airWishCap 1.5），
       // 从 2.5m 外原地起跳，整个滞空期只能前进约 0.2m，根本够不到掩体。
       // 先按住 W 走到被挡住，再在紧邻位置起跳。
+      //
+      // ★★ 同时测量"抬升是否平滑"。两个指标一起用，理由如下：
+      //   · 单帧位移 Δy 会随帧率变化（同样 3.5m/s 的爬升，165Hz 下每帧 0.021m、
+      //     30Hz 下 0.117m），拿固定阈值卡它在不同机器上会误判；
+      //   · 与帧率无关的是**隐含竖直速度** Δy/Δt —— "跳变"的本质就是
+      //     出现了一个物理上不可能的竖直速度（瞬间对齐 0.47m 在一帧内 = 几十 m/s）。
+      //   另外统计"爬升途中被观测到的中间高度个数"：瞬间对齐几乎取不到中间值。
+      await page.evaluate(() => window.__m2.resetMotionProbe());
       await page.keyboard.down('KeyW');
       await sleep(900); // 走到贴住掩体
       await page.keyboard.press('Space');
       let maxY2 = 0;
-      for (let i = 0; i < 24; i++) {
+      let peakSpeed = 0;
+      let intermediates = 0;
+      for (let i = 0; i < 40; i++) {
         const s = await snap();
         maxY2 = Math.max(maxY2, s.player.y);
-        await sleep(60);
+        peakSpeed = Math.max(peakSpeed, s.player.maxFrameDYSpeed);
+        const y = s.player.y;
+        if (y > 0.1 && y < tall.height - 0.1) intermediates++;
+        await sleep(40);
       }
       await page.keyboard.up('KeyW');
       await sleep(400);
+      const fin = await snap();
+      peakSpeed = Math.max(peakSpeed, fin.player.maxFrameDYSpeed);
+
       check('贴住掩体起跳后可以站上高掩体（掩体几何是双向可用的）',
         maxY2 >= tall.height - 0.12,
         `脚底峰值 ${maxY2.toFixed(3)}（掩体顶 ${tall.height}，跳跃最高约 0.68m + stepHeight 0.55m）`);
+      // 跳跃上升 5.2m/s、落地下降约 7m/s，因此正常量级在 7 以内；
+      // 瞬间对齐 0.47m 在一帧内会产生几十 m/s。阈值 12 把两者清晰分开。
+      check('跳上高箱子时抬升平滑（竖直速度未超出物理量级）',
+        peakSpeed < 12,
+        `隐含竖直速度峰值 ${peakSpeed.toFixed(2)} m/s（阈值 12；正常跳跃/下落约 5~7）`);
+      check('爬升过程被观测到多个中间高度（不是一步到位）',
+        intermediates >= 2,
+        `中间高度采样数 ${intermediates}（瞬间对齐只会取到 0~1 个）`);
+      check('运动探针本身有效（确实测到了变化）', peakSpeed > 0.5,
+        `实测 ${peakSpeed.toFixed(2)} m/s，单帧最大 ${fin.player.maxFrameDY.toFixed(4)}m`);
     }
   }
 
