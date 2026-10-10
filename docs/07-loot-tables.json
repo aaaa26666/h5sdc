@@ -1,0 +1,400 @@
+{
+  "_comment": "M3 前置：物资与掉落权重表（O7 表的数据本体）。状态=待审核裁定。依据《流程文档》§2.2 稀有度五档、§8.2 配置表清单。批准后由 M3-3/M3-4 迁移进 src/config/ 并接入运行时，本文件届时转为参考件。",
+  "_convention": "以 _ 开头的键是注释而非数据，遍历一律经 dataKeys() 过滤（沿用项目既有约定）。权重是相对值，校验时按容器归一化。",
+  "rarity": [
+    {
+      "id": "common",
+      "label": "白",
+      "colorHex": "#d8dde2",
+      "valueMin": 80,
+      "valueMax": 200,
+      "beamIntensity": 0,
+      "dropSoundTier": 0
+    },
+    {
+      "id": "uncommon",
+      "label": "绿",
+      "colorHex": "#5fd07a",
+      "valueMin": 250,
+      "valueMax": 600,
+      "beamIntensity": 0.2,
+      "dropSoundTier": 1
+    },
+    {
+      "id": "rare",
+      "label": "蓝",
+      "colorHex": "#4fa8e8",
+      "valueMin": 700,
+      "valueMax": 1600,
+      "beamIntensity": 0.5,
+      "dropSoundTier": 2
+    },
+    {
+      "id": "epic",
+      "label": "紫",
+      "colorHex": "#a97ae8",
+      "valueMin": 2000,
+      "valueMax": 4500,
+      "beamIntensity": 0.8,
+      "dropSoundTier": 3
+    },
+    {
+      "id": "legendary",
+      "label": "金",
+      "colorHex": "#e8b64f",
+      "valueMin": 6000,
+      "valueMax": 15000,
+      "beamIntensity": 1,
+      "dropSoundTier": 4
+    }
+  ],
+  "_itemsComment": "§2.2 的物资分类：武器/弹药/护甲/医疗/消耗品/任务物品/纯价值。stack=每格堆叠上限；weightKg=单件重量（M3-5 负重使用）；vol=占格数。",
+  "items": [
+    {
+      "id": "canned_food",
+      "label": "罐头",
+      "category": "consumable",
+      "rarity": "common",
+      "value": 90,
+      "weightKg": 0.4,
+      "vol": 1,
+      "stack": 3
+    },
+    {
+      "id": "ammo_556",
+      "label": "5.56 弹药",
+      "category": "ammo",
+      "rarity": "common",
+      "value": 110,
+      "weightKg": 0.3,
+      "vol": 1,
+      "stack": 5
+    },
+    {
+      "id": "bandage",
+      "label": "绷带",
+      "category": "medical",
+      "rarity": "common",
+      "value": 130,
+      "weightKg": 0.2,
+      "vol": 1,
+      "stack": 4
+    },
+    {
+      "id": "pistol_mag",
+      "label": "手枪弹匣",
+      "category": "ammo",
+      "rarity": "common",
+      "value": 150,
+      "weightKg": 0.4,
+      "vol": 1,
+      "stack": 3
+    },
+    {
+      "id": "duct_tape",
+      "label": "胶带",
+      "category": "valuable",
+      "rarity": "common",
+      "value": 160,
+      "weightKg": 0.3,
+      "vol": 1,
+      "stack": 3
+    },
+    {
+      "id": "tool_kit",
+      "label": "工具包",
+      "category": "valuable",
+      "rarity": "uncommon",
+      "value": 330,
+      "weightKg": 1.5,
+      "vol": 2,
+      "stack": 1
+    },
+    {
+      "id": "ammo_762",
+      "label": "7.62 弹药",
+      "category": "ammo",
+      "rarity": "uncommon",
+      "value": 380,
+      "weightKg": 0.4,
+      "vol": 1,
+      "stack": 5
+    },
+    {
+      "id": "medkit",
+      "label": "急救包",
+      "category": "medical",
+      "rarity": "uncommon",
+      "value": 420,
+      "weightKg": 0.6,
+      "vol": 1,
+      "stack": 2
+    },
+    {
+      "id": "helmet2",
+      "label": "二级头盔",
+      "category": "armor",
+      "rarity": "uncommon",
+      "value": 480,
+      "weightKg": 1.8,
+      "vol": 2,
+      "stack": 1
+    },
+    {
+      "id": "vest2",
+      "label": "二级护甲",
+      "category": "armor",
+      "rarity": "uncommon",
+      "value": 550,
+      "weightKg": 3.2,
+      "vol": 3,
+      "stack": 1
+    },
+    {
+      "id": "ammo_ap",
+      "label": "穿甲弹",
+      "category": "ammo",
+      "rarity": "rare",
+      "value": 900,
+      "weightKg": 0.4,
+      "vol": 1,
+      "stack": 5
+    },
+    {
+      "id": "helmet3",
+      "label": "三级头盔",
+      "category": "armor",
+      "rarity": "rare",
+      "value": 980,
+      "weightKg": 2.1,
+      "vol": 2,
+      "stack": 1
+    },
+    {
+      "id": "optic_reddot",
+      "label": "红点镜",
+      "category": "attachment",
+      "rarity": "rare",
+      "value": 1050,
+      "weightKg": 0.3,
+      "vol": 1,
+      "stack": 1
+    },
+    {
+      "id": "vest3",
+      "label": "三级护甲",
+      "category": "armor",
+      "rarity": "rare",
+      "value": 1250,
+      "weightKg": 4,
+      "vol": 3,
+      "stack": 1
+    },
+    {
+      "id": "encrypted_drive",
+      "label": "加密硬盘",
+      "category": "quest",
+      "rarity": "rare",
+      "value": 1400,
+      "weightKg": 0.2,
+      "vol": 1,
+      "stack": 1
+    },
+    {
+      "id": "gold_bar",
+      "label": "金条",
+      "category": "valuable",
+      "rarity": "epic",
+      "value": 2800,
+      "weightKg": 1,
+      "vol": 1,
+      "stack": 2
+    },
+    {
+      "id": "rifle_sr25",
+      "label": "SR-25 步枪",
+      "category": "weapon",
+      "rarity": "epic",
+      "value": 3200,
+      "weightKg": 4.6,
+      "vol": 4,
+      "stack": 1
+    },
+    {
+      "id": "vest4",
+      "label": "四级护甲",
+      "category": "armor",
+      "rarity": "epic",
+      "value": 3600,
+      "weightKg": 5.2,
+      "vol": 4,
+      "stack": 1
+    },
+    {
+      "id": "keycard_armory",
+      "label": "军械库门禁卡",
+      "category": "quest",
+      "rarity": "legendary",
+      "value": 7500,
+      "weightKg": 0.1,
+      "vol": 1,
+      "stack": 1
+    },
+    {
+      "id": "bitcoin",
+      "label": "比特币",
+      "category": "valuable",
+      "rarity": "legendary",
+      "value": 11000,
+      "weightKg": 0.1,
+      "vol": 1,
+      "stack": 1
+    }
+  ],
+  "_containersComment": "§2.2 容器分级：普通箱/军用箱/保险箱/钥匙房。searchMs 为满进度耗时；interruptRule 见 interruptRules，规则写在表里而不是逻辑里。",
+  "containers": [
+    {
+      "id": "crate_civil",
+      "label": "民用箱",
+      "searchMs": 2500,
+      "itemsMin": 1,
+      "itemsMax": 2,
+      "requiresKey": null,
+      "interruptRule": "lose_all",
+      "rarityWeights": {
+        "common": 62,
+        "uncommon": 28,
+        "rare": 9,
+        "epic": 1,
+        "legendary": 0
+      },
+      "tier": 1
+    },
+    {
+      "id": "crate_military",
+      "label": "军用箱",
+      "searchMs": 4000,
+      "itemsMin": 2,
+      "itemsMax": 3,
+      "requiresKey": null,
+      "interruptRule": "keep_partial",
+      "rarityWeights": {
+        "common": 25,
+        "uncommon": 40,
+        "rare": 27,
+        "epic": 7.5,
+        "legendary": 0.5
+      },
+      "tier": 2
+    },
+    {
+      "id": "safe",
+      "label": "保险箱",
+      "searchMs": 6000,
+      "itemsMin": 1,
+      "itemsMax": 2,
+      "requiresKey": null,
+      "interruptRule": "lose_all",
+      "rarityWeights": {
+        "common": 0,
+        "uncommon": 18,
+        "rare": 45,
+        "epic": 32,
+        "legendary": 5
+      },
+      "tier": 3
+    },
+    {
+      "id": "key_room",
+      "label": "钥匙房",
+      "searchMs": 8000,
+      "itemsMin": 3,
+      "itemsMax": 4,
+      "requiresKey": "keycard_armory",
+      "interruptRule": "keep_partial",
+      "rarityWeights": {
+        "common": 0,
+        "uncommon": 8,
+        "rare": 32,
+        "epic": 45,
+        "legendary": 15
+      },
+      "tier": 4,
+      "_distributionNote": "头奖型分布：峰值在紫(45%)。\"随稀有度严格单调递减\"的规则会禁止这种形状，但那等于逼钥匙房退化成以白装为主、失去档位意义。校验脚本因此改用**单峰**规则：同时接受衰减型与头奖型，且仍能抓住锯齿状分布（多半是复制粘贴出错）。"
+    }
+  ],
+  "_interruptComment": "搜索被打断的规则。硬性要求：规则写在配置里，不写在逻辑里。keepFraction 是打断时保留的进度比例。",
+  "interruptRules": {
+    "lose_all": {
+      "_desc": "打断即清空进度，需从头搜。用于民用箱/保险箱。",
+      "keepFraction": 0,
+      "abortOnDamage": true,
+      "abortOnMove": true,
+      "abortOnFire": true
+    },
+    "keep_partial": {
+      "_desc": "打断保留部分进度。用于军用箱/钥匙房。",
+      "keepFraction": 0.5,
+      "abortOnDamage": true,
+      "abortOnMove": true,
+      "abortOnFire": true
+    }
+  },
+  "_zoneBudgetComment": "每张图的容器数量预算，由 M3-2 按分区落位。禁止为'看起来丰富'堆数量，因此这里给的是上限。",
+  "containerBudget": {
+    "crate_civil": 14,
+    "crate_military": 5,
+    "safe": 2,
+    "key_room": 1,
+    "_total": 22,
+    "_densityCheck": "40x40 格 x 2.5m = 100x100m = 10000 m^2；22 个容器 ≈ 每 455 m^2 一个"
+  },
+  "_targetsComment": "单局收益目标区间（DoD ②）。**以'能带走的'为准，不是'地上的'** —— 见 backpack 容量约束。由 validate-loot-tables.mjs 校验。survivalRate 是设计意图，待试玩校验。",
+  "_backpackComment": "M3-5 的背包容量目标。它同时是收益模型的约束：容量装不下时玩家必须按价值密度取舍，这才是'搜'的核心 —— 地面上有多少不是收益，能带走多少才是。",
+  "backpack": {
+    "slots": 24,
+    "weightLimitKg": 22,
+    "_weightNote": "22kg 是**战利品净容量**，不含身上装备（护甲约 4kg + 步枪 4.6kg + 弹药等约 10kg）。M3-5 落地时需与'角色总负重上限'区分开。",
+    "safeContainerSlots": 4,
+    "_safeNote": "保险箱（安全容器）格数。M3-6 用它决定死亡时保留多少。"
+  },
+  "raidTargets": [
+    {
+      "id": "shallow",
+      "label": "速撤（浅搜）",
+      "containers": {
+        "crate_civil": 5
+      },
+      "valueMin": 1800,
+      "valueMax": 3600,
+      "survivalRate": 0.85,
+      "_desc": "只搜出生区与近邻，拿到够本就走"
+    },
+    {
+      "id": "normal",
+      "label": "正常（主搜资源区）",
+      "containers": {
+        "crate_civil": 8,
+        "crate_military": 3
+      },
+      "valueMin": 8000,
+      "valueMax": 12500,
+      "survivalRate": 0.55,
+      "_desc": "资源区主力搜刮，一次交战后撤离"
+    },
+    {
+      "id": "greedy",
+      "label": "贪（全图）",
+      "containers": {
+        "crate_civil": 14,
+        "crate_military": 5,
+        "safe": 2,
+        "key_room": 1
+      },
+      "valueMin": 24000,
+      "valueMax": 38000,
+      "survivalRate": 0.28,
+      "_desc": "全图开满含保险箱与钥匙房，赌一把"
+    }
+  ]
+}

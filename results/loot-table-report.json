@@ -1,0 +1,118 @@
+{
+  "generatedAt": "2026-10-10T12:59:57.283Z",
+  "source": "docs/07-loot-tables.json",
+  "status": "pending-review",
+  "runs": 20000,
+  "seed": 20260301,
+  "checks": 26,
+  "failures": [],
+  "warnings": [
+    "搜刮已占时限 31.3%，接近阈值；若 M4 调整时限需重算"
+  ],
+  "containers": [
+    {
+      "id": "crate_civil",
+      "label": "民用箱",
+      "searchMs": 2500,
+      "itemsAvg": 1.5,
+      "evPerItem": 332.76,
+      "evPerContainer": 499.14,
+      "rarityDistribution": {
+        "common": 0.62,
+        "uncommon": 0.28,
+        "rare": 0.09,
+        "epic": 0.01,
+        "legendary": 0
+      }
+    },
+    {
+      "id": "crate_military",
+      "label": "军用箱",
+      "searchMs": 4000,
+      "itemsAvg": 2.5,
+      "evPerItem": 792.37,
+      "evPerContainer": 1980.92,
+      "rarityDistribution": {
+        "common": 0.25,
+        "uncommon": 0.4,
+        "rare": 0.27,
+        "epic": 0.075,
+        "legendary": 0.005
+      }
+    },
+    {
+      "id": "safe",
+      "label": "保险箱",
+      "searchMs": 6000,
+      "itemsAvg": 1.5,
+      "evPerItem": 2066.46,
+      "evPerContainer": 3099.69,
+      "rarityDistribution": {
+        "common": 0,
+        "uncommon": 0.18,
+        "rare": 0.45,
+        "epic": 0.32,
+        "legendary": 0.05
+      }
+    },
+    {
+      "id": "key_room",
+      "label": "钥匙房",
+      "searchMs": 8000,
+      "itemsAvg": 3.5,
+      "evPerItem": 3219.18,
+      "evPerContainer": 11267.13,
+      "rarityDistribution": {
+        "common": 0,
+        "uncommon": 0.08,
+        "rare": 0.32,
+        "epic": 0.45,
+        "legendary": 0.15
+      }
+    }
+  ],
+  "raidTargets": [
+    {
+      "id": "shallow",
+      "label": "速撤（浅搜）",
+      "targetMin": 1800,
+      "targetMax": 3600,
+      "survivalRate": 0.85,
+      "p05": 1070,
+      "p50": 2240,
+      "p95": 4890,
+      "mean": 2484.72,
+      "avgItems": 7.51,
+      "inBand": true,
+      "expectedValueWithSurvival": 2112.01
+    },
+    {
+      "id": "normal",
+      "label": "正常（主搜资源区）",
+      "targetMin": 8000,
+      "targetMax": 12500,
+      "survivalRate": 0.55,
+      "p05": 5580,
+      "p50": 8930,
+      "p95": 14760,
+      "mean": 9383.66,
+      "avgItems": 15.7,
+      "inBand": true,
+      "expectedValueWithSurvival": 5161.01
+    },
+    {
+      "id": "greedy",
+      "label": "贪（全图）",
+      "targetMin": 24000,
+      "targetMax": 38000,
+      "survivalRate": 0.28,
+      "p05": 16760,
+      "p50": 25290,
+      "p95": 40180,
+      "mean": 26410.89,
+      "avgItems": 14.31,
+      "inBand": true,
+      "expectedValueWithSurvival": 7395.05
+    }
+  ]
+}
