@@ -1,0 +1,112 @@
+{
+  "_comment": "M3-2 第 1 张战区地图表：废弃工业区。状态=待评审。依据《流程文档》§8.2 地图表、§2.4 撤离点规则。M3 禁止硬编码容器位置，因此容器、撤离点、动线全部在本表内。M3-1 将据此表落地灰盒。",
+  "_coordinateConvention": "x 向右、z 向下（与关卡网格一致，格坐标）。矩形用 x/z 为左上角、w/h 为宽高（格数）。",
+  "_renderCommand": "node tools/render-map.mjs  （地图表 -> ASCII 动线图 + 统计与校验，保证图与数据一致）",
+  "_validationNote": "渲染脚本会校验：容器不落墙里/数量与 07 表预算一致/全部在分区内/从出生区可达；动线不得穿墙；每条动线不得被另一条全面支配。",
+
+  "id": "industrial_01",
+  "label": "废弃工业区",
+  "grid": { "w": 40, "h": 40, "cell": 2.5, "wallHeight": 3.5 },
+  "_sizeNote": "40x40 格 x 2.5m = 100m x 100m。步行 5m/s 横穿约 20s，冲刺 7.5m/s 约 13s。",
+
+  "_wallsComment": "墙体矩形，全部实心。楼与楼之间的空隙自然形成通道 —— 灰盒阶段最省事且可读的做法。",
+  "walls": [
+    { "id": "b_office_1", "label": "办公楼A", "x": 4, "z": 4, "w": 6, "h": 4 },
+    { "id": "b_office_2", "label": "宿舍楼", "x": 4, "z": 9, "w": 3, "h": 5 },
+    { "id": "b_office_3", "label": "仓库小屋", "x": 10, "z": 9, "w": 4, "h": 4 },
+
+    { "id": "b_yard_1", "label": "装卸棚A", "x": 27, "z": 4, "w": 8, "h": 4 },
+    { "id": "b_yard_2", "label": "装卸棚B", "x": 30, "z": 9, "w": 5, "h": 4 },
+    { "id": "b_yard_3", "label": "料仓", "x": 25, "z": 9, "w": 3, "h": 6 },
+
+    { "id": "b_hall_top", "label": "主厂房北墙", "x": 15, "z": 15, "w": 4, "h": 1 },
+    { "id": "b_hall_top2", "label": "主厂房北墙(续)", "x": 21, "z": 15, "w": 4, "h": 1 },
+    { "id": "b_hall_bottom", "label": "主厂房南墙", "x": 15, "z": 24, "w": 4, "h": 1 },
+    { "id": "b_hall_bottom2", "label": "主厂房南墙(续)", "x": 21, "z": 24, "w": 4, "h": 1 },
+    { "id": "b_hall_left", "label": "主厂房西墙", "x": 15, "z": 16, "w": 1, "h": 3 },
+    { "id": "b_hall_left2", "label": "主厂房西墙(续)", "x": 15, "z": 21, "w": 1, "h": 3 },
+    { "id": "b_hall_right", "label": "主厂房东墙", "x": 24, "z": 16, "w": 1, "h": 3 },
+    { "id": "b_hall_right2", "label": "主厂房东墙(续)", "x": 24, "z": 21, "w": 1, "h": 3 },
+    { "id": "b_hall_core", "label": "厂房中央核心", "x": 18, "z": 18, "w": 4, "h": 4 },
+
+    { "id": "b_spawn_1", "label": "出生区料堆A", "x": 5, "z": 29, "w": 3, "h": 3 },
+    { "id": "b_spawn_2", "label": "出生区料堆B", "x": 10, "z": 33, "w": 3, "h": 3 },
+
+    { "id": "b_ware_1", "label": "仓储大棚", "x": 27, "z": 28, "w": 7, "h": 4 },
+    { "id": "b_ware_2", "label": "仓储小屋", "x": 27, "z": 33, "w": 4, "h": 3 },
+    { "id": "b_ware_3", "label": "变压器房", "x": 34, "z": 24, "w": 3, "h": 4 }
+  ],
+
+  "_zonesComment": "分区**完整平铺**可通行区域（x/z 均为 2..37）。第一版分区是小岛，62% 的可行走面积落在分区之外，分区图因此没有指导意义。角色决定显示字母：spawn=S / resource=R / contested=C。",
+  "zones": [
+    { "id": "spawn", "role": "spawn", "label": "出生区", "short": "S", "x": 2, "z": 26, "w": 18, "h": 12,
+      "_role": "低风险起步区。只有民用箱，但紧邻撤离点 E1 —— 这是「速撤」玩法的舞台。" },
+    { "id": "res_west_n", "role": "resource", "label": "资源区(西北·办公)", "short": "R", "x": 2, "z": 2, "w": 18, "h": 12,
+      "_role": "办公楼与宿舍楼。室内掩体最多、交战距离最近，价值中等 —— 稳扎稳打的选择。" },
+    { "id": "res_west_m", "role": "resource", "label": "资源区(西·院区)", "short": "R", "x": 2, "z": 14, "w": 12, "h": 12,
+      "_role": "主厂房西侧的院子。是从西线接近交战区的缓冲带，也是西侧唯一的开阔地。" },
+    { "id": "res_north_e", "role": "resource", "label": "资源区(北·装卸场)", "short": "R", "x": 20, "z": 2, "w": 18, "h": 12,
+      "_role": "装卸场开阔、掩体少，容易打成遭遇战。紧邻东北撤离点，是搜完东侧后的顺路出口。" },
+    { "id": "contested", "role": "contested", "label": "交战区(主厂房)", "short": "C", "x": 14, "z": 14, "w": 12, "h": 12,
+      "_role": "最高价值（保险箱 + 钥匙房）、AI 最密，是「贪」玩法的目标，也是最容易死的地方。" },
+    { "id": "res_east_m", "role": "resource", "label": "资源区(东·料场)", "short": "R", "x": 26, "z": 14, "w": 12, "h": 12,
+      "_role": "料场。东线的必经之路，也是从交战区撤向东北门的通道。" },
+    { "id": "res_south", "role": "resource", "label": "资源区(南·仓储)", "short": "R", "x": 20, "z": 26, "w": 18, "h": 12,
+      "_role": "仓储大棚。东线绕行时顺路可搜，是南侧唯一的中价值区域。" }
+  ],
+
+  "_routesComment": "动线。折线点串；渲染脚本会画线、算长度与耗时，并校验不穿墙、不被其他路线全面支配。设计目标：从出生区到交战区有 3 条取舍不同的路线。",
+  "routes": [
+    {
+      "id": "r_west", "label": "西线（掩体最多、路程最长）",
+      "waypoints": [[9, 34], [9, 24], [7, 20], [7, 16], [8, 14], [14, 14], [14, 19], [16, 19], [17, 20]],
+      "_why": "沿西侧建筑群北上，再从主厂房西门进。全程贴楼体，暴露最少，但路程最长、且绕开了南侧仓储。"
+    },
+    {
+      "id": "r_mid", "label": "中线（最短、最直、最可预测）",
+      "waypoints": [[13, 34], [16, 28], [19, 26], [19, 25], [19, 22]],
+      "_why": "直奔厂房南门。路程最短、省时间，但走位最可预测，且正对厂房出口 —— 里面的人先看到你。顺路搜不到任何资源区。"
+    },
+    {
+      "id": "r_east", "label": "东线（最远、顺路多搜两个资源区）",
+      "waypoints": [[18, 34], [24, 36], [32, 36], [35, 32], [37, 28], [37, 20], [33, 18], [28, 17], [25, 17], [24, 19], [23, 19]],
+      "_why": "沿南侧绕到东边再北上，穿过南仓储与北装卸场。路程最长，但顺路能多搜两个资源区，且能直达东北撤离点。"
+    }
+  ],
+
+  "_extractsComment": "§2.4：单局 2~4 个，分常驻点与条件点。这里 3 个：2 常驻 + 1 条件。",
+  "extracts": [
+    { "id": "e1_sw", "label": "西南检查站", "x": 3, "z": 36, "radiusCells": 1.4, "conditional": false,
+      "_why": "紧邻出生区。速撤玩家的出口 —— 拿到一点就走，风险最低、收益也最低。" },
+    { "id": "e2_ne", "label": "东北货运门", "x": 36, "z": 3, "radiusCells": 1.4, "conditional": false,
+      "_why": "离出生区最远（需横穿全图），但紧邻北侧资源区 —— 搜完东侧后从这里走顺路。" },
+    { "id": "e3_hall", "label": "厂房北侧检修口", "x": 19, "z": 13, "radiusCells": 1.2, "conditional": true,
+      "conditionNote": "需在局内时间过半后开放（时间条件点）",
+      "_why": "就在交战区北门外。贪完主厂房后立刻能撤，但它是条件点 —— 到点前不能撤，逼玩家做时间判断。" }
+  ],
+
+  "_containersComment": "容器落位。数量必须与 07-loot-tables.json 的 containerBudget 一致（民用14/军用5/保险箱2/钥匙房1=22）。",
+  "containers": [
+    { "type": "crate_civil", "x": 3, "z": 27 }, { "type": "crate_civil", "x": 15, "z": 27 },
+    { "type": "crate_civil", "x": 3, "z": 32 },
+
+    { "type": "crate_civil", "x": 3, "z": 3 }, { "type": "crate_civil", "x": 16, "z": 3 },
+    { "type": "crate_civil", "x": 16, "z": 8 },
+    { "type": "crate_military", "x": 8, "z": 3 }, { "type": "crate_military", "x": 16, "z": 12 },
+    { "type": "safe", "x": 16, "z": 6 },
+
+    { "type": "crate_civil", "x": 3, "z": 20 },
+
+    { "type": "crate_civil", "x": 22, "z": 3 }, { "type": "crate_civil", "x": 36, "z": 3 },
+    { "type": "crate_civil", "x": 24, "z": 8 },
+
+    { "type": "crate_military", "x": 36, "z": 20 },
+
+    { "type": "crate_civil", "x": 20, "z": 27 }, { "type": "crate_civil", "x": 35, "z": 36 },
+
+    { "type": "crate_civil", "x": 16, "z": 16 }, { "type": "crate_civil", "x": 23, "z": 23 },
+    { "type": "crate_military", "x": 16, "z": 23 }, { "type": "crate_military", "x": 23, "z": 16 },
+    { "type": "safe", "x": 17, "z": 20 },
+    { "type": "key_room", "x": 22, "z": 20 }
+  ]
+}

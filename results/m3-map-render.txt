@@ -1,0 +1,98 @@
+﻿
+================ M3-2 动线图：废弃工业区 ================
+  数据源: docs\08-M3-地图表-废弃工业区.json
+  状态  : 待评审（本图由地图表渲染，与 M3-1 将要实现的数据同源）
+
+  网格 40x40 格，每格 2.5m  →  100m x 100m
+
+     0         1         2         3         
+  0  ########################################
+  1  #······································#
+  2  #·RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRREEE·#
+  3  #·RoRRRRORRRRRRRoRRRRRoRRRRRRRRRRRREEE·#
+  4  #·RR######RRRRRRRRRRRRRRRRR########EEE·#
+  5  #·RR######RRRRRRRRRRRRRRRRR########RRR·#
+  6  #·RR######RRRRRRXRRRRRRRRRR########RRR·#
+  7  #·RR######RRRRRRRRRRRRRRRRR########RRR·#
+  8  #·RRRRRRRRRRRRRRoRRRRRRRoRRRRRRRRRRRRR·#
+  9  #·RR###RRR####RRRRRRRRRRR###RR#####RRR·#
+ 10  #·RR###RRR####RRRRRRRRRRR###RR#####RRR·#
+ 11  #·RR###RRR####RRRRRRRRRRR###RR#####RRR·#
+ 12  #·RR###RRR####RROREEERRRR###RR#####RRR·#
+ 13  #·RR###RRRRRRRRRRREEERRRR###RRRRRRRRRR·#
+ 14  #·RRRRRRaaaaaaaCCCEEECCCC###RRRRRRRRRR·#
+ 15  #·RRRRRRaRRRRRa####CC####CRRRRRRRRRRRR·#
+ 16  #·RRRRRaRRRRRRa#oCCCCCCO#CRRRRRRRRRRRR·#
+ 17  #·RRRRRaRRRRRRa#CCCCCCCC#ccccccRRRRRRR·#
+ 18  #·RRRRRaRRRRRRa#CC####CC#cRRRRRcccRRRR·#
+ 19  #·RRRRRaRRRRRRaaaC####CccCRRRRRRRRccRR·#
+ 20  #·RoRRRaRRRRRRCCCX####KCCCRRRRRRRRRROc·#
+ 21  #·RRRRRRaRRRRRC#CC####CC#CRRRRRRRRRRRc·#
+ 22  #·RRRRRRaRRRRRC#CCCbCCCC#CRRRRRRRRRRRc·#
+ 23  #·RRRRRRRaRRRRC#OCCbCCCo#CRRRRRRRRRRRc·#
+ 24  #·RRRRRRRaRRRRC####bC####CRRRRRRRR###c·#
+ 25  #·RRRRRRRaRRRRCCCCCbCCCCCCRRRRRRRR###c·#
+ 26  #·SSSSSSSaSSSSSSSSSbRRRRRRRRRRRRRR###c·#
+ 27  #·SoSSSSSaSSSSSoSbbSoRRRRRRRRRRRRR###c·#
+ 28  #·SSSSSSSaSSSSSSbSSSRRRRRRR#######RRRc·#
+ 29  #·SSS###SaSSSSSSbSSSRRRRRRR#######RRRc·#
+ 30  #·SSS###SaSSSSSbSSSSRRRRRRR#######RRcR·#
+ 31  #·SSS###SaSSSSSbSSSSRRRRRRR#######RRcR·#
+ 32  #·SoSSSSSaSSSSbSSSSSRRRRRRRRRRRRRRRcRR·#
+ 33  #·SSSSSSSa###SbSSSSSRRRRRRR####RRRcRRR·#
+ 34  #·SSSSSSSa###bSSSSccRRRRRRR####RRRcRRR·#
+ 35  #·EEESSSSS###SSSSSSScccRRRR####RRcRRRR·#
+ 36  #·EEESSSSSSSSSSSSSSSRRRccccccccccRRoRR·#
+ 37  #·EEESSSSSSSSSSSSSSSRRRRRRRRRRRRRRRRRR·#
+ 38  #······································#
+ 39  ########################################
+     0         1         2         3         
+
+  图例: # 墙   E 撤离点   o 民用箱   O 军用箱   X 保险箱   K 钥匙房
+        S 出生区   R 资源区   C 交战区   · 通道
+        a = 西线（掩体最多、路程最长）
+        b = 中线（最短、最直、最可预测）
+        c = 东线（最远、顺路多搜两个资源区）
+
+—— 分区统计 ——
+  出生区          可通行  198 格 (1238 m²)  容器  3  民用箱3
+  资源区(西北·办公)   可通行  161 格 (1006 m²)  容器  6  民用箱3 军用箱2 保险箱1
+  资源区(西·院区)    可通行  144 格 (900 m²)  容器  1  民用箱1
+  资源区(北·装卸场)   可通行  149 格 (931 m²)  容器  3  民用箱3
+  交战区(主厂房)     可通行   99 格 (619 m²)  容器  6  民用箱2 军用箱2 保险箱1 钥匙房1
+  资源区(东·料场)    可通行  136 格 (850 m²)  容器  1  军用箱1
+  资源区(南·仓储)    可通行  170 格 (1063 m²)  容器  2  民用箱2
+  （分区外通道）     可通行  148 格 (925 m²)
+
+—— 动线统计 ——
+  西线（掩体最多、路程最长）
+    长度 105m   步行 21.0s   冲刺 14.0s   暴露段 33%
+    设计意图: 沿西侧建筑群北上，再从主厂房西门进。全程贴楼体，暴露最少，但路程最长、且绕开了南侧仓储。
+  中线（最短、最直、最可预测）
+    长度 43m   步行 8.5s   冲刺 5.7s   暴露段 41%
+    设计意图: 直奔厂房南门。路程最短、省时间，但走位最可预测，且正对厂房出口 —— 里面的人先看到你。顺路搜不到任何资源区。
+  东线（最远、顺路多搜两个资源区）
+    长度 138m   步行 27.5s   冲刺 18.3s   暴露段 44%
+    设计意图: 沿南侧绕到东边再北上，穿过南仓储与北装卸场。路程最长，但顺路能多搜两个资源区，且能直达东北撤离点。
+  [PASS] 没有任何动线被另一条全面支配（每条路线都有存在的理由）  —— 西线 长度42格 暴露33% 顺路资源区1  |  中线 长度17格 暴露41% 顺路资源区0  |  东线 长度55格 暴露44% 顺路资源区2
+  [PASS] 动线不穿墙（否则玩家根本走不通，评审时会误判）  —— 三条动线全程可通行
+
+  —— 每条动线顺路经过的分区（「选路」的实质收益）——
+    西线（掩体最多、路程最长）
+      出生区 / 资源区(西·院区) / 交战区(主厂房)
+    中线（最短、最直、最可预测）
+      出生区 / 交战区(主厂房)
+    东线（最远、顺路多搜两个资源区）
+      出生区 / 资源区(南·仓储) / 资源区(东·料场) / 交战区(主厂房)
+
+—— 校验 ——
+  [PASS] 地图表无结构性错误（越界 / 容器落墙里）  —— 无
+  [PASS] 容器数量与 07 表预算完全一致  —— 共 22 个（预算 22）
+  [PASS] 所有容器都落在某个分区内（没有无人区容器）  —— 全部在分区内
+  [PASS] 撤离点数量在 2~4 个之间（§2.4）  —— 3 个
+  [PASS] 存在条件撤离点（§2.4 要求分常驻与条件）  —— 条件点 1 个，常驻 2 个
+  [PASS] 全部撤离点从出生区可达  —— 可达格数 1205
+  [PASS] 全部容器从出生区可达  —— 全部可达
+  [PASS] 最近撤离点离出生区足够近（「速撤」玩法成立）  —— 22m（出生区中心 → 西南检查站）
+
+  校验 10 项，失败 0，警告 0
