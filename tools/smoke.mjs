@@ -354,16 +354,40 @@ try {
   {
     await ensureRunning('ai');
     const s0 = await snap();
+    // ★ 守卫：本组依赖"局内在跑"。若玩家已阵亡或流程已结束，AI 不再 update，
+    //   于是状态停在 patrol、路径为 0、更新分级为 null —— 看起来像"AI 坏了"，
+    //   实际是"根本没在局内"。这条守卫让那种情况**报错而不是误导**。
+    check('AI 测试开始时确实处于局内且未暂停（防止在已结束的局上测）',
+      s0.flow === 'raid' && !s0.paused,
+      `flow=${s0.flow} paused=${s0.paused} 玩家生命 ${s0.player.health}`);
     const before = new Map(s0.ai.map((a) => [a.id, { x: a.x, z: a.z, updates: a.updates }]));
 
-    // 大幅移动以惊动 AI：传送到 AI 附近并开火
-    await page.evaluate(() => window.__m2.teleportNearAi(0, 6));
-    await page.mouse.down({ button: 'left' });
-    await sleep(400);
-    await page.mouse.up({ button: 'left' });
-    await sleep(3500);
-
-    const s1 = await snap();
+    // 惊动 AI：传送到 AI 附近并开火。
+    //
+    // ★ 这里原来是一个固定 3.5s 等待，**会偶发失败**（实测同代码两次跑出不同结果）。
+    //   原因是"AI 注意到玩家"要走完 感知 → 反应（reactMs）→ 状态机切换 一整条链路，
+    //   耗时受距离、视线、AI 是否正背对着你影响，固定等待本质上是在赌运气。
+    //   改成轮询 + 定期补枪：只在超时后才判失败，且失败信息里带上观测到的证据。
+    //   （同类修复见医疗组：固定 4s 等待改为轮询。）
+    let s1 = await snap();
+    let sawAlert = false;
+    const alertDeadline = Date.now() + 14000;
+    while (Date.now() < alertDeadline) {
+      await page.evaluate(() => window.__m2.teleportNearAi(0, 6));
+      await page.mouse.down({ button: 'left' });
+      await sleep(350);
+      await page.mouse.up({ button: 'left' });
+      await sleep(650);
+      s1 = await snap();
+      if (s1.flow !== 'raid') break; // 玩家阵亡 / 流程结束 —— 后面的守卫会报出来
+      if (s1.ai.some((a) => a.state !== 'patrol')) {
+        sawAlert = true;
+        break;
+      }
+    }
+    // 再等一会，让被惊动的 AI 真正跑出一段路径
+    await sleep(1500);
+    s1 = await snap();
     const moved = s1.ai.filter((a) => {
       const b = before.get(a.id);
       return b && (Math.abs(a.x - b.x) > 0.5 || Math.abs(a.z - b.z) > 0.5);
@@ -373,7 +397,9 @@ try {
 
     const states = [...new Set(s1.ai.map((a) => a.state))];
     check('AI 状态机产生非 patrol 状态', states.some((x) => x !== 'patrol'),
-      `状态集合 ${states.join(',')}`);
+      `状态集合 ${states.join(',')}；轮询期间已观测到警觉=${sawAlert}；` +
+        `各 AI 更新次数 ${s1.ai.map((a) => a.updates).join(',')}；` +
+        `flow=${s1.flow} 玩家生命 ${s1.player.health}`);
 
     const gainedPath = s1.ai.some((a) => a.pathLen > 0);
     check('AI 通过调度器获得了路点', gainedPath, `最长路径 ${Math.max(...s1.ai.map((a) => a.pathLen))} 点`);
@@ -383,12 +409,19 @@ try {
   group('⑥ M2 硬性要求：AI 更新频率分级 + 寻路限流（C-1/C-2）');
   {
     const s = await snap();
+    // 同样加守卫：ai.updateTier 只在 ai.update() 里赋值，若已不在局内就永远是 null
+    check('更新分级测试时确实处于局内（否则全是 null，与"分级坏了"无法区分）',
+      s.flow === 'raid' && !s.paused,
+      `flow=${s.flow} paused=${s.paused} 各 AI 更新次数 ${s.ai.map((a) => a.updates).join(',')}`);
     const withTier = s.ai.filter((a) => a.updateIntervalMs !== null);
     check('每个 AI 都有更新分级', withTier.length === s.ai.length,
       `${withTier.length}/${s.ai.length}`);
     const intervals = [...new Set(s.ai.map((a) => a.updateIntervalMs))];
-    check('更新分级确实按距离区分（存在不同间隔）', intervals.length >= 1,
-      `出现的间隔集合 ${intervals.join(',')}ms`);
+    // ★ 原断言写成 `intervals.length >= 1`，而 [null] 也满足 —— 等于没查。
+    //   真正该查的是"至少有两种不同间隔"，否则分级形同虚设（所有 AI 同频）。
+    check('更新分级确实按距离区分（至少出现两种不同间隔）',
+      intervals.length >= 2 && intervals.every((v) => v !== null),
+      `出现的间隔集合 [${intervals.join(', ')}]ms`);
 
     check('寻路每帧查询数不超上限（C-1）',
       s.scheduler.peakQueriesPerFrame <= 2,

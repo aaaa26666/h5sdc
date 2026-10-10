@@ -725,16 +725,33 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
   }
 
   // ---- 关卡掩体配置一致性 ----
+  //
+  // M3-1 起掩体分两层：**高度规格**在 tunables.level.cover（跨地图共享），
+  // **位置与类型**在地图表里。因此这里同时校验两层 ——
+  // 只看高度会漏掉"地图上根本没有高掩体"这种情况（那样"需要跳"就无从验证）。
   {
-    const lc = config.level.lowCover;
-    check('关卡配置包含低矮掩体', !!lc && lc.count > 0, `count=${lc?.count}`);
+    const lc = config.level.cover;
+    check('关卡配置包含掩体高度规格', !!lc && lc.lowHeight > 0 && lc.tallHeight > 0,
+      `low=${lc?.lowHeight} tall=${lc?.tallHeight}`);
     check('低掩体高度不超过 stepHeight（否则"可迈上"是假的）',
       lc.lowHeight <= config.player.stepHeight,
       `lowHeight=${lc.lowHeight} ≤ stepHeight=${config.player.stepHeight}`);
     check('高掩体高度超过 stepHeight（否则"需要跳"是假的）',
       lc.tallHeight > config.player.stepHeight,
       `tallHeight=${lc.tallHeight} > stepHeight=${config.player.stepHeight}`);
-    check('高掩体占比在合理范围', lc.tallRatio > 0 && lc.tallRatio < 1, `${lc.tallRatio}`);
+
+    // 地图必须两种掩体都有 —— 否则台阶吸附的"迈上/跳上"只能测一半
+    const coverList = config.coverList || [];
+    const lowN = coverList.filter((c) => c.type === 'low').length;
+    const tallN = coverList.filter((c) => c.type === 'tall').length;
+    check('地图里低掩体与高掩体都存在（两类都必须可测）', lowN > 0 && tallN > 0,
+      `低 ${lowN} 格 / 高 ${tallN} 格`);
+
+    // 掩体密度：太密会让地图变成迷宫，太疏则掩体对抗不成立
+    const freeCells = config.level.gridW * config.level.gridH;
+    const density = coverList.length / freeCells;
+    check('掩体密度在合理范围（2%~12% 的格数）', density >= 0.02 && density <= 0.12,
+      `${coverList.length} / ${freeCells} = ${(density * 100).toFixed(1)}%`);
 
     // ★ 关键可达性不变量：**高掩体必须能被跳上去，且余量要够**。
     //

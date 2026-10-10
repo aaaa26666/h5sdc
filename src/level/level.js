@@ -1,106 +1,71 @@
-// M1-1 灰盒关卡（M2 增补：低矮掩体与高度感知碰撞）
+// M3-1 灰盒关卡（表驱动确定布局）
 //
-// 职责：网格地图生成、静态几何渲染、碰撞求解、网格射线。
-// 设计依据：M0-5 已验证"网格 + DDA"方案在目标机上位可行，故 M1 直接沿用网格驱动。
+// 职责：按**地图表**构建网格、静态几何渲染、碰撞求解、网格射线。
+// 设计依据：M0-5 已验证"网格 + DDA"方案在目标机上位可行，故沿用网格驱动。
 // 约束依据：M0-TECH-01 约束 C-5 —— 关卡静态几何必须实例化，禁止逐个 Mesh 提交。
-//          M1 虽禁止"优化性能"，但用 InstancedMesh 建墙并非优化工作（代码量更少），
-//          而是不搭建一个已知不可扩展的结构。此为 M1/M0 约束冲突的裁决，已记入报告。
+//          （用 InstancedMesh 建墙并非"优化工作"，代码量反而更少，
+//           而是不搭建一个已知不可扩展的结构。此为 M1/M0 约束冲突的裁决，已记入报告。）
 //
 // ---------------------------------------------------------------------------
-// M2 增补说明（M1-TEMP-3 台阶吸附的前提）
+// M3-1 的变化：**生成方式**从"种子随机"改为"读地图表"
 //
-// M1-TEMP-3 记录的问题是"没有台阶吸附，3.5 高的墙永远上不去"。
-// 但真正的原因是**关卡里根本没有可以踩上去的低矮几何**：所有阻挡体都是
-// 统一 3.5 米高的墙，且 resolveCircle 是纯 2D 的（不接受 y），
-// 射线也用固定 wallHeight —— 在这套几何上做台阶吸附既没有意义也无法验证。
+// M1/M2 的关卡是 `mulberry32(seed)` 按 blockRatio 随机撒墙生成的。
+// 那种方式可复现、可测试，但**不能做关卡设计** —— 没有动线、没有分区、
+// 没有"这里该放什么"的意图。M3-1 要求"灰盒确定布局"，因此改为：
 //
-// 因此本文件加入**低矮掩体**，并让碰撞与射线都变成**高度感知**的：
-//   · 低掩体（可迈上）：玩家与 AI 都能直接走上去
-//   · 高掩体（需跳上）：挡移动，且能挡子弹 —— 这才让 M2 的"掩体对抗"成立
+//     src/config/maps/<id>.json  ->  墙体矩形 / 掩体矩形 / 出生点 / 容器 / 撤离点
 //
-// 【范围声明】这里加的是**最小夹具**，目的是让台阶吸附可被真实驱动与验证，
-// 不是关卡设计。正式的掩体布局、通路与视线设计属 M3（关卡与搜刮系统）。
-// 生成方式为种子驱动的确定性随机，因此可复现、可测试。
+// 由此产生的连带变化：
+//   · 不再需要 carve/reserve（"把出生点和容器周围的墙挖掉"）——
+//     手写坐标不允许出错，出错由 config 的**启动期校验**带着坐标报错，
+//     而不是靠运行时悄悄挖洞把它藏起来。静默兜底会让地图错误永远浮不上来。
+//   · seed 仍然保留，但不再参与地图生成（aiManager / loot / main 用它做 RNG）。
+//   · M2 的"低矮掩体最小夹具"（随机撒 70 个）删除，改为地图表里的手写掩体布局。
+//
+// 【范围声明】本文件只负责"让地图表变成可玩的关卡"。
+// 容器分级/搜索进度/掉落权重/背包属 M3-3 ~ M3-6；容器在此只作为静态灰盒物件。
 // ---------------------------------------------------------------------------
 import * as THREE from 'three';
-import { mulberry32, clamp } from '../core/rng.js';
 
 export function createLevel(cfg, scene) {
-  const { gridW: W, gridH: H, cell, wallHeight, blockRatio, seed } = cfg.level;
-  const rnd = mulberry32(seed);
+  const map = cfg.map;
+  const { w: W, h: H, cell, wallHeight } = map.grid;
 
-  // ---------- 网格生成 ----------
+  // ---------- 网格：由地图表的墙体矩形构建 ----------
   const blocked = new Uint8Array(W * H);
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const border = x === 0 || y === 0 || x === W - 1 || y === H - 1;
-      blocked[y * W + x] = border || rnd() < blockRatio ? 1 : 0;
-    }
-  }
-  // 出生点与撤离点周围强制清空，避免刷在墙里
-  const carve = (cx, cz, r) => {
-    for (let dz = -r; dz <= r; dz++) {
-      for (let dx = -r; dx <= r; dx++) {
-        const x = cx + dx;
-        const z = cz + dz;
-        if (x <= 0 || z <= 0 || x >= W - 1 || z >= H - 1) continue;
-        blocked[z * W + x] = 0;
+  const idx = (x, z) => z * W + x;
+
+  // 最外圈强制为墙（与既有约定一致，也与 config 的校验保持一致）
+  for (let x = 0; x < W; x++) { blocked[idx(x, 0)] = 1; blocked[idx(x, H - 1)] = 1; }
+  for (let z = 0; z < H; z++) { blocked[idx(0, z)] = 1; blocked[idx(W - 1, z)] = 1; }
+
+  for (const b of map.walls) {
+    for (let dz = 0; dz < b.h; dz++) {
+      for (let dx = 0; dx < b.w; dx++) {
+        blocked[idx(b.x + dx, b.z + dz)] = 1;
       }
     }
-  };
-  carve(cfg.level.playerSpawnCell[0], cfg.level.playerSpawnCell[1], 2);
-  for (const z of cfg.extract.zones) carve(z.cell[0], z.cell[1], 2);
-  // 容器格必须可站可搜，否则会出现"容器在墙里"
-  for (const c of cfg.loot.containerCells) carve(c[0], c[1], 1);
+  }
 
   const free = [];
   for (let i = 0; i < W * H; i++) if (!blocked[i]) free.push(i);
 
-  // ---------- 低矮掩体 ----------
+  // ---------- 掩体：由地图表的掩体矩形构建 ----------
   // 高度存成 Uint8（单位：厘米），既省内存又避免浮点比较的边界抖动。
+  // 高度取值来自 cfg.level.cover（跨地图共享的规格），地图表只给位置与类型 ——
+  // 这样"低掩体多高"只有一处定义，M7 换皮时也不会有人去改地图表里的数字。
   const coverCm = new Uint8Array(W * H);
-  const cover = cfg.level.lowCover;
+  const coverSpec = cfg.level.cover;
   const coverList = [];
-  if (cover && cover.count > 0) {
-    // 这些格子附近不生成掩体：出生点/撤离点/容器格，以及它们的一圈邻居。
-    // 否则会出现"玩家刷在掩体里"或"容器被掩体埋住"。
-    const reserved = new Set();
-    const reserve = (cx, cz, r) => {
-      for (let dz = -r; dz <= r; dz++) {
-        for (let dx = -r; dx <= r; dx++) reserved.add((cz + dz) * W + (cx + dx));
+  for (const c of map.cover || []) {
+    const h = c.type === 'tall' ? coverSpec.tallHeight : coverSpec.lowHeight;
+    for (let dz = 0; dz < c.h; dz++) {
+      for (let dx = 0; dx < c.w; dx++) {
+        const x = c.x + dx;
+        const z = c.z + dz;
+        coverCm[idx(x, z)] = Math.round(h * 100);
+        coverList.push({ cell: x, z, height: h, type: c.type });
       }
-    };
-    reserve(cfg.level.playerSpawnCell[0], cfg.level.playerSpawnCell[1], cover.clearRadiusCells);
-    for (const z of cfg.extract.zones) reserve(z.cell[0], z.cell[1], cover.clearRadiusCells);
-    for (const c of cfg.loot.containerCells) reserve(c[0], c[1], cover.clearRadiusCells);
-
-    // 只在"四面都是空地"的格子上放掩体：贴着墙的掩体没有通行价值，
-    // 而且会让 AI 的绕行路径变得难以预测。
-    const candidates = [];
-    for (const idx of free) {
-      if (reserved.has(idx)) continue;
-      const cx = idx % W;
-      const cz = Math.floor(idx / W);
-      let open = true;
-      for (let dz = -1; dz <= 1 && open; dz++) {
-        for (let dx = -1; dx <= 1 && open; dx++) {
-          if (blocked[(cz + dz) * W + (cx + dx)]) open = false;
-        }
-      }
-      if (open) candidates.push(idx);
-    }
-    // 打乱后按 count 取，保证分布均匀且可复现
-    for (let i = candidates.length - 1; i > 0; i--) {
-      const j = Math.floor(rnd() * (i + 1));
-      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
-    }
-    const n = Math.min(cover.count, candidates.length);
-    for (let i = 0; i < n; i++) {
-      const idx = candidates[i];
-      const tall = rnd() < cover.tallRatio;
-      const h = tall ? cover.tallHeight : cover.lowHeight;
-      coverCm[idx] = Math.round(h * 100);
-      coverList.push({ cell: idx % W, z: Math.floor(idx / W), height: h });
     }
   }
 
@@ -181,7 +146,7 @@ export function createLevel(cfg, scene) {
   scene.add(walls);
 
   // 掩体渲染：视觉略微内缩，让相邻掩体之间看得出分隔（碰撞仍按整格，保持模型简单）
-  const coverVisualScale = cover ? cover.visualScale ?? 0.94 : 0.94;
+  const coverVisualScale = coverSpec.visualScale ?? 0.94;
   const lowList = coverList.filter((c) => c.height <= pathStepHeight);
   const tallList = coverList.filter((c) => c.height > pathStepHeight);
   const coverMeshes = [];
@@ -212,9 +177,9 @@ export function createLevel(cfg, scene) {
   // stepHeight : 可迈上的高度。阻挡体顶面比脚底高出不超过它时**不阻挡** ——
   //              交给台阶吸附把玩家抬上去，而不是把人挡在台阶前。
   //              这一条同时统一了"低掩体可迈上"与"高掩体需跳上"：
-  //                低掩体 0.45，脚底 0   → 0.45-0.55 < 0  → 不阻挡 → 迈上去
-  //                高掩体 1.15，脚底 0   → 1.15-0.55 > 0  → 阻挡
-  //                高掩体 1.15，脚底 0.7 → 1.15-0.55=0.6 < 0.7 → 不阻挡 → 跳上去
+  //                低掩体 0.45，脚底 0   → 0.45-0.60 < 0  → 不阻挡 → 迈上去
+  //                高掩体 1.05，脚底 0   → 1.05-0.60 > 0  → 阻挡
+  //                高掩体 1.05，脚底 0.7 → 1.05-0.60=0.45 < 0.7 → 不阻挡 → 跳上去
   //              不需要为掩体类型写任何分支。
   function resolveCircle(pos, radius, feetY = 0, stepHeight = 0) {
     const cx0 = Math.floor(pos.x / cell);
@@ -232,8 +197,8 @@ export function createLevel(cfg, scene) {
         const minZ = gz * cell;
         const maxX = minX + cell;
         const maxZ = minZ + cell;
-        const nx = clamp(pos.x, minX, maxX);
-        const nz = clamp(pos.z, minZ, maxZ);
+        const nx = Math.max(minX, Math.min(pos.x, maxX));
+        const nz = Math.max(minZ, Math.min(pos.z, maxZ));
         const ddx = pos.x - nx;
         const ddz = pos.z - nz;
         const d2 = ddx * ddx + ddz * ddz;
@@ -330,7 +295,7 @@ export function createLevel(cfg, scene) {
         }
         continue; // 前一面没落在本格，继续往前找
       }
-      // y < 0：从下方掠过（M2 关卡没有地下室，直接放过）
+      // y < 0：从下方掠过（本关卡没有地下室，直接放过）
     }
     return Infinity;
   }
@@ -382,8 +347,16 @@ export function createLevel(cfg, scene) {
     return hit >= dist;
   }
 
+  // AI 出生候选：空格**且没有掩体**。
+  // 为什么单独给一份：free 只排除了墙，掩体格仍是"可通行"的，
+  // 但让 AI 生成在掩体里（尤其是高掩体内部）会让它卡住或穿模。
+  // 之前靠"生成时把出生点周围挖空"回避，改成手写地图后那个兜底没有了，
+  // 因此改成显式发布一份可出生格列表。
+  const spawnable = free.filter((i) => coverCm[i] === 0);
+
   return {
-    W, H, cell, wallHeight, blocked, free, worldW, worldH,
+    W, H, cell, wallHeight, blocked, free, spawnable, worldW, worldH,
+    mapId: map.id,
     cellToWorld, worldToCell, isBlockedCell, isPathBlockedCell,
     resolveCircle, canStandAt,
     raycastWall, raycastGround, raycastGroundFull, hasLineOfSight,

@@ -21,7 +21,9 @@ const ROOT = path.resolve(HERE, '..');
 const argv = process.argv.slice(2);
 const TABLE = argv.includes('--table')
   ? path.resolve(argv[argv.indexOf('--table') + 1])
-  : path.join(ROOT, 'docs', '08-M3-地图表-废弃工业区.json');
+  // 默认读**运行时真正使用的**那份地图表（src/config/maps/），而不是文档副本。
+  // 这样"评审看到的图"与"M3-1 实现的布局"不可能不一致。
+  : path.join(ROOT, 'src', 'config', 'maps', 'industrial-01.json');
 const LOOT_TABLE = path.join(ROOT, 'docs', '07-loot-tables.json');
 
 const M = JSON.parse(fs.readFileSync(TABLE, 'utf8'));
@@ -99,6 +101,24 @@ M.routes.forEach((r, i) => {
   routeStats.push({ route: r, char: ch, lenCells });
 });
 
+// 掩体（在容器/撤离点之前画，后两者优先覆盖显示）
+const coverSpec = JSON.parse(
+  fs.readFileSync(path.join(ROOT, 'src', 'config', 'tunables.json'), 'utf8')
+).level.cover;
+const coverCells = [];
+for (const c of M.cover || []) {
+  const h = c.type === 'tall' ? coverSpec.tallHeight : coverSpec.lowHeight;
+  for (let dz = 0; dz < c.h; dz++) {
+    for (let dx = 0; dx < c.w; dx++) {
+      const x = c.x + dx;
+      const z = c.z + dz;
+      if (!inBounds(x, z) || blocked[idx(x, z)]) continue;
+      canvas[z][x] = c.type === 'tall' ? '%' : ':';
+      coverCells.push({ x, z, type: c.type, height: h });
+    }
+  }
+}
+
 // 容器
 const containerCounts = {};
 for (const c of M.containers) {
@@ -136,6 +156,7 @@ for (let z = 0; z < H; z++) {
 console.log('     ' + Array.from({ length: W }, (_, i) => (i % 10 === 0 ? String(i / 10) : ' ')).join(''));
 
 console.log('\n  图例: # 墙   E 撤离点   o 民用箱   O 军用箱   X 保险箱   K 钥匙房');
+console.log('        : 低掩体(可迈上)   % 高掩体(需跳上、挡子弹)');
 console.log('        S 出生区   R 资源区   C 交战区   · 通道');
 routeStats.forEach((rs) => console.log(`        ${rs.char} = ${rs.route.label}`));
 
@@ -298,7 +319,7 @@ console.log('\n—— 动线统计 ——');
       metrics.map((m) => `${m.label.split('（')[0]} 长度${m.len}格 暴露${(m.exposure * 100).toFixed(0)}% 顺路资源区${m.loot}`).join('  |  '));
 }
 
-// 路线不得穿墙
+// 路线不得穿墙（也不该穿过高掩体 —— 高掩体挡移动，AI 寻路也会绕开它）
 {
   let bad = null;
   for (const r of M.routes) {
@@ -313,10 +334,20 @@ console.log('\n—— 动线统计 ——');
           bad = `${r.id} 在 (${x},${z}) 穿过墙体`;
           break;
         }
+        // 高掩体是可跳过的（玩家），但 AI 会绕路 —— 动线穿过它属于设计疏漏
+        const tall = (M.cover || []).find(
+          (c) =>
+            (c.type === 'tall') &&
+            x >= c.x && x < c.x + c.w && z >= c.z && z < c.z + c.h
+        );
+        if (tall) {
+          bad = `${r.id} 在 (${x},${z}) 穿过高掩体（玩家要跳，AI 要绕）`;
+          break;
+        }
       }
     }
   }
-  check('动线不穿墙（否则玩家根本走不通，评审时会误判）', bad === null, bad || '三条动线全程可通行');
+  check('动线不穿墙、也不穿高掩体', bad === null, bad || '三条动线全程可通行');
 }
 
 // 每条动线顺路能经过哪些资源区 —— 这是「选路」的实质收益

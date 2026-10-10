@@ -1,6 +1,6 @@
 ﻿
 ================ M3-2 动线图：废弃工业区 ================
-  数据源: docs\08-M3-地图表-废弃工业区.json
+  数据源: src\config\maps\industrial-01.json
   状态  : 待评审（本图由地图表渲染，与 M3-1 将要实现的数据同源）
 
   网格 40x40 格，每格 2.5m  →  100m x 100m
@@ -10,37 +10,37 @@
   1  #······································#
   2  #·RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRREEE·#
   3  #·RoRRRRORRRRRRRoRRRRRoRRRRRRRRRRRREEE·#
-  4  #·RR######RRRRRRRRRRRRRRRRR########EEE·#
-  5  #·RR######RRRRRRRRRRRRRRRRR########RRR·#
-  6  #·RR######RRRRRRXRRRRRRRRRR########RRR·#
+  4  #·RR######RR:RRRRRRRRRRRRRR########EEE·#
+  5  #·RR######RR:RRRRRRRRRRRRRR########RRR·#
+  6  #·RR######RR:%%RXRRR:::RRRR########RRR·#
   7  #·RR######RRRRRRRRRRRRRRRRR########RRR·#
   8  #·RRRRRRRRRRRRRRoRRRRRRRoRRRRRRRRRRRRR·#
-  9  #·RR###RRR####RRRRRRRRRRR###RR#####RRR·#
- 10  #·RR###RRR####RRRRRRRRRRR###RR#####RRR·#
+  9  #·RR###RRR####RRRRRRRRR%R###RR#####RRR·#
+ 10  #·RR###RRR####RRRRRRRRR%R###RR#####RRR·#
  11  #·RR###RRR####RRRRRRRRRRR###RR#####RRR·#
  12  #·RR###RRR####RROREEERRRR###RR#####RRR·#
- 13  #·RR###RRRRRRRRRRREEERRRR###RRRRRRRRRR·#
- 14  #·RRRRRRaaaaaaaCCCEEECCCC###RRRRRRRRRR·#
+ 13  #·RR###RRRR%RRRRRREEERRRR###RRRRRRRRRR·#
+ 14  #·RR:::Raaa%aaaCCCEEECCCC###:::RRRRRRR·#
  15  #·RRRRRRaRRRRRa####CC####CRRRRRRRRRRRR·#
  16  #·RRRRRaRRRRRRa#oCCCCCCO#CRRRRRRRRRRRR·#
- 17  #·RRRRRaRRRRRRa#CCCCCCCC#ccccccRRRRRRR·#
- 18  #·RRRRRaRRRRRRa#CC####CC#cRRRRRcccRRRR·#
- 19  #·RRRRRaRRRRRRaaaC####CccCRRRRRRRRccRR·#
- 20  #·RoRRRaRRRRRRCCCX####KCCCRRRRRRRRRROc·#
- 21  #·RRRRRRaRRRRRC#CC####CC#CRRRRRRRRRRRc·#
- 22  #·RRRRRRaRRRRRC#CCCbCCCC#CRRRRRRRRRRRc·#
- 23  #·RRRRRRRaRRRRC#OCCbCCCo#CRRRRRRRRRRRc·#
+ 17  #·RRRRRaRR%%RRa#CCCCCCCC#ccccccRRRRRRR·#
+ 18  #·RRR:RaRRRRRRa#CC####CC#cRRRRRcccRRRR·#
+ 19  #·RRR:RaRRRRRRaaaC####CccCRRRRRRRRccRR·#
+ 20  #·RoR:RaRRRRRRCCCX####KCCCRRRRRRRRRROc·#
+ 21  #·RRRRRRaR:RRRC#CC####CC#CRRRRRRRRRRRc·#
+ 22  #·RRR:::aR:RRRC#CCCbCCCC#CRRRRRRRRR%Rc·#
+ 23  #·RRRRRRRa:RRRC#OCCbCCCo#CRRRRRRRRR%Rc·#
  24  #·RRRRRRRaRRRRC####bC####CRRRRRRRR###c·#
- 25  #·RRRRRRRaRRRRCCCCCbCCCCCCRRRRRRRR###c·#
+ 25  #·RRRRRRRaRRRRCCC%CbCCCCCCRRRRRRRR###c·#
  26  #·SSSSSSSaSSSSSSSSSbRRRRRRRRRRRRRR###c·#
  27  #·SoSSSSSaSSSSSoSbbSoRRRRRRRRRRRRR###c·#
  28  #·SSSSSSSaSSSSSSbSSSRRRRRRR#######RRRc·#
- 29  #·SSS###SaSSSSSSbSSSRRRRRRR#######RRRc·#
- 30  #·SSS###SaSSSSSbSSSSRRRRRRR#######RRcR·#
- 31  #·SSS###SaSSSSSbSSSSRRRRRRR#######RRcR·#
- 32  #·SoSSSSSaSSSSbSSSSSRRRRRRRRRRRRRRRcRR·#
- 33  #·SSSSSSSa###SbSSSSSRRRRRRR####RRRcRRR·#
- 34  #·SSSSSSSa###bSSSSccRRRRRRR####RRRcRRR·#
+ 29  #·SSS###:aSS:SSSbSSSR:RRRRR#######RRRc·#
+ 30  #·SSS###:aSS:S:::SSSR:RRRRR#######RR:R·#
+ 31  #·SSS###:aSS:SSbSSSSRRRRRRR#######RR:R·#
+ 32  #·SoSSSS:aSSSSbSS:::RRRRRRRRRRRRRR:cRR·#
+ 33  #·SSSSSSSa###SbSSSSSRR:::%R####RRR:RRR·#
+ 34  #·SSSSSSSa###bSSSSccRRRRRRR####RRR:RRR·#
  35  #·EEESSSSS###SSSSSSScccRRRR####RRcRRRR·#
  36  #·EEESSSSSSSSSSSSSSSRRRccccccccccRRoRR·#
  37  #·EEESSSSSSSSSSSSSSSRRRRRRRRRRRRRRRRRR·#
@@ -49,6 +49,7 @@
      0         1         2         3         
 
   图例: # 墙   E 撤离点   o 民用箱   O 军用箱   X 保险箱   K 钥匙房
+        : 低掩体(可迈上)   % 高掩体(需跳上、挡子弹)
         S 出生区   R 资源区   C 交战区   · 通道
         a = 西线（掩体最多、路程最长）
         b = 中线（最短、最直、最可预测）

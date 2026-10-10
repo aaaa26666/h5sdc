@@ -11,7 +11,7 @@ export function createAiManager({ cfg, level, scene, scheduler, player }) {
   const ais = [];
   let kills = 0;
 
-  // ---- 刷新规则：按权重选分级，按距离约束选出生格 ----
+  // ---- 刷新规则：按权重选分级，按**地图表的分区配额**选出生格 ----
   const tierPool = [];
   for (const t of cfg.aiTiers) {
     for (let i = 0; i < t.weight; i++) tierPool.push(t);
@@ -20,27 +20,69 @@ export function createAiManager({ cfg, level, scene, scheduler, player }) {
   const [px, pz] = cfg.level.playerSpawnCell;
   const minFromPlayer = cfg.aiSpawn.minDistanceFromPlayerCells;
   const minBetween = cfg.aiSpawn.minDistanceBetweenAiCells;
-  const candidates = level.free.filter((i) => {
-    const cx = i % level.W;
-    const cz = Math.floor(i / level.W);
-    return Math.hypot(cx - px, cz - pz) >= minFromPlayer;
-  });
+
+  // M3-1：出生点从"全图随机撒"改为**按地图表的分区配额**选。
+  //
+  // 为什么必须改：M3-2 的设计是"只有交战区有保险箱与钥匙房"，风险侧要对称，
+  // 就必须让 AI 也集中在交战区。全图随机撒会让"最危险的地方"变成空话 ——
+  // 玩家进厂房发现没人，价值梯度就只剩收益、没有代价。
+  //
+  // 距离约束仍然生效（离玩家最近 minFromPlayer 格、彼此至少 minBetween 格），
+  // 否则会出现"贴在出生点旁刷一堆"或"几个 AI 叠在同一格"。
+  const zoneOfCell = (cx, cz) =>
+    (cfg.map.zones || []).find(
+      (zn) => cx >= zn.x && cx < zn.x + zn.w && cz >= zn.z && cz < zn.z + zn.h
+    ) || null;
+  const freeCellXY = level.spawnable.map((i) => [i % level.W, Math.floor(i / level.W)]);
+  const farEnoughFromPlayer = ([cx, cz]) => Math.hypot(cx - px, cz - pz) >= minFromPlayer;
 
   const chosen = [];
-  let guard = 0;
-  while (chosen.length < cfg.aiSpawn.totalCount && guard++ < 8000) {
-    const i = candidates[Math.floor(rnd() * candidates.length)];
-    const cx = i % level.W;
-    const cz = Math.floor(i / level.W);
-    let tooClose = false;
-    for (const c of chosen) {
-      if (Math.hypot(c[0] - cx, c[1] - cz) < minBetween) {
-        tooClose = true;
-        break;
+  const pickInZone = (zoneId, want) => {
+    // 该分区内、离玩家足够远的空格
+    const pool = freeCellXY.filter(
+      ([cx, cz]) => (zoneOfCell(cx, cz) || {}).id === zoneId && farEnoughFromPlayer([cx, cz])
+    );
+    let got = 0;
+    let guard = 0;
+    while (got < want && guard++ < 4000) {
+      const [cx, cz] = pool[Math.floor(rnd() * pool.length)];
+      let tooClose = false;
+      for (const c of chosen) {
+        if (Math.hypot(c[0] - cx, c[1] - cz) < minBetween) {
+          tooClose = true;
+          break;
+        }
       }
+      if (tooClose) continue;
+      chosen.push([cx, cz]);
+      got++;
     }
-    if (tooClose) continue;
-    chosen.push([cx, cz]);
+    return got;
+  };
+
+  // 按配额逐分区放。若某分区条件太苛刻放不满，把差额记下来事后补足，
+  // 而不是悄悄少刷 —— 少刷会让"AI 数量"这个可调试的量变成不可信的。
+  let shortfall = 0;
+  for (const quota of cfg.map.aiSpawns || []) {
+    shortfall += quota.count - pickInZone(quota.zone, quota.count);
+  }
+
+  // 补足差额：从全图剩余空格里选（仍然遵守距离约束）
+  {
+    const rest = freeCellXY.filter(
+      ([cx, cz]) => farEnoughFromPlayer([cx, cz]) &&
+        !chosen.some((c) => Math.hypot(c[0] - cx, c[1] - cz) < minBetween)
+    );
+    let guard = 0;
+    while (shortfall > 0 && rest.length && guard++ < 4000) {
+      const i = Math.floor(rnd() * rest.length);
+      const [cx, cz] = rest.splice(i, 1)[0];
+      chosen.push([cx, cz]);
+      shortfall--;
+    }
+    if (shortfall > 0) {
+      console.warn(`[aiManager] 仍有 ${shortfall} 个 AI 未能找到满足距离约束的出生格`);
+    }
   }
 
   for (let i = 0; i < chosen.length; i++) {

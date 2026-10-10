@@ -1,30 +1,18 @@
 {
-  "_comment": "M1 临时数值表。硬性要求：M1 所有数值集中于此，禁止散落在逻辑代码中。字段命名与结构均为 M1 临时方案，M2 将迁移至正式配置表体系（见《流程文档》第 8 章）。",
+  "_comment": "M1 临时数值表。硬性要求：所有数值集中于此，禁止散落在逻辑代码中。字段命名与结构为 M1 临时方案，逐步迁移至正式配置表体系（见《流程文档》第 8 章）。",
   "raid": {
     "_comment": "单局规则",
     "timeLimitMs": 240000
   },
   "level": {
-    "_comment": "灰盒关卡。网格驱动，M0-5 已验证网格方案可行",
-    "gridW": 40,
-    "gridH": 40,
-    "cell": 2.5,
-    "wallHeight": 3.5,
-    "blockRatio": 0.18,
+    "_comment": "关卡**共享**规格。M3-1 起地图改为表驱动：尺寸/出生点/墙体/掩体位置/容器/撤离点/AI 配额全部来自 src/config/maps/*.json，本段只保留『不随地图变』的项。",
     "seed": 20260201,
-    "playerSpawnCell": [
-      4,
-      4
-    ],
-    "aiSpawnMarginCells": 12,
-    "lowCover": {
-      "_comment": "低矮掩体（M1-TEMP-3 台阶吸附的最小夹具，不是关卡设计）。lowHeight 可直接迈上；tallHeight 挡移动也挡子弹，需跳上。正式掩体布局属 M3。",
-      "count": 70,
+    "_seedNote": "全局 RNG 种子（AI 抖动、掉落、武器随机）。M3-1 之前它同时充当**地图生成种子**；地图改为表驱动后不再是，但必须保留 —— aiManager / loot / main 都在用它。",
+    "cover": {
+      "_comment": "掩体高度规格（跨地图共享）。位置与类型在地图表里；此处定义两种类型各有多高。lowHeight 可直接迈上；tallHeight 挡移动也挡子弹、需跳上。",
       "lowHeight": 0.45,
       "tallHeight": 1.05,
-      "tallRatio": 0.35,
-      "visualScale": 0.94,
-      "clearRadiusCells": 3
+      "visualScale": 0.94
     }
   },
   "player": {
@@ -80,8 +68,7 @@
     "spreadDeg": 1.2
   },
   "ai": {
-    "_comment": "M1 只有一种 AI。禁止扩展兵种",
-    "count": 6,
+    "_comment": "M1 只有一种 AI。禁止扩展兵种。M3-1 已删除 ai.count —— 它是**死配置**（cfg.ai.* 零使用），且与实际的 ai.json spawnRules.totalCount=7 不一致，会误导人。AI 数量现由地图表的 aiSpawns 配额决定。",
     "maxHealth": 80,
     "radius": 0.45,
     "bodyRadius": 0.6,
@@ -100,45 +87,10 @@
     "patrolSpeedScale": 0.45
   },
   "loot": {
-    "_comment": "M1 只有一种容器。物品种类保持最小集",
-    "containerCount": 8,
+    "_comment": "M1 只有一种容器，物品种类保持最小集。M3-1 删除了 containerCount 与 containerCells —— 前者是死配置，后者改由地图表派生（禁止硬编码容器位置）。容器分级/搜索进度/掉落属 M3-3/M3-4。",
     "containerRadius": 0.7,
     "searchMs": 2500,
     "interactRange": 2.4,
-    "containerCells": [
-      [
-        8,
-        6
-      ],
-      [
-        14,
-        9
-      ],
-      [
-        22,
-        7
-      ],
-      [
-        30,
-        12
-      ],
-      [
-        10,
-        24
-      ],
-      [
-        18,
-        30
-      ],
-      [
-        27,
-        22
-      ],
-      [
-        33,
-        31
-      ]
-    ],
     "items": [
       {
         "id": "bandage",
@@ -169,23 +121,7 @@
     "itemsPerContainerMax": 3
   },
   "extract": {
-    "_comment": "M1 撤离点：常驻，无钥匙无时间窗",
-    "zones": [
-      {
-        "cell": [
-          37,
-          3
-        ],
-        "radius": 3.5
-      },
-      {
-        "cell": [
-          3,
-          37
-        ],
-        "radius": 3.5
-      }
-    ],
+    "_comment": "撤离倒计时规则。撤离点位置改由地图表派生（M3-1）。条件撤离点的开放条件属 M4。",
     "countdownMs": 8000
   }
 }
