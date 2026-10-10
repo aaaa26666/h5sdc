@@ -19,6 +19,8 @@ import {
   timeToKillMs,
   spreadRecoverySeconds,
   recoilCumulative,
+  sustainedClimbRate,
+  recoverySeconds,
   baseSpread,
 } from '../src/core/ballistics.js';
 
@@ -117,6 +119,18 @@ console.log('');
 
 const failures = [];
 const warnings = [];
+/** 打空一个弹匣后的净抬升（度）。含连发期间的自恢复。 */
+function magDumpClimb(w) {
+  const pat = w.recoil.pattern;
+  let climb = 0;
+  let seconds = 0;
+  for (let i = 0; i < w.magazineSize; i++) {
+    climb += pat[Math.min(i, pat.length - 1)][1];
+    seconds += w.fireIntervalMs / 1000;
+  }
+  climb -= w.recoil.recoveryPerSec * (w.recoil.recoveryWhileFiringScale ?? 1) * seconds;
+  return +climb.toFixed(3);
+}
 const summary = [];
 
 for (const w of config.weapons) {
@@ -162,6 +176,10 @@ for (const w of config.weapons) {
     spreadRecoverySec: recSec,
     recoilAfter5: recoilCumulative(w, 5, false),
     recoilAfter10: recoilCumulative(w, 10, false),
+    sustainedClimb: sustainedClimbRate(w, false),
+    sustainedClimbAds: sustainedClimbRate(w, true),
+    magDumpClimbDeg: magDumpClimb(w),
+    settleSec: recoverySeconds(w, magDumpClimb(w)),
     targets: tc,
     verdict: { ttkOk, headOk, adsOk, recOk, armoredOk, nearEdge },
   });
@@ -189,12 +207,34 @@ for (const w of config.weapons) {
 }
 
 console.log('\n后坐力累计（腰射，供压枪难度评审）：');
+console.log('  ★ 前两列是**图案累计**（不含恢复），用于判断压枪曲线的形状；');
+console.log('    "连发净抬升"才是玩家实际感受到的抬升速率 —— 它扣掉了连发期间的自恢复。');
+console.log('    这一列必须为正：修复 M2-TEMP-1 之前，5 把武器里有 3 把是负数（视角往下走）。');
 for (const s of summary) {
   console.log(
     `  ${s.label.padEnd(20)} 5发 偏航${String(s.recoilAfter5.yawDeg).padStart(7)}° 抬升${String(s.recoilAfter5.pitchDeg).padStart(7)}°   ` +
       `10发 偏航${String(s.recoilAfter10.yawDeg).padStart(7)}° 抬升${String(s.recoilAfter10.pitchDeg).padStart(7)}°`
   );
 }
+
+console.log('');
+console.log('  武器                  图案10发抬升   连发净抬升   开镜净抬升   打空弹匣累计   停火恢复耗时');
+for (const s of summary) {
+  console.log(
+    `  ${s.label.padEnd(20)}${String(s.recoilAfter10.pitchDeg + '°').padStart(12)}` +
+      `${String(s.sustainedClimb + '°/s').padStart(13)}` +
+      `${String(s.sustainedClimbAds + '°/s').padStart(13)}` +
+      `${String(s.magDumpClimbDeg.toFixed(1) + '°').padStart(15)}` +
+      `${String(s.settleSec.toFixed(2) + 's').padStart(15)}`
+  );
+}
+console.log('');
+console.log('  说明：');
+console.log('    · 连发净抬升 = 图案首项抬升速率 − 连发期间的恢复速率。**必须为正**。');
+console.log('    · 打空弹匣累计 = 整个弹匣连射后的净抬升（含连发期间的自恢复）。');
+console.log('    · 停火恢复耗时 = 从打空弹匣的偏移量回到玩家瞄准位置所需时间。');
+console.log('      这一列是"完全恢复"这一设计的直接后果，不是错误；但耗时过长会显得视角发飘，');
+console.log('      属于需要在评审中表态的设计选择。');
 
 const outPath = process.argv.includes('--json')
   ? process.argv[process.argv.indexOf('--json') + 1]

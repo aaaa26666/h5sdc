@@ -1,11 +1,9 @@
 {
   "_comment": "M1 临时数值表。硬性要求：M1 所有数值集中于此，禁止散落在逻辑代码中。字段命名与结构均为 M1 临时方案，M2 将迁移至正式配置表体系（见《流程文档》第 8 章）。",
-
   "raid": {
     "_comment": "单局规则",
     "timeLimitMs": 240000
   },
-
   "level": {
     "_comment": "灰盒关卡。网格驱动，M0-5 已验证网格方案可行",
     "gridW": 40,
@@ -14,57 +12,54 @@
     "wallHeight": 3.5,
     "blockRatio": 0.18,
     "seed": 20260201,
-    "playerSpawnCell": [4, 4],
+    "playerSpawnCell": [
+      4,
+      4
+    ],
     "aiSpawnMarginCells": 12,
-
     "lowCover": {
       "_comment": "低矮掩体（M1-TEMP-3 台阶吸附的最小夹具，不是关卡设计）。lowHeight 可直接迈上；tallHeight 挡移动也挡子弹，需跳上。正式掩体布局属 M3。",
       "count": 70,
       "lowHeight": 0.45,
-      "tallHeight": 1.15,
+      "tallHeight": 1.05,
       "tallRatio": 0.35,
       "visualScale": 0.94,
       "clearRadiusCells": 3
     }
   },
-
   "player": {
     "_comment": "M1-TEMP-2 已修复：移动不再是直接设速度。accel/friction/airAccel 为手感主体参数，改动必须重跑 tools/unit-tests.mjs。",
     "eyeHeight": 1.65,
-    "crouchEyeHeight": 1.0,
+    "crouchEyeHeight": 1,
     "radius": 0.4,
-    "walkSpeed": 5.0,
+    "walkSpeed": 5,
     "sprintSpeed": 7.5,
     "crouchSpeed": 2.4,
     "jumpSpeed": 5.2,
-    "gravity": -20.0,
+    "gravity": -20,
     "mouseSensitivity": 0.0022,
     "pitchLimitDeg": 89,
-
-    "accel": 11.0,
+    "accel": 11,
     "airAccel": 2.2,
     "airWishCap": 1.5,
-    "friction": 8.0,
+    "friction": 8,
     "stopSpeed": 1.2,
     "crouchAccelScale": 0.75,
     "sprintAccelScale": 0.72,
-    "stepHeight": 0.55,
+    "stepHeight": 0.6,
     "stepClimbSpeed": 3.5,
-
     "jumpBufferMs": 150,
     "coyoteMs": 110,
-
     "landingDipMax": 0.22,
     "landingDipPerSpeed": 0.02,
     "landingDipRecover": 1.5,
-
     "leanOffset": 0.55,
     "leanRollDeg": 14,
     "leanHeadDrop": 0.12,
-    "leanSpeed": 9.0,
-    "leanWallMargin": 0.35
+    "leanSpeed": 9,
+    "leanWallMargin": 0.35,
+    "_stepHeight_comment": "可自动迈上的高度差。高掩体 1.05 与之配合，使跳跃可站上的余量在 30~165fps 全区间都 >=0.13m（见单测的不变量断言）"
   },
-
   "weapon": {
     "_comment": "M1 只有一把武器。禁止为多武器做抽象",
     "displayName": "M1-临时步枪",
@@ -77,7 +72,6 @@
     "range": 120,
     "spreadDeg": 1.2
   },
-
   "ai": {
     "_comment": "M1 只有一种 AI。禁止扩展兵种",
     "count": 6,
@@ -95,10 +89,9 @@
     "fireIntervalMs": 700,
     "fireRange": 35,
     "damage": 8,
-    "accuracyDeg": 5.0,
+    "accuracyDeg": 5,
     "patrolSpeedScale": 0.45
   },
-
   "loot": {
     "_comment": "M1 只有一种容器。物品种类保持最小集",
     "containerCount": 8,
@@ -106,24 +99,85 @@
     "searchMs": 2500,
     "interactRange": 2.4,
     "containerCells": [
-      [8, 6], [14, 9], [22, 7], [30, 12],
-      [10, 24], [18, 30], [27, 22], [33, 31]
+      [
+        8,
+        6
+      ],
+      [
+        14,
+        9
+      ],
+      [
+        22,
+        7
+      ],
+      [
+        30,
+        12
+      ],
+      [
+        10,
+        24
+      ],
+      [
+        18,
+        30
+      ],
+      [
+        27,
+        22
+      ],
+      [
+        33,
+        31
+      ]
     ],
     "items": [
-      { "id": "bandage", "label": "绷带", "value": 120, "weight": 40 },
-      { "id": "ammo_box", "label": "弹药盒", "value": 260, "weight": 35 },
-      { "id": "optic", "label": "瞄准镜", "value": 780, "weight": 20 },
-      { "id": "gold_watch", "label": "金表", "value": 1450, "weight": 5 }
+      {
+        "id": "bandage",
+        "label": "绷带",
+        "value": 120,
+        "weight": 40
+      },
+      {
+        "id": "ammo_box",
+        "label": "弹药盒",
+        "value": 260,
+        "weight": 35
+      },
+      {
+        "id": "optic",
+        "label": "瞄准镜",
+        "value": 780,
+        "weight": 20
+      },
+      {
+        "id": "gold_watch",
+        "label": "金表",
+        "value": 1450,
+        "weight": 5
+      }
     ],
     "itemsPerContainerMin": 1,
     "itemsPerContainerMax": 3
   },
-
   "extract": {
     "_comment": "M1 撤离点：常驻，无钥匙无时间窗",
     "zones": [
-      { "cell": [37, 3], "radius": 3.5 },
-      { "cell": [3, 37], "radius": 3.5 }
+      {
+        "cell": [
+          37,
+          3
+        ],
+        "radius": 3.5
+      },
+      {
+        "cell": [
+          3,
+          37
+        ],
+        "radius": 3.5
+      }
     ],
     "countdownMs": 8000
   }

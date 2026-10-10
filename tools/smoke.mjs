@@ -142,20 +142,28 @@ try {
 
     // 腰射连发，观察视角是否被后坐力抬起
     //
-    // ★ 这里测的是**峰值抬升**，不是"持续射击后的净漂移"。
-    // 原因：[M2-TEMP-1] 后坐力恢复是无条件的，每帧按 recoveryPerSec×dt 把视角拉回。
-    // 持续射击时每发加入约 0.85°、间隔约 85ms（≈10°/s），与恢复速度同量级，
-    // 两者几乎抵消 —— 净漂移只有约 1.2°/s，在零附近摆动，
-    // 用净漂移做断言会时通时不通（实测一次 +0.0191、一次 -0.0000）。
-    // 每发造成的峰值抬升才是"后坐力确实生效"的直接证据，且不受恢复速度影响。
+    // ★ 这里测**两个东西**，它们在 M2-TEMP-1 修复前后含义不同：
+    //   · 单发峰值抬升：后坐力是否生效（始终应为真）
+    //   · 连发**净抬升**：修复前恢复是无条件的、与抬升同量级，两者几乎抵消，
+    //     净漂移在零附近摆动甚至为负（5 把武器里 3 把往下走）。
+    //     修复后它必须显著为正 —— 这才是"后坐力图案真的有作用"的证据。
+    //     修复前用净漂移做断言会时通时不通（实测一次 +1.09°、一次 -0.00°），
+    //     现在它可以作为稳定断言，因为恢复不再吞掉抬升。
     await page.mouse.down({ button: 'left' });
     let peakPitch = before.player.pitch;
     let peakSpread = before.weapon.spread;
+    const burstSec = 15 * 0.06;
     for (let i = 0; i < 15; i++) {
       await sleep(60);
       const s = await snap();
       peakPitch = Math.max(peakPitch, s.player.pitch);
       peakSpread = Math.max(peakSpread, s.weapon.spread);
+      // 结构不变量：对外视角必须始终等于 瞄准 + 后坐力偏移
+      const sum = s.player.aimPitch + s.player.recoilPitch;
+      if (Math.abs(sum - s.player.pitch) > 1e-3) {
+        check('视角 = 瞄准 + 后坐力偏移（结构不变量）', false,
+          `aimPitch ${s.player.aimPitch} + recoilPitch ${s.player.recoilPitch} ≠ pitch ${s.player.pitch}`);
+      }
     }
     const during = await snap();
     await page.mouse.up({ button: 'left' });
@@ -163,14 +171,78 @@ try {
       `pitch 峰值 ${peakPitch.toFixed(4)}（基线 ${before.player.pitch.toFixed(4)}）`);
     check('连发使扩散增大', peakSpread > before.weapon.spread + 0.05,
       `spread 峰值 ${peakSpread.toFixed(3)}（基线 ${before.weapon.spread}）`);
-    // 如实记录 M2-TEMP-1 的影响：持续射击的净抬升被恢复大幅抵消。
-    // 不断言它是"正确"的，只把它作为可观测量暴露出来，避免这个现象被静默忽略。
+    check('视角 = 瞄准 + 后坐力偏移（结构不变量）',
+      Math.abs(during.player.aimPitch + during.player.recoilPitch - during.player.pitch) < 1e-3,
+      `aim ${during.player.aimPitch} + recoil ${during.player.recoilPitch} = ${during.player.pitch}`);
+    check('连发期间产生了后坐力临时偏移', during.player.recoilPitch > 0.002,
+      `recoilPitch ${during.player.recoilPitch}`);
+    check('连发期间玩家的瞄准不被后坐力改动（两笔账分开）',
+      Math.abs(during.player.aimPitch - before.player.aimPitch) < 1e-4,
+      `aimPitch ${before.player.aimPitch} → ${during.player.aimPitch}`);
+
+    // ---- 连发净抬升必须显著为正（M2-TEMP-1 的核心验收）----
     const netClimbDeg = ((during.player.pitch - before.player.pitch) * 180) / Math.PI;
-    console.log(
-      `    注：持续射击 ${(15 * 60) / 1000}s 的净抬升仅 ${netClimbDeg.toFixed(2)}°` +
-        `（单发峰值 ${(((peakPitch - before.player.pitch) * 180) / Math.PI).toFixed(2)}°）` +
-        ` —— M2-TEMP-1 无条件下拉导致，属已知欠账`
+    const rateDegPerSec = netClimbDeg / burstSec;
+    check('连发净抬升显著为正（恢复不再抵消抬升）', netClimbDeg > 2.0,
+      `连发 ${burstSec.toFixed(2)}s 净抬升 ${netClimbDeg.toFixed(2)}°（约 ${rateDegPerSec.toFixed(1)}°/s）`);
+    // 与配置表算出的速率对照，确认运行时行为与量化报表一致。
+    // 必须按**当前武器 id** 查表 —— 初版直接取了列表第 0 项（P9 手枪），
+    // 而玩家手里是 M4，于是拿错了参考值。
+    const cfgRate = await page.evaluate(
+      (id) => window.__m2.recoilReport().find((r) => r.id === id)?.sustainedClimb ?? null,
+      during.weapon.id
     );
+    check('实测抬升速率与配置表算出的速率同量级',
+      cfgRate !== null && Math.abs(rateDegPerSec - cfgRate) < Math.max(2.5, cfgRate * 0.5),
+      `实测 ${rateDegPerSec.toFixed(1)}°/s vs 配置 ${cfgRate}°/s（${during.weapon.label}）`);
+
+    // ---- 停火后恢复到玩家瞄的位置 ----
+    await sleep(1500);
+    const settled = await snap();
+    check('停火后后坐力偏移归零', Math.abs(settled.player.recoilPitch) < 0.002,
+      `recoilPitch ${settled.player.recoilPitch}`);
+    check('停火后视角回到玩家瞄的位置', Math.abs(settled.player.pitch - settled.player.aimPitch) < 0.002,
+      `pitch ${settled.player.pitch} vs aimPitch ${settled.player.aimPitch}`);
+
+    // ---- 玩家主动压枪不应被恢复抵消（M2-TEMP-1 的原始症状）----
+    // 这是"两笔账分开"的核心验收：压枪改变的是**瞄准**，
+    // 恢复只削减**后坐力偏移**，因此最终视角必须停在玩家压枪后的位置，
+    // 而不是被恢复顶回原来的瞄准点。
+    {
+      await call('aimAt', 11.25, 1.65, 11.25 - 30);
+      await sleep(250);
+      const a0 = await snap();
+      await page.mouse.down({ button: 'left' });
+      await sleep(700);
+      await page.mouse.up({ button: 'left' });
+      await sleep(80);
+      const a1 = await snap();
+      check('连发后存在后坐力临时偏移', a1.player.recoilPitch > 0.002,
+        `recoilPitch ${a1.player.recoilPitch}`);
+
+      const comp = await call('compensatePitch', 3);
+      const a2 = await snap();
+      // 用 compensatePitch 在**同一次调用内**返回的前后值来判断，
+      // 避免中间插入的若干帧让恢复改动 recoilPitch，从而误判成"压枪动了后坐力偏移"。
+      check('压枪改变的是瞄准、且不动后坐力偏移',
+        comp.before.aimPitch !== comp.after.aimPitch &&
+          comp.before.recoilPitch === comp.after.recoilPitch &&
+          Math.abs(comp.after.pitch - (comp.after.aimPitch + comp.after.recoilPitch)) < 1e-5,
+        `aimPitch ${comp.before.aimPitch} → ${comp.after.aimPitch}；` +
+          `recoilPitch ${comp.before.recoilPitch} → ${comp.after.recoilPitch}（应完全相同）`);
+
+      await sleep(2600); // 等恢复完成（含 recoveryDelayMs）
+      const a3 = await snap();
+      check('恢复完成后视角停在压枪后的位置，没有被顶回去',
+        Math.abs(a3.player.pitch - a2.player.aimPitch) < 0.003,
+        `最终 pitch ${a3.player.pitch} vs 压枪后 aimPitch ${a2.player.aimPitch}`);
+      const keptDeg = ((a0.player.pitch - a3.player.pitch) * 180) / Math.PI;
+      check('玩家的 3° 压枪量被完整保留',
+        Math.abs(keptDeg - 3) < 0.35,
+        `视角相对开火前下降了 ${keptDeg.toFixed(2)}°（期望约 3°）`);
+      check('后坐力偏移已完全归零', Math.abs(a3.player.recoilPitch) < 0.002,
+        `recoilPitch ${a3.player.recoilPitch}`);
+    }
 
     // 开镜：FOV 应变小
     await sleep(600);
@@ -342,17 +414,32 @@ try {
     // ---- 先制造伤害：靠近 AI、朝天开一枪（枪声会让 AI 警觉），再等待被击中 ----
     // 单纯"传送到 AI 旁边"不够可靠：AI 若背对着玩家，视野锥判定不会发现我们，
     // 于是它整段时间都保持 patrol 而不开火 —— 那会让断言变成随机结果。
-    await page.evaluate(() => window.__m2.teleportNearAi(0, 5));
-    await page.evaluate(() => window.__m2.aimAt(0, 40, 0)); // 朝天
-    await page.mouse.down({ button: 'left' });
-    await sleep(250);
-    await page.mouse.up({ button: 'left' });
-    await page.evaluate(() => window.__m2.teleportNearAi(0, 5)); // 回到 AI 视野内
-    await sleep(4000);
+    //
+    // ★ 用**轮询等待**而不是固定 4 秒：AI 还需要反应时间、转身、进入交战状态，
+    //   而且它自己也在移动。固定等待会让这条断言时通时不通（实测就是如此）。
+    //   同时每隔几秒补一枪重新引起注意，避免它中途丢失目标。
+    const alert = async () => {
+      await page.evaluate(() => window.__m2.teleportNearAi(0, 5));
+      await page.evaluate(() => window.__m2.aimAt(0, 40, 0)); // 朝天
+      await page.mouse.down({ button: 'left' });
+      await sleep(200);
+      await page.mouse.up({ button: 'left' });
+      await page.evaluate(() => window.__m2.teleportNearAi(0, 5));
+    };
+    await alert();
 
-    const hurt = await snap();
-    check('被 AI 击中会掉血并消耗护甲耐久',
-      hurt.player.health < s0.player.health,
+    let hurt = null;
+    for (let i = 0; i < 50; i++) {
+      const s = await snap();
+      if (s.player.health < s0.player.health) {
+        hurt = s;
+        break;
+      }
+      if (i > 0 && i % 12 === 0) await alert(); // 每约 3 秒重新引起注意
+      await sleep(250);
+    }
+    hurt = hurt ?? (await snap());
+    check('被 AI 击中会掉血（在等待窗口内）', hurt.player.health < s0.player.health,
       `生命 ${s0.player.health.toFixed(1)} → ${hurt.player.health.toFixed(1)}；` +
         `胸甲 ${s0.player.armor.body.durability} → ${hurt.player.armor.body.durability}`);
     check('护甲承受伤害后耐久下降（M2-4）',
@@ -543,6 +630,14 @@ try {
     if (low) {
       await sleep(300);
       const s0 = await snap();
+      // ★ 先确认夹具真的把玩家朝向掩体了。
+      // 视角是派生值（aim + recoil）：若夹具去写 player.state.yaw 而不是 aim，
+      // 下一帧 syncView 会把它覆盖成 0，玩家就面朝错误方向走过去、什么也测不到。
+      // 这个断言就是为了让那种情况**报错而不是静默失败**。
+      const wantYaw = Math.atan2(-(low.to.x - low.from.x), -(low.to.z - low.from.z));
+      check('夹具已把玩家朝向掩体（否则后面的断言无意义）',
+        Math.abs(s0.player.yaw - wantYaw) < 0.05,
+        `yaw ${s0.player.yaw.toFixed(3)} vs 期望 ${wantYaw.toFixed(3)}`);
       // ★ 边走边轮询取峰值，而不是走完再采样：
       // 掩体只有一格宽（2.5m），持续走 1.6s 会直接走过头从另一侧掉下去，
       // 结束时 y 又回到 0 —— 那样测的是"走过去了"，不是"迈上去了"。

@@ -31,6 +31,7 @@ import { createDecals } from './ui/decals.js';
 import { createAudio } from './audio/audio.js';
 import { createNavGrid, createAStar, createPathScheduler, makeLos } from './core/navgrid.js';
 import { mulberry32 } from './core/rng.js';
+import { sustainedClimbRate } from './core/ballistics.js';
 
 const cfg = config;
 
@@ -450,6 +451,14 @@ if (import.meta.env.DEV) {
           z: player.state.pos.z,
           yaw: player.state.yaw,
           pitch: player.state.pitch,
+          // 视角的两笔账（M2-TEMP-1 修复后可分别观测）：
+          //   aim*    = 玩家瞄的（永久）
+          //   recoil* = 后坐力临时偏移（会恢复到 0）
+          //   pitch   = 两者之和，且应始终满足 pitch ≈ aimPitch + recoilPitch
+          aimYaw: +player.state.aimYaw.toFixed(5),
+          aimPitch: +player.state.aimPitch.toFixed(5),
+          recoilYaw: +player.state.recoilYaw.toFixed(5),
+          recoilPitch: +player.state.recoilPitch.toFixed(5),
           health: player.vitals.health,
           maxHealth: player.vitals.maxHealth,
           alive: player.state.alive,
@@ -557,8 +566,35 @@ if (import.meta.env.DEV) {
       const ex = p.pos.x;
       const ey = p.pos.y + p.eyeHeightCurrent;
       const ez = p.pos.z;
-      p.yaw = Math.atan2(-(x - ex), -(z - ez));
-      p.pitch = Math.atan2(y - ey, Math.hypot(x - ex, z - ez));
+      const wantYaw = Math.atan2(-(x - ex), -(z - ez));
+      const wantPitch = Math.atan2(y - ey, Math.hypot(x - ex, z - ez));
+      // 设置的是**瞄准**而不是合成后的视角：
+      // 后坐力偏移是另一笔账，直接写 yaw/pitch 会被下一帧的 syncView 覆盖掉。
+      // 同时清零后坐力偏移，让测试从"干净"的瞄准状态开始。
+      p.aimYaw = wantYaw;
+      p.aimPitch = wantPitch;
+      p.recoilYaw = 0;
+      p.recoilPitch = 0;
+      player.syncView();
+    },
+    /**
+     * 手动压枪（模拟玩家往下拉鼠标）。
+     *
+     * 返回值里同时给出调用前后的 aim/recoil —— 必须在**同一次调用内**取到，
+     * 否则中间会插入若干帧，后坐力恢复会改动 recoilPitch，
+     * 于是"压枪没有改动后坐力偏移"这条断言会因正常的恢复而误判。
+     */
+    compensatePitch(deg) {
+      const p = player.state;
+      const snapAngles = () => ({
+        aimPitch: +p.aimPitch.toFixed(6),
+        recoilPitch: +p.recoilPitch.toFixed(6),
+        pitch: +p.pitch.toFixed(6),
+      });
+      const beforeAngles = snapAngles();
+      p.aimPitch -= deg * (Math.PI / 180);
+      player.syncView();
+      return { before: beforeAngles, after: snapAngles() };
     },
     /** 传送到对某个存活 AI 确实有视线的位置（避免墙挡下全部子弹造成的假失败） */
     teleportNearAi(aiIndex = 0, dist = 4) {
@@ -587,8 +623,12 @@ if (import.meta.env.DEV) {
         const w = level.cellToWorld(cx, cz);
         const x = (cx + 1) * level.cell - cfg.player.radius - 0.02;
         this.teleport(x, w.z);
-        player.state.yaw = 0;
-        player.state.pitch = 0;
+        // 视角是**派生值**（aim + recoil），必须写 aim 并同步，直接写 yaw/pitch 会被覆盖
+        player.state.aimYaw = 0;
+        player.state.aimPitch = 0;
+        player.state.recoilYaw = 0;
+        player.state.recoilPitch = 0;
+        player.syncView();
         player.state.leanCurrent = 0;
         player.state.leanTarget = 0;
         return { cell: [cx, cz], wallFaceX: (cx + 1) * level.cell, playerX: x };
@@ -599,22 +639,43 @@ if (import.meta.env.DEV) {
     placeBehindWall(targetIndex = 0) {
       const alive = aiManager.ais.filter((a) => !a.isDead);
       if (!alive.length) return null;
-      const a = alive[Math.min(targetIndex, alive.length - 1)];
-      const acx = Math.floor(a.position.x / level.cell);
-      const acz = Math.floor(a.position.z / level.cell);
-      for (let r = 2; r <= 4; r++) {
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const wx = acx + dx * r;
-          const wz = acz + dz * r;
-          if (level.isBlockedCell(wx, wz)) continue;
-          // 中间那格必须是墙
-          const mx = acx + dx * (r - 1);
-          const mz = acz + dz * (r - 1);
-          if (!level.isBlockedCell(mx, mz)) continue;
-          const w = level.cellToWorld(wx, wz);
-          this.teleport(w.x, w.z);
-          this.aimAt(a.position.x, a.position.y + cfg.hitZones.chest.centerY, a.position.z);
-          return { playerCell: [wx, wz], wallCell: [mx, mz], aiId: a.id, aiHealth: a.vitals.health };
+      // 搜索范围要比"够用"更宽：这是**测试夹具**，它找不到合适位置时
+      // 不该被当作产品失败。原实现只看第 0 号 AI、半径 2~4、四个正方向，
+      // 在某些 AI 落点下会找不到，导致"隔墙打不中"这条回归断言时通时不通。
+      // 现在遍历多个 AI、半径 2~6、八个方向。
+      const dirs = [
+        [1, 0], [-1, 0], [0, 1], [0, -1],
+        [1, 1], [1, -1], [-1, 1], [-1, -1],
+      ];
+      for (let ai = 0; ai < alive.length; ai++) {
+        const a = alive[(Math.min(targetIndex, alive.length - 1) + ai) % alive.length];
+        const acx = Math.floor(a.position.x / level.cell);
+        const acz = Math.floor(a.position.z / level.cell);
+        for (let r = 2; r <= 6; r++) {
+          for (const [dx, dz] of dirs) {
+            const wx = acx + dx * r;
+            const wz = acz + dz * r;
+            if (level.isBlockedCell(wx, wz)) continue;
+            // 中间那格必须是墙
+            const mx = acx + dx * (r - 1);
+            const mz = acz + dz * (r - 1);
+            if (!level.isBlockedCell(mx, mz)) continue;
+            // 该墙必须真的挡住视线（用几何判定确认，而不是靠"中间是墙"推断）
+            const w = level.cellToWorld(wx, wz);
+            const aiY = a.position.y + cfg.hitZones.chest.centerY;
+            if (level.hasLineOfSight(w.x, cfg.player.eyeHeight, w.z, a.position.x, aiY, a.position.z)) {
+              continue;
+            }
+            this.teleport(w.x, w.z);
+            this.aimAt(a.position.x, aiY, a.position.z);
+            return {
+              playerCell: [wx, wz],
+              wallCell: [mx, mz],
+              aiId: a.id,
+              aiHealth: a.vitals.health,
+              losBlocked: true,
+            };
+          }
         }
       }
       return null;
@@ -641,9 +702,15 @@ if (import.meta.env.DEV) {
           const from = level.cellToWorld(sx, sz);
           const coverWorld = level.cellToWorld(c.cell, c.z);
           this.teleport(from.x, from.z);
-          // 朝向掩体中心（yaw 约定见 core/direction.js：viewForward 的 -Z 前向）
-          player.state.yaw = Math.atan2(-(coverWorld.x - from.x), -(coverWorld.z - from.z));
-          player.state.pitch = 0;
+          // 朝向掩体中心（yaw 约定见 core/direction.js：viewForward 的 -Z 前向）。
+          // ★ 必须写 aim 并 syncView：视角是派生值（aim + recoil），
+          //   直接写 player.state.yaw 会在下一帧被 syncView 覆盖成 0，
+          //   表现为"玩家面朝错误方向走过去、迈不上掩体"。
+          player.state.aimYaw = Math.atan2(-(coverWorld.x - from.x), -(coverWorld.z - from.z));
+          player.state.aimPitch = 0;
+          player.state.recoilYaw = 0;
+          player.state.recoilPitch = 0;
+          player.syncView();
           player.state.stepUps = 0;
           return {
             coverCell: [c.cell, c.z],
@@ -678,6 +745,20 @@ if (import.meta.env.DEV) {
     /** 重置运动探针并返回重置前的峰值（单帧脚底高度最大变化量） */
     resetMotionProbe() {
       return player.resetMotionProbe();
+    },
+    /**
+     * 配置表算出的后坐力量化指标（供端到端测试与配置交叉核对）。
+     * sustainedClimb 必须为正 —— 这是 M2-TEMP-1 的回归不变量。
+     */
+    recoilReport() {
+      return cfg.weapons.map((w) => ({
+        id: w.id,
+        label: w.label,
+        sustainedClimb: sustainedClimbRate(w, false),
+        sustainedClimbAds: sustainedClimbRate(w, true),
+        recoveryWhileFiring: +(w.recoil.recoveryPerSec * w.recoil.recoveryWhileFiringScale).toFixed(3),
+        recoveryDelayMs: w.recoil.recoveryDelayMs,
+      }));
     },
     /** 查询某点的地面高度（0 = 地面，>0 = 掩体顶面） */
     groundAt(x, z) {

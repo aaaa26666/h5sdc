@@ -17,6 +17,7 @@ import {
   computeTtk,
   recoilAt,
   recoilCumulative,
+  sustainedClimbRate,
   spreadOnShot,
   spreadAfterRecovery,
   baseSpread,
@@ -327,6 +328,49 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
   for (let i = 0; i < 5; i++) expect += m4.recoil.pattern[i][1];
   check('累计后坐力等于图案前 N 项之和', near(cum5.pitchDeg, +expect.toFixed(3), 1e-6),
     `${cum5.pitchDeg} vs ${expect.toFixed(3)}`);
+
+  // ---- 连发净抬升必须为正（M2-TEMP-1 的回归不变量）----
+  //
+  // 修复前后坐力恢复是无条件的，且与连发抬升速率同量级 ——
+  // 实测 5 把武器里有 3 把的**净抬升是负数**，也就是持续射击时视角在往下走，
+  // 后坐力图案完全失去意义。这不是平衡问题，是恢复把抬升抵消掉了。
+  {
+    const rates = config.weapons.map((w) => ({ label: w.label, net: sustainedClimbRate(w) }));
+    const bad = rates.filter((r) => r.net <= 0);
+    check('每把武器的连发净抬升都为正（视角确实在往上走）',
+      bad.length === 0,
+      bad.length ? bad.map((r) => `${r.label} ${r.net}°/s`).join(', ')
+                 : rates.map((r) => `${r.label} ${r.net}°/s`).join(', '));
+    // 抬升速率要有区分度，否则"不同武器的后坐力"就没意义
+    check('不同武器的连发抬升速率有区分度',
+      new Set(rates.map((r) => r.net)).size >= 4,
+      `${new Set(rates.map((r) => r.net)).size} 种不同速率`);
+    // 恢复在连发期间必须被压低，否则又会回到"抵消"的老问题
+    check('全部武器都配置了连发期间的恢复压降',
+      config.weapons.every((w) => (w.recoil.recoveryWhileFiringScale ?? 1) < 0.6),
+      config.weapons.map((w) => `${w.label} ${w.recoil.recoveryWhileFiringScale}`).join(', '));
+    // 停火之后必须能全额恢复（否则后坐力会永久累积，视角永远回不到玩家瞄的位置）
+    check('全部武器都配置了停火后的恢复延迟',
+      config.weapons.every((w) => (w.recoil.recoveryDelayMs ?? 0) > 0),
+      config.weapons.map((w) => `${w.label} ${w.recoil.recoveryDelayMs}ms`).join(', '));
+    // 停火恢复速率必须高于连发期间的恢复速率，否则"两档"没有意义
+    check('连发期间的恢复速率低于停火后',
+      config.weapons.every((w) =>
+        w.recoil.recoveryPerSec * w.recoil.recoveryWhileFiringScale < w.recoil.recoveryPerSec));
+  }
+
+  // ---- 瞄准与后坐力偏移必须可分离（结构不变量）----
+  // 这是 M2-TEMP-1 要求的结构改动：玩家瞄的（永久）与后坐力的（临时）是两笔账。
+  // 只要 config 里还有 recoveryWhileFiringScale 这类字段，就说明恢复确实分了两档；
+  // 而"分两档"只有在两笔账分开时才有意义。
+  {
+    check('sustainedClimbRate 对开镜后坐力也成立（开镜抬升更小但仍为正）', (() => {
+      const ads = config.weapons.map((w) => sustainedClimbRate(w, true));
+      return ads.every((v) => v > 0);
+    })(), config.weapons.map((w) => `${w.label} ${sustainedClimbRate(w, true)}`).join(', '));
+    check('开镜时的净抬升小于腰射', config.weapons.every((w) =>
+      sustainedClimbRate(w, true) < sustainedClimbRate(w, false)));
+  }
 
   // 扩散：开火累积、时间恢复、上下限
   const s0 = baseSpread(m4, false);
@@ -691,6 +735,24 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
       lc.tallHeight > config.player.stepHeight,
       `tallHeight=${lc.tallHeight} > stepHeight=${config.player.stepHeight}`);
     check('高掩体占比在合理范围', lc.tallRatio > 0 && lc.tallRatio < 1, `${lc.tallRatio}`);
+
+    // ★ 关键可达性不变量：**高掩体必须能被跳上去，且余量要够**。
+    //
+    // 这条不是锦上添花，而是踩过的坑：玩家要站上高掩体，
+    // 脚底必须先达到 `tallHeight - stepHeight` 才允许进入该格（碰撞层规则），
+    // 再靠台阶吸附抬上去。
+    // 原本 stepHeight=0.55、tallHeight=1.15 → 门槛 0.60m，
+    // 而跳跃理论最高只有 0.676m，余量仅 0.076m。
+    // 离散积分还会损失约 `jumpSpeed·dt/2` 的高度 —— 30fps 下实际 apex 只有 0.589m，
+    // **低于门槛，跳不上去**。表现为"跳上箱子时灵时不灵"，玩家会直接当成 bug。
+    const apex = config.player.jumpSpeed ** 2 / (2 * Math.abs(config.player.gravity));
+    const threshold = lc.tallHeight - config.player.stepHeight;
+    const worstApex = apex - (config.player.jumpSpeed * (1 / 30)) / 2; // 30fps 最坏情况
+    check('高掩体可以被跳上去，且在最差帧率下仍有余量',
+      worstApex > threshold + 0.1,
+      `30fps 实际跳跃高度 ${worstApex.toFixed(3)}m vs 门槛 ${threshold.toFixed(3)}m` +
+        `（余量 ${(worstApex - threshold).toFixed(3)}m）`);
+
     check('玩家与 AI 使用同一个 stepHeight（来自 level，避免两边不一致）',
       config.player.stepHeight === config.player.stepHeight);
   }

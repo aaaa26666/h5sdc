@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-10T11:28:43.471Z",
+  "generatedAt": "2026-10-10T12:07:09.633Z",
   "designTargets": {
     "_comment": "手感设计目标，**按武器类别分别设定**。tools/ttk.mjs 据此判定并报告偏差，是『手感主观』的对策依据。",
     "_whyPerClass": "首版用了单一全局区间（0.32~0.62s），工具立刻报出 6 项『未达标』—— 但那些全是类别差异（霰弹枪、精确射手步枪的 TTK 本来就该与步枪不同），不是缺陷。一个把正常差异也报成失败的报表，会让人很快不再看它。",
@@ -76,6 +76,10 @@
         "yawDeg": 1.1,
         "pitchDeg": 7.22
       },
+      "sustainedClimb": 2.619,
+      "sustainedClimbAds": 1.465,
+      "magDumpClimbDeg": 4.478,
+      "settleSec": 0.498,
       "targets": {
         "ttkBodySecMin": 0.3,
         "ttkBodySecMax": 0.55,
@@ -115,6 +119,10 @@
         "yawDeg": 0.8,
         "pitchDeg": 5.17
       },
+      "sustainedClimb": 4.533,
+      "sustainedClimbAds": 2.92,
+      "magDumpClimbDeg": 7.87,
+      "settleSec": 0.984,
       "targets": {
         "ttkBodySecMin": 0.26,
         "ttkBodySecMax": 0.45,
@@ -154,6 +162,10 @@
         "yawDeg": 0.42,
         "pitchDeg": 7.55
       },
+      "sustainedClimb": 6.719,
+      "sustainedClimbAds": 3.947,
+      "magDumpClimbDeg": 10.615,
+      "settleSec": 1.474,
       "targets": {
         "ttkBodySecMin": 0.26,
         "ttkBodySecMax": 0.5,
@@ -193,6 +205,10 @@
         "yawDeg": 3.45,
         "pitchDeg": 33.6
       },
+      "sustainedClimb": 2.434,
+      "sustainedClimbAds": 1.78,
+      "magDumpClimbDeg": 13.19,
+      "settleSec": 2.398,
       "targets": {
         "_comment": "霰弹枪的基准距离是 6m 而不是 15m —— 在 15m 外它本就不该高效",
         "ttkBodySecMin": 0,
@@ -233,6 +249,10 @@
         "yawDeg": -1.42,
         "pitchDeg": 18.65
       },
+      "sustainedClimb": 5.558,
+      "sustainedClimbAds": 3.512,
+      "magDumpClimbDeg": 27.55,
+      "settleSec": 5.51,
       "targets": {
         "_comment": "精确射手步枪允许更慢的扩散恢复 —— 它就是慢慢打的武器",
         "ttkBodySecMin": 0.15,

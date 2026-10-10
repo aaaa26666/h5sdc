@@ -164,6 +164,37 @@ export function recoilCumulative(weapon, shots, isAds) {
   return { yawDeg: +yaw.toFixed(3), pitchDeg: +pitch.toFixed(3) };
 }
 
+/**
+ * 连发时的**净抬升速率**（度/秒）—— 这是 M2-TEMP-1 的核心量化指标。
+ *
+ * 背景：后坐力恢复原先是无条件的（每帧都按 recoveryPerSec 把视角拉回），
+ * 而连发抬升速率与恢复速率同量级，于是两者几乎抵消。
+ * 实测修复前 5 把武器里有 3 把的净值为**负数** ——
+ * 也就是持续射击时视角在往下走，后坐力图案完全失去意义。
+ *
+ * 修复后恢复分两档：距上次开火 `recoveryDelayMs` 以内只按
+ * `recoveryWhileFiringScale` 生效，超过则全额恢复。
+ * 本函数返回**连发期间**的净速率，因此它必须为正 —— 这条不变量已加进单测。
+ *
+ * @returns 度/秒。正值表示视角持续上抬。
+ */
+export function sustainedClimbRate(weapon, isAds = false) {
+  const pat = weapon.recoil.pattern;
+  const first = pat[0];
+  const shotRate = 1000 / weapon.fireIntervalMs; // 每秒发数
+  const scale = isAds ? weapon.recoil.adsScale : 1;
+  const climbPerSec = first[1] * scale * shotRate;
+  const recovery =
+    (weapon.recoil.recoveryPerSec || 0) * (weapon.recoil.recoveryWhileFiringScale ?? 1);
+  return +(climbPerSec - recovery).toFixed(3);
+}
+
+/** 停火后恢复所需的近似时间（秒）：从当前累计偏移回到 0 */
+export function recoverySeconds(weapon, accumulatedPitchDeg) {
+  const rate = weapon.recoil.recoveryPerSec || 1;
+  return +(Math.abs(accumulatedPitchDeg) / rate).toFixed(3);
+}
+
 // ============================================================
 // 扩散
 // ============================================================

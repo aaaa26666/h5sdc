@@ -114,8 +114,8 @@ Windows 上也可以直接双击 **`启动游戏.bat`** —— 它会自动检�
 所有验证都是**可执行脚本**，不是人工 checklist：
 
 ```bash
-node tools/unit-tests.mjs                          # 纯逻辑单测       111 项
-node tools/smoke.mjs                              # 端到端（含连续10局）79 项
+node tools/unit-tests.mjs                          # 纯逻辑单测       119 项
+node tools/smoke.mjs                              # 端到端（含连续10局）92 项
 node tools/ttk.mjs                                 # 手感量化报表 + 设计目标判定
 node tools/audit-keybindings.mjs                   # 按键审计（禁用修饰键、禁止重复绑定）
 node tools/verify-prod-bundle.mjs                  # 验证调试接口已从生产产物剔除

@@ -8,9 +8,16 @@
 //   后坐力 = 固定图案 + 少量随机偏航。用固定图案而不是纯随机，原因是
 //   ① 玩家可以练习压枪，② 后坐力曲线成为可写进配置表、可被 tools/ttk.mjs 读取的量化对象。
 //   扩散 = 逐发累积 + 随时间恢复，腰射与开镜各有一套基础值。
-//   [M2-TEMP-1] 后坐力恢复是"无条件把视角拉回"，没有区分"玩家自己压的枪"与"后坐力的枪"。
-//              真实实现需要把玩家输入与后坐力偏移分开积分。
-//              M3 重写清单：拆分 aimInput 与 recoilOffset，避免压枪时被恢复逻辑抵消。
+//
+//   后坐力恢复（M2-TEMP-1 已修复）：
+//     视角拆成两笔账 —— 玩家的瞄准（player.aimYaw/aimPitch，永久）
+//     与后坐力偏移（player.recoilYaw/recoilPitch，会恢复到 0）。
+//     恢复**只削减后者**，所以玩家主动压的枪不会被顶回去。
+//     恢复速率分两档：连发期间按 recoveryWhileFiringScale 压低，
+//     停火 recoveryDelayMs 之后全额恢复。
+//     修复前恢复是无条件的，与连发抬升同量级、几乎抵消 ——
+//     5 把武器里有 3 把的净抬升是**负数**（持续射击时视角往下走）。
+//     不变量"每把武器的连发净抬升必须为正"已加进单测。
 import { weaponById, ammoById } from '../config/index.js';
 import {
   applySpread,
@@ -62,8 +69,10 @@ export function createWeaponSystem({ cfg, level, player, rng, emit }) {
 
   let activeIndex = 0;
   let adsT = 0;               // 0=腰射 1=完全开镜
-  let recoilYawDeg = 0;       // 尚未恢复的后坐力偏移
-  let recoilPitchDeg = 0;
+  // 后坐力偏移**不再由本模块持有** —— 它归 player 的 recoilYaw/recoilPitch 管，
+  // 这样"玩家瞄的"与"后坐力的"是两笔账，恢复不会去动玩家的瞄准（M2-TEMP-1）。
+  // 这里只记录**最近一次开火时间**，用于决定恢复走哪一档。
+  let lastShotAt = -1e9;
 
   const active = () => states[activeIndex];
 
@@ -187,11 +196,10 @@ export function createWeaponSystem({ cfg, level, player, rng, emit }) {
     s.cooldownUntil = nowMs + wdef.fireIntervalMs;
     stats.shotsFired++;
 
-    // ---- 后坐力：应用视角偏移，并记录待恢复量 ----
+    // ---- 后坐力：加到 player 的临时偏移上（不污染玩家的瞄准）----
     const rc = recoilAt(wdef, Math.max(0, wdef.magazineSize - s.magazine - 1), adsT > 0.5, rng);
-    recoilYawDeg += rc.yawDeg;
-    recoilPitchDeg += rc.pitchDeg;
     player.addRecoil(rc.yawDeg * DEG, rc.pitchDeg * DEG);
+    lastShotAt = nowMs;
 
     // ---- 扩散：开火后扩大 ----
     const moving = Math.hypot(player.state.vel.x, player.state.vel.z) > 0.6;
@@ -242,18 +250,24 @@ export function createWeaponSystem({ cfg, level, player, rng, emit }) {
     // ---- 扩散恢复 ----
     s.spread = spreadAfterRecovery(s.def, s.spread, dt, adsT > 0.5);
 
-    // ---- 后坐力恢复 ----
-    // [M2-TEMP-1] 无条件把视角拉回，见文件头说明
-    const rec = s.def.recoil.recoveryPerSec * dt;
-    if (recoilYawDeg !== 0 || recoilPitchDeg !== 0) {
-      const yawStep = Math.min(Math.abs(recoilYawDeg), rec) * Math.sign(recoilYawDeg);
-      const pitchStep = Math.min(Math.abs(recoilPitchDeg), rec) * Math.sign(recoilPitchDeg);
-      player.addRecoil(-yawStep * DEG, -pitchStep * DEG);
-      recoilYawDeg -= yawStep;
-      recoilPitchDeg -= pitchStep;
-      if (Math.abs(recoilYawDeg) < 1e-3) recoilYawDeg = 0;
-      if (Math.abs(recoilPitchDeg) < 1e-3) recoilPitchDeg = 0;
-    }
+    // ---- 后坐力恢复（M2-TEMP-1 的核心改动）----
+    //
+    // 原实现是"无条件把视角拉回"，每帧都按 recoveryPerSec 全额恢复。
+    // 而连发抬升速率与恢复速率同量级，于是两者几乎抵消 ——
+    // 实测修复前 5 把武器里有 3 把的**净抬升是负数**（持续射击时视角往下走），
+    // 后坐力图案完全失去意义。
+    //
+    // 现在分两档：
+    //   · 距上次开火 recoveryDelayMs 以内 → 只按 recoveryWhileFiringScale 生效
+    //     （留一点自恢复，避免长弹匣时后坐力无限累积到无法控制）
+    //   · 超过该时间（已停火）→ 全额恢复，视角平滑回到玩家瞄的位置
+    // 恢复只作用于 player 的 recoil 偏移，**不碰玩家的瞄准** ——
+    // 所以玩家主动压的枪不会被恢复顶回去。
+    const justFired = nowMs - lastShotAt <= (s.def.recoil.recoveryDelayMs ?? 0);
+    const recoverRate =
+      s.def.recoil.recoveryPerSec *
+      (justFired ? (s.def.recoil.recoveryWhileFiringScale ?? 1) : 1);
+    player.recoverRecoil(recoverRate, dt);
 
     // ---- 切枪（边沿：轻点也要生效）----
     if (input.pressedAction('slotPrimary')) swapTo(0);

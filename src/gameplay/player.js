@@ -44,6 +44,17 @@ export function createPlayer(cfg, level) {
   const player = {
     pos: { x: spawn.x, y: 0, z: spawn.z },
     vel: { x: 0, y: 0, z: 0 },
+    // ---- 视角拆成两部分（M2-TEMP-1 的修复）----
+    //   aim*    : 玩家用鼠标控制的瞄准。**永久**，不会被后坐力恢复改动。
+    //   recoil* : 后坐力造成的临时偏移。会随时间恢复到 0。
+    // 外部（相机、射线、AI 视线）只读 yaw/pitch，它们是两者之和。
+    // 之所以要拆开：原先后坐力直接加到 yaw/pitch 上、恢复也直接从上面减，
+    // 于是"玩家主动压的枪"与"后坐力的枪"混在同一个数值里 ——
+    // 连发时恢复把抬升抵消掉，5 把武器里有 3 把的净抬升甚至是负的（视角往下走）。
+    aimYaw: 0,
+    aimPitch: 0,
+    recoilYaw: 0,
+    recoilPitch: 0,
     yaw: 0,
     pitch: 0,
     onGround: true,
@@ -75,17 +86,59 @@ export function createPlayer(cfg, level) {
   const jumpState = createJumpState();
   const landing = createLandingState();
 
-  function applyLook(dx, dy) {
-    player.yaw -= dx * P.mouseSensitivity;
-    player.pitch -= dy * P.mouseSensitivity;
+  /** 把 aim + recoil 合成对外可见的视角。任何一路变化后都必须调用。 */
+  function syncView() {
     const lim = P.pitchLimitDeg * DEG;
-    player.pitch = Math.max(-lim, Math.min(lim, player.pitch));
+    player.yaw = player.aimYaw + player.recoilYaw;
+    player.pitch = Math.max(-lim, Math.min(lim, player.aimPitch + player.recoilPitch));
   }
 
-  /** 由武器调用：后坐力直接作用于视角 */
+  function applyLook(dx, dy) {
+    player.aimYaw -= dx * P.mouseSensitivity;
+    player.aimPitch -= dy * P.mouseSensitivity;
+    const lim = P.pitchLimitDeg * DEG;
+    player.aimPitch = Math.max(-lim, Math.min(lim, player.aimPitch));
+    syncView();
+  }
+
+  /**
+   * 由武器调用：后坐力加到**临时偏移**上，不污染玩家的瞄准。
+   * 这样玩家压枪改变的是 aim，恢复只削减 recoil，两者不再互相抵消。
+   */
   function addRecoil(yawRad, pitchRad) {
-    player.yaw += yawRad;
-    player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch + pitchRad));
+    player.recoilYaw += yawRad;
+    player.recoilPitch += pitchRad;
+    syncView();
+  }
+
+  /**
+   * 后坐力恢复：只把**临时偏移**拉回 0，绝不动玩家的瞄准。
+   *
+   * 这是 M2-TEMP-1 的修复要点。恢复速率由武器侧决定（连发期间会被压低，
+   * 否则恢复会再次抵消抬升 —— 那正是这个临时实现的病根）。
+   *
+   * @param rateDegPerSec 每秒恢复多少度
+   */
+  function recoverRecoil(rateDegPerSec, dt) {
+    const step = rateDegPerSec * DEG * dt;
+    if (step <= 0) return;
+    const stepOne = (v) => {
+      if (v === 0) return 0;
+      const s = Math.min(Math.abs(v), step) * Math.sign(v);
+      const next = v - s;
+      return Math.abs(next) < 1e-4 ? 0 : next;
+    };
+    player.recoilYaw = stepOne(player.recoilYaw);
+    player.recoilPitch = stepOne(player.recoilPitch);
+    syncView();
+  }
+
+  /** 后坐力临时偏移的当前大小（度），用于可观测量与测试 */
+  function recoilOffsetDeg() {
+    return {
+      yawDeg: +(player.recoilYaw / DEG).toFixed(4),
+      pitchDeg: +(player.recoilPitch / DEG).toFixed(4),
+    };
   }
 
   function clampLeanByWall() {
@@ -431,6 +484,11 @@ export function createPlayer(cfg, level) {
     leanLateralOffset,
     leanRollRad: () => -player.leanCurrent * P.leanRollDeg * DEG,
     addRecoil,
+    recoverRecoil,
+    recoilOffsetDeg,
+    /** 合成 aim + recoil 到对外视角。外部若直接改了 aim/recoil 字段，必须调用它。 */
+    syncView,
+    aimAngles: () => ({ yaw: player.aimYaw, pitch: player.aimPitch }),
     takeDamage,
     applyIncomingHit,
     useConsumable,
