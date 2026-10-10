@@ -157,7 +157,13 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
     ai.yaw = Math.atan2(-dx, -dz);
     ai.position.x += (dx / dist) * stepLen;
     ai.position.z += (dz / dist) * stepLen;
-    level.resolveCircle(ai.position, 0.45);
+    // AI 与玩家使用同一个 stepHeight：
+    // 低掩体（climbable）不阻挡，AI 直接走上去；高掩体阻挡，且已在寻路网格里被排除，
+    // 所以 AI 不会穿模、也不会卡在掩体前。若两边用不同数值，就会出现
+    // "玩家能过 AI 不能过"或"AI 穿过掩体"的不一致。
+    level.resolveCircle(ai.position, 0.45, ai.position.y, level.stepHeight);
+    // 贴地：AI 站到该格的地面高度上（地面 0 / 低掩体顶面）
+    ai.position.y = level.groundHeightAt(ai.position.x, ai.position.z);
     return dist;
   }
 

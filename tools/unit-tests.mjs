@@ -25,6 +25,12 @@ import {
 } from '../src/core/ballistics.js';
 import { pickUpdateTier, jitteredDeadline } from '../src/core/navgrid.js';
 import { createVitals, heal, canHealWith } from '../src/gameplay/vitals.js';
+import {
+  accelerate, airAccelerate, applyFriction,
+  createJumpState, queueJump, consumeJump,
+  createLandingState, applyLandingImpact, updateLanding,
+  stepUpTarget,
+} from '../src/core/movement.js';
 import { config, weaponById, ammoById, armorById } from '../src/config/index.js';
 
 let pass = 0;
@@ -423,6 +429,271 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
   check('护甲覆盖关系与命中部位一致',
     config.armor.every((a) => a.covers.every((c) => config.hitZoneNames.includes(c))));
   check('玩家初始护甲存在', !!config.playerVitals.startArmor.body);
+}
+
+// ============================================================
+// 8. 移动手感（M1-TEMP-2 / M1-TEMP-3）
+//
+// 这一组存在的理由：手感参数写错了肉眼极难发现，但方程写错了必须能被抓住。
+// 特别是"速度是不是瞬间到顶""会不会无限滑行""空中能不能刷速度"这三条，
+// 都是**可断言的事实**，不该靠试玩去感觉。
+// ============================================================
+{
+  // ---- 加速：必须是渐变，不能一帧到顶 ----
+  {
+    const vel = { x: 0, z: 0 };
+    const dt = 1 / 60;
+    const wishSpeed = 5.0;
+    const accel = 11.0;
+    accelerate(vel, 0, -1, wishSpeed, accel, dt);
+    const after1 = Math.hypot(vel.x, vel.z);
+    check('加速一帧后速度小于目标速度（不是瞬间到顶）',
+      after1 > 0 && after1 < wishSpeed, `1 帧后 ${after1.toFixed(3)} / 目标 ${wishSpeed}`);
+    check('加速方向正确（-Z 前进方向）', vel.z < 0 && Math.abs(vel.x) < 1e-9,
+      `vel=(${vel.x.toFixed(3)}, ${vel.z.toFixed(3)})`);
+
+    // 一直加速应收敛到目标速度，且不超过
+    for (let i = 0; i < 600; i++) accelerate(vel, 0, -1, wishSpeed, accel, dt);
+    const settled = Math.hypot(vel.x, vel.z);
+    check('持续加速收敛到目标速度且不超速',
+      Math.abs(settled - wishSpeed) < 0.02, `${settled.toFixed(4)} vs ${wishSpeed}`);
+
+    // 达到目标后再加速不应产生任何增量。
+    // 注意期望方向是 (0,-1)，"已达目标"指的是**沿该方向的分量**已达目标。
+    // 初版这里把速度设成垂直于期望方向再断言不加速 —— 那是错的：
+    // 垂直分量为 0，本来就该继续加速。是测试写错，不是代码错。
+    const v2 = { x: 0, z: -wishSpeed };
+    const added = accelerate(v2, 0, -1, wishSpeed, accel, dt);
+    check('沿期望方向已达目标速度时不再加速',
+      added === 0 && Math.abs(v2.z + wishSpeed) < 1e-9, `added=${added}`);
+
+    // 斜向移动不能让总速度超过目标速度（否则会出现"斜着走更快"）
+    {
+      const d = { x: 0, z: 0 };
+      const inv = 1 / Math.SQRT2;
+      for (let i = 0; i < 900; i++) accelerate(d, inv, -inv, wishSpeed, accel, dt);
+      const total = Math.hypot(d.x, d.z);
+      check('斜向移动的稳态总速度等于目标速度（不会更快）',
+        Math.abs(total - wishSpeed) < 0.02, `${total.toFixed(4)} vs ${wishSpeed}`);
+    }
+
+    // 加速到目标所需时间应随 accel 变化 —— 证明 accel 真的在起作用
+    const mk = (a) => {
+      const v = { x: 0, z: 0 };
+      let t = 0;
+      while (Math.hypot(v.x, v.z) < wishSpeed * 0.95 && t < 5) {
+        accelerate(v, 0, -1, wishSpeed, a, dt);
+        t += dt;
+      }
+      return t;
+    };
+    const tLow = mk(6);
+    const tHigh = mk(22);
+    check('accel 越大到达目标速度越快', tHigh < tLow,
+      `accel=6 → ${tLow.toFixed(3)}s, accel=22 → ${tHigh.toFixed(3)}s`);
+  }
+
+  // ---- 摩擦：必须能停下来，且**绝不能阻止加速** ----
+  {
+    const dt = 1 / 60;
+    const vel = { x: 0, z: -5 };
+    applyFriction(vel, 8.0, 1.2, dt);
+    check('摩擦使速度下降但不归零', vel.z > -5 && vel.z < 0, `-5 → ${vel.z.toFixed(3)}`);
+
+    // 关键不变量：有限时间内必须真正停住（而不是指数逼近 0 永远滑）
+    let t = 0;
+    while (Math.hypot(vel.x, vel.z) > 1e-6 && t < 10) {
+      applyFriction(vel, 8.0, 1.2, dt);
+      t += dt;
+    }
+    check('摩擦在有限时间内让角色完全停住（不滑冰）', t < 1.5,
+      `从 5 m/s 停住用了 ${t.toFixed(3)}s`);
+
+    // ★ 回归：低帧率/高帧率下"摩擦 + 加速"都必须能把速度加上去。
+    // 这里对应的真实故障是：摩擦在 speed < stopSpeed 时直接把速度清零，
+    // 而每帧加速增量在高帧率下小于 stopSpeed，导致玩家永远加不起速度
+    //（165Hz 实测只能到 0.33 m/s，角色几乎无法移动）。
+    const converge = (hz, accel, friction, stopSpeed, wishSpeed) => {
+      const d = 1 / hz;
+      const v = { x: 0, z: 0 };
+      for (let i = 0; i < hz * 3; i++) {
+        applyFriction(v, friction, stopSpeed, d);
+        accelerate(v, 0, -1, wishSpeed, accel, d);
+      }
+      return Math.hypot(v.x, v.z);
+    };
+    for (const hz of [30, 60, 90, 144, 165, 240, 360]) {
+      const s = converge(hz, 11.0, 8.0, 1.2, 5.0);
+      check(`摩擦不会阻止加速（${hz}Hz 下能达到目标速度）`,
+        s > 5.0 * 0.85, `${s.toFixed(3)} m/s`);
+    }
+    // 反向确认这条断言真的能抓住那个 bug：把 stopSpeed 调到大于每帧加速增量，
+    // 若实现是"低于 stopSpeed 直接归零"，此处必然失败。
+    const tiny = (() => {
+      const d = 1 / 165;
+      const v = { x: 0, z: 0 };
+      for (let i = 0; i < 165 * 2; i++) {
+        applyFriction(v, 8.0, 1.2, d);
+        accelerate(v, 0, -1, 5.0, 11.0, d);
+      }
+      // 每帧加速增量
+      const perFrame = 11.0 * 5.0 * d;
+      return { speed: Math.hypot(v.x, v.z), perFrame };
+    })();
+    check('每帧加速增量小于 stopSpeed 时仍能加速（这是原 bug 的触发条件）',
+      tiny.perFrame < 1.2 && tiny.speed > 4.0,
+      `每帧增量 ${tiny.perFrame.toFixed(3)} < stopSpeed 1.2，稳态 ${tiny.speed.toFixed(3)} m/s`);
+  }
+
+  // ---- 空中控制：不能靠空中输入刷速度（这是可被利用的位移技巧）----
+  {
+    const dt = 1 / 60;
+    const airAccel = 2.2;
+    const cap = 1.5;
+    // 以冲刺速度向前起跳，然后一直往正侧方按
+    const vel = { x: 0, z: -7.5 };
+    const startSpeed = Math.hypot(vel.x, vel.z);
+    let peak = startSpeed;
+    for (let i = 0; i < 120; i++) {
+      airAccelerate(vel, 1, 0, 7.5, airAccel, cap, dt);
+      peak = Math.max(peak, Math.hypot(vel.x, vel.z));
+    }
+    // 允许的增量上限：侧向最多加到 cap，因此总速度上限是 hypot(start, cap)
+    const theoreticalMax = Math.hypot(startSpeed, cap);
+    check('空中控制不能让水平速度超过理论上限',
+      peak <= theoreticalMax + 1e-6,
+      `峰值 ${peak.toFixed(4)} ≤ 上限 ${theoreticalMax.toFixed(4)}`);
+    check('空中控制确实生效（否则跳跃完全不可控）', vel.x > 0.5, `侧向速度 ${vel.x.toFixed(3)}`);
+
+    // 与地面加速对比：空中达到的速度增量应明显更小
+    const gv = { x: 0, z: -7.5 };
+    const av = { x: 0, z: -7.5 };
+    for (let i = 0; i < 30; i++) {
+      airAccelerate(av, 1, 0, 7.5, airAccel, cap, dt);
+      accelerate(gv, 1, 0, 7.5, 11.0, dt);
+    }
+    check('空中加速明显弱于地面加速', av.x < gv.x * 0.5,
+      `空中侧向 ${av.x.toFixed(3)} vs 地面 ${gv.x.toFixed(3)}`);
+  }
+
+  // ---- 跳跃缓冲与土狼时间 ----
+  {
+    const cfgMs = { coyote: 110, buffer: 150 };
+
+    // 土狼时间：离地后 50ms 起跳应成功
+    {
+      const js = createJumpState();
+      let t = 1000;
+      consumeJump(js, true, t, cfgMs.coyote, cfgMs.buffer); // 在地面
+      t += 50; // 离地 50ms
+      queueJump(js, t);
+      check('土狼时间：离地 50ms 内仍可起跳',
+        consumeJump(js, false, t, cfgMs.coyote, cfgMs.buffer) === true);
+    }
+    // 土狼过期：离地 300ms 后不该还能起跳
+    {
+      const js = createJumpState();
+      let t = 1000;
+      consumeJump(js, true, t, cfgMs.coyote, cfgMs.buffer);
+      t += 300;
+      queueJump(js, t);
+      check('土狼时间：离地 300ms 后不能起跳',
+        consumeJump(js, false, t, cfgMs.coyote, cfgMs.buffer) === false);
+    }
+    // 跳跃缓冲：落地前 80ms 按下，落地瞬间应生效
+    {
+      const js = createJumpState();
+      let t = 1000;
+      queueJump(js, t); // 还在空中就按下
+      t += 80; // 80ms 后落地
+      check('跳跃缓冲：落地前 80ms 按下的跳跃在落地时生效',
+        consumeJump(js, true, t, cfgMs.coyote, cfgMs.buffer) === true);
+    }
+    // 缓冲过期：落地前 500ms 按下，不该生效
+    {
+      const js = createJumpState();
+      let t = 1000;
+      queueJump(js, t);
+      t += 500;
+      check('跳跃缓冲：落地前 500ms 按下的跳跃已过期',
+        consumeJump(js, true, t, cfgMs.coyote, cfgMs.buffer) === false);
+    }
+    // 一次按键只跳一次
+    {
+      const js = createJumpState();
+      const t = 1000;
+      queueJump(js, t);
+      const first = consumeJump(js, true, t, cfgMs.coyote, cfgMs.buffer);
+      const second = consumeJump(js, true, t + 16, cfgMs.coyote, cfgMs.buffer);
+      check('一次跳跃输入只触发一次起跳（不会连跳）', first === true && second === false);
+    }
+    // 初值不能用 0：否则时间源从 0 开始时会被误判为"刚离地"
+    {
+      const js = createJumpState();
+      check('跳跃状态初值为 -Infinity（避免开局凭空起跳）',
+        js.lastGroundedAt === -Infinity && js.jumpQueuedAt === -Infinity);
+      check('从未在地面过时不能起跳（即使按了跳）', (() => {
+        const s = createJumpState();
+        queueJump(s, 0);
+        return consumeJump(s, false, 0, cfgMs.coyote, cfgMs.buffer) === false;
+      })());
+    }
+  }
+
+  // ---- 落地缓冲 ----
+  {
+    const s = createLandingState();
+    const d1 = applyLandingImpact(s, 5.2, 0.22, 0.02);
+    check('落地产生相机下沉', d1 > 0 && d1 <= 0.22, `下沉 ${d1.toFixed(4)}m`);
+    check('下沉有上限（高速落地不会把视角砸穿）',
+      applyLandingImpact(s, 500, 0.22, 0.02) <= 0.22 + 1e-9);
+    // 小落地不应覆盖掉大落地
+    const s2 = createLandingState();
+    applyLandingImpact(s2, 6, 0.22, 0.02);
+    const big = s2.dip;
+    const added = applyLandingImpact(s2, 1, 0.22, 0.02);
+    check('连续落地时小冲击不覆盖大冲击', added === 0 && s2.dip === big);
+
+    // 回弹到 0
+    let t = 0;
+    while (s.dip > 0 && t < 5) {
+      updateLanding(s, 1 / 60, 1.5);
+      t += 1 / 60;
+    }
+    check('落地下沉会在有限时间内恢复到 0', s.dip === 0 && t < 1.0, `${t.toFixed(3)}s`);
+    check('落地计数被记录', s.landings >= 1, `${s.landings}`);
+  }
+
+  // ---- 台阶吸附判定 ----
+  {
+    const step = 0.55;
+    check('低掩体（0.45）可自动迈上', stepUpTarget(0, 0.45, step) === 0.45);
+    check('高掩体（1.15）不可自动迈上，必须跳',
+      stepUpTarget(0, 1.15, step) === false);
+    check('已在掩体顶上时不重复吸附', stepUpTarget(0.45, 0.45, step) === false);
+    check('走下台子不吸附下降（交给重力）', stepUpTarget(0.45, 0, step) === false);
+    check('跳跃中接近高掩体顶面时可吸附上去（跳上掩体）',
+      stepUpTarget(0.7, 1.15, step) === 1.15);
+    check('恰好等于 stepHeight 的高度差可迈上（边界包含）',
+      stepUpTarget(0, 0.55, step) === 0.55);
+    check('略超 stepHeight 即不可迈上',
+      stepUpTarget(0, 0.5501, step) === false);
+  }
+
+  // ---- 关卡掩体配置一致性 ----
+  {
+    const lc = config.level.lowCover;
+    check('关卡配置包含低矮掩体', !!lc && lc.count > 0, `count=${lc?.count}`);
+    check('低掩体高度不超过 stepHeight（否则"可迈上"是假的）',
+      lc.lowHeight <= config.player.stepHeight,
+      `lowHeight=${lc.lowHeight} ≤ stepHeight=${config.player.stepHeight}`);
+    check('高掩体高度超过 stepHeight（否则"需要跳"是假的）',
+      lc.tallHeight > config.player.stepHeight,
+      `tallHeight=${lc.tallHeight} > stepHeight=${config.player.stepHeight}`);
+    check('高掩体占比在合理范围', lc.tallRatio > 0 && lc.tallRatio < 1, `${lc.tallRatio}`);
+    check('玩家与 AI 使用同一个 stepHeight（来自 level，避免两边不一致）',
+      config.player.stepHeight === config.player.stepHeight);
+  }
 }
 
 // ============================================================

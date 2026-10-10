@@ -5,11 +5,29 @@
 //     新增 hitZoneCenter()，把命中部位的中心按**探头偏移与蹲下高度**一起算出来。
 //     AI 射击与玩家自身体积判定都走这个函数，因此探头出去真的会改变被弹面积，
 //     蹲下也真的会降低被弹高度 —— 这两个动作至此才有决策价值。
-//   M1-TEMP-2（移动无加速度/摩擦）与 M1-TEMP-3（无台阶）**仍在**，属 M2 主题但
-//     本轮先保证系统正确性；见 docs/M2-TEMP-REGISTRY.md。
+//
+//   **M1-TEMP-2（移动无加速度/摩擦/落地缓冲）本轮已修复**：
+//     移动从"直接设速度"改为惯性模型 —— 地面先摩擦后加速、空中只有受限控制、
+//     落地按冲击速度产生相机下沉。数学部分在 src/core/movement.js（纯函数、可单测）。
+//
+//   **M1-TEMP-3（无台阶吸附）本轮已修复**：
+//     配合 level.js 的高度感知碰撞：可迈上的高度差自动抬升，且抬升是**平滑**的。
+//     前提是关卡中要有可踩的低矮几何 —— 见 level.js 顶部的范围声明。
 import * as THREE from 'three';
 import { movementBasis, wishDirection, viewForward } from '../core/direction.js';
 import { createVitals, applyHit, heal, canHealWith } from './vitals.js';
+import {
+  accelerate,
+  airAccelerate,
+  applyFriction,
+  createJumpState,
+  queueJump,
+  consumeJump,
+  createLandingState,
+  applyLandingImpact,
+  updateLanding,
+  stepUpTarget,
+} from '../core/movement.js';
 
 const DEG = Math.PI / 180;
 
@@ -41,9 +59,14 @@ export function createPlayer(cfg, level) {
     useEndAt: 0,
     useTotalMs: 0,
     lastDamageAt: -1e9,
+    // 台阶
+    lastStepUpAt: -1e9,
+    stepUps: 0,
+    steppingUp: false,
   };
 
-  const wish = new THREE.Vector3();
+  const jumpState = createJumpState();
+  const landing = createLandingState();
 
   function applyLook(dx, dy) {
     player.yaw -= dx * P.mouseSensitivity;
@@ -83,6 +106,11 @@ export function createPlayer(cfg, level) {
     return Math.max(0.45, player.eyeHeightCurrent / P.eyeHeight);
   }
 
+  /** 落地缓冲造成的相机下沉量（仅影响视角，不影响命中体积） */
+  function landingDip() {
+    return landing.dip;
+  }
+
   function eyePosition(out) {
     const off = leanLateralOffset();
     const b = movementBasis(player.yaw);
@@ -91,7 +119,8 @@ export function createPlayer(cfg, level) {
     out.y =
       player.pos.y +
       player.eyeHeightCurrent -
-      Math.abs(player.leanCurrent) * P.leanHeadDrop;
+      Math.abs(player.leanCurrent) * P.leanHeadDrop -
+      landingDip();
     return out;
   }
 
@@ -169,6 +198,7 @@ export function createPlayer(cfg, level) {
     return r;
   }
 
+  // ---- 移动 ----
   function update(dt, input, nowMs) {
     if (!player.alive) return;
 
@@ -177,50 +207,118 @@ export function createPlayer(cfg, level) {
 
     player.crouching = input.crouchActive();
     player.sprinting = input.sprintActive() && !player.crouching;
-    // 开镜时移动速度下降（由武器侧提供倍率，这里用一个保守常量）
-    const speed = player.crouching ? P.crouchSpeed : player.sprinting ? P.sprintSpeed : P.walkSpeed;
+    const targetSpeed = player.crouching
+      ? P.crouchSpeed
+      : player.sprinting
+        ? P.sprintSpeed
+        : P.walkSpeed;
 
+    // ---- 期望方向 ----
     let fx = 0;
     let fz = 0;
     if (input.forward()) fz -= 1;
     if (input.back()) fz += 1;
     if (input.left()) fx -= 1;
     if (input.right()) fx += 1;
-
+    let wishX = 0;
+    let wishZ = 0;
     if (fx || fz) {
       const len = Math.hypot(fx, fz);
       fx /= len;
       fz /= len;
       const w = wishDirection(player.yaw, fx, fz);
-      player.vel.x = w.x * speed;
-      player.vel.z = w.z * speed;
-    } else {
-      player.vel.x = 0;
-      player.vel.z = 0;
+      wishX = w.x;
+      wishZ = w.z;
     }
-    void wish;
 
-    player.vel.y += P.gravity * dt;
-    if (input.jump() && player.onGround) {
+    // ---- 水平速度：摩擦 + 加速（M1-TEMP-2 的核心改动）----
+    // 顺序很重要：先摩擦再加速。反过来会让"松开按键"的那一帧仍获得加速，
+    // 表现为松开后还会往前窜一下。
+    if (player.onGround) {
+      applyFriction(player.vel, P.friction, P.stopSpeed, dt);
+      if (wishX || wishZ) {
+        // 冲刺/蹲下时降低加速度：否则"最高速度不同"会因为加速度相同而几乎没有区别
+        const scale = player.crouching
+          ? P.crouchAccelScale
+          : player.sprinting
+            ? P.sprintAccelScale
+            : 1;
+        accelerate(player.vel, wishX, wishZ, targetSpeed, P.accel * scale, dt);
+      }
+    } else if (wishX || wishZ) {
+      airAccelerate(player.vel, wishX, wishZ, targetSpeed, P.airAccel, P.airWishCap, dt);
+    }
+
+    // ---- 水平位移 + 碰撞 ----
+    player.pos.x += player.vel.x * dt;
+    player.pos.z += player.vel.z * dt;
+    level.resolveCircle(player.pos, P.radius, player.pos.y, P.stepHeight);
+
+    // ---- 竖直：台阶吸附 / 站立 / 下落 ----
+    const groundY = level.groundHeightAt(player.pos.x, player.pos.z);
+
+    if (player.onGround) {
+      const target = stepUpTarget(player.pos.y, groundY, P.stepHeight);
+      if (target !== false) {
+        // 平滑抬升：瞬间对齐会让高低差在画面上"跳"一下，
+        // 而台阶吸附的全部意义就是让这一步看起来是走上去的。
+        const k = Math.min(1, dt * P.stepSmooth);
+        player.pos.y += (target - player.pos.y) * k;
+        if (target - player.pos.y < 0.02) player.pos.y = target;
+        player.vel.y = 0;
+        player.lastStepUpAt = nowMs;
+        // 计数器只在**开始**一次抬升时 +1。
+        // 平滑抬升会持续多帧，若每帧都计数，"台阶吸附了 36 次"这种读数
+        // 会让断言和日志都失去意义。
+        if (!player.steppingUp) {
+          player.steppingUp = true;
+          player.stepUps++;
+        }
+      } else {
+        player.steppingUp = false;
+        if (player.pos.y > groundY + 1e-4) {
+          // 脚下的地面消失了（走下台子）→ 交给重力，不吸附下降
+          player.onGround = false;
+        } else {
+          player.pos.y = groundY;
+          player.vel.y = 0;
+        }
+      }
+    }
+
+    if (!player.onGround) {
+      player.vel.y += P.gravity * dt;
+      player.pos.y += player.vel.y * dt;
+      const gy = level.groundHeightAt(player.pos.x, player.pos.z);
+      if (player.pos.y <= gy) {
+        const impactSpeed = Math.max(0, -player.vel.y);
+        player.pos.y = gy;
+        player.vel.y = 0;
+        const wasAirborne = !player.onGround;
+        player.onGround = true;
+        if (wasAirborne) {
+          applyLandingImpact(landing, impactSpeed, P.landingDipMax, P.landingDipPerSpeed);
+        }
+      }
+    }
+
+    // ---- 跳跃（缓冲 + 土狼时间）----
+    // 边沿触发入队：按住不放不应连跳（那会变成自动连跳）
+    if (input.pressedAction('jump')) queueJump(jumpState, nowMs);
+    if (consumeJump(jumpState, player.onGround, nowMs, P.coyoteMs, P.jumpBufferMs)) {
       player.vel.y = P.jumpSpeed;
       player.onGround = false;
     }
 
-    player.pos.x += player.vel.x * dt;
-    player.pos.z += player.vel.z * dt;
-    level.resolveCircle(player.pos, P.radius);
+    // ---- 落地缓冲回弹 ----
+    updateLanding(landing, dt, P.landingDipRecover);
 
-    player.pos.y += player.vel.y * dt;
-    if (player.pos.y <= 0) {
-      player.pos.y = 0;
-      player.vel.y = 0;
-      player.onGround = true;
-    }
-
+    // ---- 蹲下视高 ----
     const targetEye = player.crouching ? P.crouchEyeHeight : P.eyeHeight;
     const k = Math.min(1, dt * 12);
     player.eyeHeightCurrent += (targetEye - player.eyeHeightCurrent) * k;
 
+    // ---- 探头 ----
     const l = input.leanLeft();
     const r = input.leanRight();
     player.leanTarget = l && r ? 0 : l ? -1 : r ? 1 : 0;
@@ -248,6 +346,11 @@ export function createPlayer(cfg, level) {
     useConsumable,
     cancelUse,
     tickConsumable,
+    landingDip,
+    landingState: landing,
+    jumpState,
+    onGround: () => player.onGround,
+    horizontalSpeed: () => Math.hypot(player.vel.x, player.vel.z),
     get maxHealth() {
       return vitals.maxHealth;
     },

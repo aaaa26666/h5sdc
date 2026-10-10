@@ -79,7 +79,9 @@ const loot = createLoot(cfg, level, scene);
 const extract = createExtract(cfg, level, scene);
 
 // 导航：网格来自关卡，查询一律经预算调度器（M0 约束 C-1/C-2）
-const navGrid = createNavGrid(level.W, level.H, level.cell, level.blocked);
+// 用 pathBlocked 而不是 blocked：高掩体要算作阻挡（否则 AI 会穿过掩体），
+// 低掩体（可迈上）不算 —— AI 与玩家都能直接走上去，不该绕路。
+const navGrid = createNavGrid(level.W, level.H, level.cell, level.pathBlocked);
 const aStar = createAStar(navGrid);
 const scheduler = createPathScheduler(aStar, cfg.aiPathBudget);
 // 该视线函数供后续 AI 侧扩展使用；当前 AI 用的是 level.hasLineOfSight（含高度判定）
@@ -467,6 +469,18 @@ if (import.meta.env.DEV) {
             body: { id: player.vitals.armor.body.id, durability: +player.vitals.armor.body.durability.toFixed(1) },
           },
           using: player.isUsing(),
+          // ---- 移动手感（M1-TEMP-2/3 的可观测面）----
+          // 这些字段存在的意义：手感参数错了肉眼很难发现，但"速度是不是瞬间到顶"
+          // "台阶有没有抬上去"都是可断言的事实。
+          y: +player.state.pos.y.toFixed(4),
+          vy: +player.state.vel.y.toFixed(4),
+          speed: +player.horizontalSpeed().toFixed(4),
+          onGround: player.state.onGround,
+          landingDip: +player.landingDip().toFixed(4),
+          landings: player.landingState.landings,
+          lastImpactSpeed: +player.landingState.lastImpactSpeed.toFixed(3),
+          stepUps: player.state.stepUps,
+          groundY: +level.groundHeightAt(player.state.pos.x, player.state.pos.z).toFixed(4),
         },
         weapon: (() => {
           const w = weaponSys.active();
@@ -514,7 +528,8 @@ if (import.meta.env.DEV) {
         },
         audio: { unlocked: audio.isUnlocked(), ...audio.stats },
         decals: decals.placedTotal,
-        level: { W: level.W, cell: level.cell, free: level.free.length, walls: level.wallCount },
+        level: { W: level.W, cell: level.cell, free: level.free.length, walls: level.wallCount,
+                 cover: level.coverList.length, stepHeight: level.stepHeight },
       };
     },
 
@@ -525,7 +540,11 @@ if (import.meta.env.DEV) {
       player.state.vel.x = 0;
       player.state.vel.z = 0;
       player.state.vel.y = 0;
-      level.resolveCircle(player.state.pos, cfg.player.radius);
+      // 传 stepHeight：低掩体不该把人挡在外面，传 0 会把玩家推离掩体格
+      level.resolveCircle(player.state.pos, cfg.player.radius, 0, cfg.player.stepHeight);
+      // 若落点正好在掩体顶上，直接站上去（否则会先"陷进去"再由台阶吸附弹出）
+      player.state.pos.y = level.groundHeightAt(player.state.pos.x, player.state.pos.z);
+      player.state.onGround = true;
     },
     aimAt(x, y, z) {
       const p = player.state;
@@ -596,6 +615,63 @@ if (import.meta.env.DEV) {
     },
     aiHealthList() {
       return aiManager.ais.map((a) => ({ id: a.id, alive: !a.isDead, health: a.vitals.health, tier: a.tier.id }));
+    },
+
+    /**
+     * 把玩家放到某个掩体正前方并朝向它，用于验证台阶吸附（M1-TEMP-3）。
+     * @param tall true 取高掩体（应挡住），false 取低掩体（应自动迈上）
+     * @returns null 或 { coverCell, height, from, yaw, distance }
+     */
+    placeBeforeCover(tall = false) {
+      const limit = level.stepHeight;
+      const want = level.coverList.filter((c) => (tall ? c.height > limit : c.height <= limit));
+      for (const c of want) {
+        // 找一格相邻的、没有掩体的空地作为起点
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const sx = c.cell + dx;
+          const sz = c.z + dz;
+          if (level.isBlockedCell(sx, sz)) continue;
+          if (level.groundHeightAt((sx + 0.5) * level.cell, (sz + 0.5) * level.cell) > 0.01) continue;
+          const from = level.cellToWorld(sx, sz);
+          const coverWorld = level.cellToWorld(c.cell, c.z);
+          this.teleport(from.x, from.z);
+          // 朝向掩体中心（yaw 约定见 core/direction.js：viewForward 的 -Z 前向）
+          player.state.yaw = Math.atan2(-(coverWorld.x - from.x), -(coverWorld.z - from.z));
+          player.state.pitch = 0;
+          player.state.stepUps = 0;
+          return {
+            coverCell: [c.cell, c.z],
+            height: c.height,
+            tall: c.height > limit,
+            from: { x: +from.x.toFixed(3), z: +from.z.toFixed(3) },
+            to: { x: +coverWorld.x.toFixed(3), z: +coverWorld.z.toFixed(3) },
+            distance: +Math.hypot(coverWorld.x - from.x, coverWorld.z - from.z).toFixed(3),
+          };
+        }
+      }
+      return null;
+    },
+
+    /** 掩体统计，用于断言"低/高掩体都真的生成了" */
+    coverStats() {
+      const low = level.coverList.filter((c) => c.height <= level.stepHeight).length;
+      return {
+        total: level.coverList.length,
+        low,
+        tall: level.coverList.length - low,
+        stepHeight: level.stepHeight,
+        lowHeight: level.coverList.find((c) => c.height <= level.stepHeight)?.height ?? null,
+        tallHeight: level.coverList.find((c) => c.height > level.stepHeight)?.height ?? null,
+      };
+    },
+
+    /** 直接查询关卡的视线判定，用于验证掩体是否真的挡子弹 */
+    probeLineOfSight(ax, ay, az, bx, by, bz) {
+      return level.hasLineOfSight(ax, ay, az, bx, by, bz);
+    },
+    /** 查询某点的地面高度（0 = 地面，>0 = 掩体顶面） */
+    groundAt(x, z) {
+      return level.groundHeightAt(x, z);
     },
     killOneAi() {
       const a = aiManager.ais.find((x) => !x.isDead);
