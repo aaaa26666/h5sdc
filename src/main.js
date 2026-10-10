@@ -489,7 +489,7 @@ if (import.meta.env.DEV) {
           landings: player.landingState.landings,
           lastImpactSpeed: +player.landingState.lastImpactSpeed.toFixed(3),
           stepUps: player.state.stepUps,
-          groundY: +level.groundHeightAt(player.state.pos.x, player.state.pos.z).toFixed(4),
+          groundY: +level.surfaceAt(player.state.pos.x, player.state.pos.z, player.state.pos.y, cfg.player.stepHeight).toFixed(4),
           // 运动探针：单帧脚底高度最大变化量。用于断言"画面没有跳变"。
           // maxFrameDYSpeed 是与帧率无关的指标（Δy/Δt），"跳变"的本质就是
           // 出现了一个物理上不可能的竖直速度。
@@ -572,9 +572,9 @@ if (import.meta.env.DEV) {
       player.state.vel.z = 0;
       player.state.vel.y = 0;
       // 传 stepHeight：低掩体不该把人挡在外面，传 0 会把玩家推离掩体格
-      level.resolveCircle(player.state.pos, cfg.player.radius, 0, cfg.player.stepHeight);
+      level.resolveCircle(player.state.pos, cfg.player.radius, 0, cfg.player.bodyHeight, cfg.player.stepHeight);
       // 若落点正好在掩体顶上，直接站上去（否则会先"陷进去"再由台阶吸附弹出）
-      player.state.pos.y = level.groundHeightAt(player.state.pos.x, player.state.pos.z);
+      player.state.pos.y = level.surfaceAt(player.state.pos.x, player.state.pos.z, 0, cfg.player.stepHeight);
       player.state.onGround = true;
     },
     aimAt(x, y, z) {
@@ -743,7 +743,7 @@ if (import.meta.env.DEV) {
           const sx = c.cell + dx;
           const sz = c.z + dz;
           if (level.isBlockedCell(sx, sz)) continue;
-          if (level.groundHeightAt((sx + 0.5) * level.cell, (sz + 0.5) * level.cell) > 0.01) continue;
+          if (level.tallestSolidTopAt(sx, sz) > 0.01) continue;
           const from = level.cellToWorld(sx, sz);
           const coverWorld = level.cellToWorld(c.cell, c.z);
           this.teleport(from.x, from.z);
@@ -838,9 +838,9 @@ if (import.meta.env.DEV) {
         recoveryDelayMs: w.recoil.recoveryDelayMs,
       }));
     },
-    /** 查询某点的地面高度（0 = 地面，>0 = 掩体顶面） */
-    groundAt(x, z) {
-      return level.groundHeightAt(x, z);
+    /** 查询某点的地面高度（0 = 地面，>0 = 掩体顶面）。feetY 缺省取 0（站在地面上的实体） */
+    groundAt(x, z, feetY = 0) {
+      return level.surfaceAt(x, z, feetY, cfg.player.stepHeight);
     },
     killOneAi() {
       const a = aiManager.ais.find((x) => !x.isDead);

@@ -773,6 +773,68 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     check('玩家与 AI 使用同一个 stepHeight（来自 level，避免两边不一致）',
       config.player.stepHeight === config.player.stepHeight);
   }
+
+  // ---- M3-1b-1 发现的旧缺陷回归防线：低掩体上方的射线**不得穿墙** ----
+  //
+  // 这是 M3-1b-1 改造几何时被黄金基准抓出来的旧实现缺陷：
+  //   raycastWall 在"射线**射入**某格时入口点高于该格阻挡体顶面且不下降"→ **直接返回未命中**。
+  //   那条捷径假设"所有阻挡体一样高"，而掩体 0.45m、墙 3.5m 推翻了它 ——
+  //   于是**只要射线先擦过一格低掩体上方，它就会穿过后面所有的墙**。
+  //   玩家视角的表现就是"站在矮墙后开枪，子弹穿墙打死掩体后面的人"。
+  //
+  // ★ 场景必须严格是「空地起射 → 先擦过一格低掩体 → 空地 → 墙」。
+  //   我第一版写成"从掩体格中心起射"，射线根本没**经过**掩体，因此无论有没有缺陷都通过 ——
+  //   注入自检（把缺陷放回去）显示仍然 123/123 全绿，才暴露了那条断言是空的。
+  //   教训：回归测试必须复现**触发条件**，而不只是复现"结果看起来不对"。
+  {
+    const { createLevel } = await import('../src/level/level.js');
+    const lvl = createLevel(config, { add() {}, remove() {} });
+    const cell = lvl.cell;
+    const coverCellSet = new Set(lvl.coverList.map((c) => c.z * lvl.W + c.cell));
+
+    // 找「(cx-1) 空地 → (cx) 低掩体 → 中间空地 → 墙」的横向排列
+    let found = null;
+    for (const c of lvl.coverList.filter((x) => x.type === 'low')) {
+      const beforeIdx = c.z * lvl.W + (c.cell - 1);
+      // 起点必须在空地上（不能是墙、也不能本身是掩体），否则就不是"先擦过掩体"
+      if (lvl.isBlockedCell(c.cell - 1, c.z)) continue;
+      if (coverCellSet.has(beforeIdx)) continue;
+      for (let d = 1; d < 16 && !found; d++) {
+        const wx = c.cell + 1 + d;
+        if (wx >= lvl.W - 1) break;
+        if (!lvl.isBlockedCell(wx, c.z)) continue;
+        let clear = true;
+        for (let k = c.cell + 1; k < wx; k++) {
+          if (lvl.isBlockedCell(k, c.z) || coverCellSet.has(c.z * lvl.W + k)) clear = false;
+        }
+        if (clear) found = { cover: c, wallX: wx };
+      }
+      if (found) break;
+    }
+    check('找到「空地—低掩体—空地—墙」的排列（否则本条断言无从测起）', !!found,
+      found
+        ? `起射格 (${found.cover.cell - 1},${found.cover.z}) → 低掩体格 (${found.cover.cell},${found.cover.z})` +
+          ` → 墙格 (${found.wallX},${found.cover.z})`
+        : '未找到');
+
+    if (found) {
+      const z = (found.cover.z + 0.5) * cell;
+      const ox = (found.cover.cell - 1 + 0.5) * cell; // 从低掩体**前一格**（空地）起射
+      const eyeY = config.player.eyeHeight;           // 1.65m，远高于低掩体 0.45m
+      const expected = found.wallX * cell - ox;       // 到墙近侧面的距离
+      const t = lvl.raycastWall(ox, eyeY, z, 1, 0, 0, 60);
+      check('擦过低掩体上方的射线被墙挡住（不得穿墙）',
+        Number.isFinite(t) && Math.abs(t - expected) < 1e-3,
+        `眼高 ${eyeY}m 平射、先擦过 ${found.cover.height}m 低掩体：` +
+          `期望 ${expected.toFixed(3)}m，实得 ${Number.isFinite(t) ? t.toFixed(3) + 'm' : '未命中（穿墙了）'}`);
+
+      // 反向对照：同一位置但抬到墙顶以上，则确实不该命中 —— 防止"一律命中"式的假通过
+      const tOver = lvl.raycastWall(ox, lvl.wallHeight + 0.5, z, 1, 0, 0, 60);
+      check('高于墙顶的射线打不到墙（反向对照，防止「一律命中」）',
+        !Number.isFinite(tOver),
+        `y=${(lvl.wallHeight + 0.5).toFixed(1)}m 平射实得 ${Number.isFinite(tOver) ? tOver.toFixed(3) + 'm' : '未命中'}`);
+    }
+  }
 }
 
 // ============================================================

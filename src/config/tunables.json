@@ -20,6 +20,8 @@
     "eyeHeight": 1.65,
     "crouchEyeHeight": 1,
     "radius": 0.4,
+    "bodyHeight": 1.8,
+    "_bodyHeight_comment": "碰撞实体的竖直高度。M3-1b-1 引入：碰撞从'单一脚底高度'改为'竖直区间 [feetY, feetY+bodyHeight]'，这样楼板/天花板才能挡人。单层世界里它不影响任何结果（头顶没有东西）。",
     "walkSpeed": 5,
     "sprintSpeed": 7.5,
     "crouchSpeed": 2.4,
@@ -69,6 +71,8 @@
   },
   "ai": {
     "_comment": "M1 只有一种 AI。禁止扩展兵种。M3-1 已删除 ai.count —— 它是**死配置**（cfg.ai.* 零使用），且与实际的 ai.json spawnRules.totalCount=7 不一致，会误导人。AI 数量现由地图表的 aiSpawns 配额决定。",
+    "bodyHeight": 1.8,
+    "_bodyHeight_comment": "AI 碰撞实体的竖直高度，含义同 player.bodyHeight。与玩家分开写是因为两者不必相同（例如将来做矮个 AI）。",
     "maxHealth": 80,
     "radius": 0.45,
     "bodyRadius": 0.6,

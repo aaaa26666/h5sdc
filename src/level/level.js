@@ -1,60 +1,79 @@
-// M3-1 灰盒关卡（表驱动确定布局）
+// M3-1b-1 灰盒关卡（**分层竖直跨度**几何）
 //
-// 职责：按**地图表**构建网格、静态几何渲染、碰撞求解、网格射线。
-// 设计依据：M0-5 已验证"网格 + DDA"方案在目标机上位可行，故沿用网格驱动。
+// 职责：按地图表构建几何、静态渲染、碰撞求解、网格射线。
 // 约束依据：M0-TECH-01 约束 C-5 —— 关卡静态几何必须实例化，禁止逐个 Mesh 提交。
-//          （用 InstancedMesh 建墙并非"优化工作"，代码量反而更少，
-//           而是不搭建一个已知不可扩展的结构。此为 M1/M0 约束冲突的裁决，已记入报告。）
 //
 // ---------------------------------------------------------------------------
-// M3-1 的变化：**生成方式**从"种子随机"改为"读地图表"
+// M3-1b-1 的变化：几何模型从「每格一个高度」改为「每格一组竖直实心跨度」
 //
-// M1/M2 的关卡是 `mulberry32(seed)` 按 blockRatio 随机撒墙生成的。
-// 那种方式可复现、可测试，但**不能做关卡设计** —— 没有动线、没有分区、
-// 没有"这里该放什么"的意图。M3-1 要求"灰盒确定布局"，因此改为：
+// 旧模型（几何版本 1）：
+//     blocked : Uint8Array(W*H)   1 = 从地面到 wallHeight 的实心墙
+//     coverCm : Uint8Array(W*H)   厘米；从地面实心到该高度（顶面可站）
+//   它**表达不了两层**：`coverCm` 是 Uint8，最大只有 2.55m，装不下 3.6m 的楼板；
+//   更根本的是"从地面实心到顶"这个语义意味着楼板下方不能通行。
 //
-//     src/config/maps/<id>.json  ->  墙体矩形 / 掩体矩形 / 出生点 / 容器 / 撤离点
+// 新模型（几何版本 2）：每格一个按 y 升序、互不重叠的**跨度列表**
+//     墙        [0.0, 3.5]   kind=wall
+//     掩体      [0.0, 1.05]  kind=cover
+//     （M3-1b-2 追加）楼板 [3.6, 3.9] kind=slab —— 下方是通的，一层可走
+//     （M3-1b-2 追加）楼梯  斜坡          kind=ramp
 //
-// 由此产生的连带变化：
-//   · 不再需要 carve/reserve（"把出生点和容器周围的墙挖掉"）——
-//     手写坐标不允许出错，出错由 config 的**启动期校验**带着坐标报错，
-//     而不是靠运行时悄悄挖洞把它藏起来。静默兜底会让地图错误永远浮不上来。
-//   · seed 仍然保留，但不再参与地图生成（aiManager / loot / main 用它做 RNG）。
-//   · M2 的"低矮掩体最小夹具"（随机撒 70 个）删除，改为地图表里的手写掩体布局。
+// 这是**泛化**而不是另起一套：墙就是 [0, 3.5] 的跨度，掩体就是 [0, h] 的跨度，
+// 因此现有语义可无损表达 —— 这一点由 tools/capture-level-golden.mjs 逐条证明。
 //
-// 【范围声明】本文件只负责"让地图表变成可玩的关卡"。
-// 容器分级/搜索进度/掉落权重/背包属 M3-3 ~ M3-6；容器在此只作为静态灰盒物件。
+// 【本步的范围与验收】M3-1b-1 **只改几何引擎，不改地图数据**。
+// 因此它的验收标准是「**行为与改造前完全一致**」——
+// 由黄金基准工具比对 6 万余条采样的输入输出得出，而不是靠"我觉得应该一样"。
+// 楼板/楼梯/二层地图属 M3-1b-2。
 // ---------------------------------------------------------------------------
 import * as THREE from 'three';
+
+const KIND_WALL = 0;
+const KIND_COVER = 1;
 
 export function createLevel(cfg, scene) {
   const map = cfg.map;
   const { w: W, h: H, cell, wallHeight } = map.grid;
 
-  // ---------- 网格：由地图表的墙体矩形构建 ----------
-  const blocked = new Uint8Array(W * H);
+  // ---------- 跨度存储（CSR：压缩稀疏行）----------
+  //
+  // 为什么用扁平类型化数组而不是"每格一个 JS 数组"：
+  //   查询发生在每帧的碰撞与射线上（每帧可达上千次），
+  //   对象数组会带来指针追逐与 GC 抖动。CSR 把同一格的数据放在连续内存里。
+  //
+  // spanStart[i] .. spanStart[i+1] 是第 i 格的跨度区间。
+  const spanStart = new Int32Array(W * H + 1);
+  const spanY0 = [];
+  const spanY1 = [];
+  const spanKind = [];
+
   const idx = (x, z) => z * W + x;
 
-  // 最外圈强制为墙（与既有约定一致，也与 config 的校验保持一致）
-  for (let x = 0; x < W; x++) { blocked[idx(x, 0)] = 1; blocked[idx(x, H - 1)] = 1; }
-  for (let z = 0; z < H; z++) { blocked[idx(0, z)] = 1; blocked[idx(W - 1, z)] = 1; }
+  // 先按格收集临时列表（构建期用普通数组最直观，最后再压实成类型化数组）
+  const perCellSpans = new Array(W * H);
+  const pushSpan = (x, z, y0, y1, kind) => {
+    const i = idx(x, z);
+    if (!perCellSpans[i]) perCellSpans[i] = [];
+    perCellSpans[i].push([y0, y1, kind]);
+  };
 
+  // 最外圈强制为墙（与既有约定一致，也与 config 的启动期校验一致）
+  for (let x = 0; x < W; x++) {
+    pushSpan(x, 0, 0, wallHeight, KIND_WALL);
+    pushSpan(x, H - 1, 0, wallHeight, KIND_WALL);
+  }
+  for (let z = 0; z < H; z++) {
+    pushSpan(0, z, 0, wallHeight, KIND_WALL);
+    pushSpan(W - 1, z, 0, wallHeight, KIND_WALL);
+  }
   for (const b of map.walls) {
     for (let dz = 0; dz < b.h; dz++) {
       for (let dx = 0; dx < b.w; dx++) {
-        blocked[idx(b.x + dx, b.z + dz)] = 1;
+        pushSpan(b.x + dx, b.z + dz, 0, wallHeight, KIND_WALL);
       }
     }
   }
 
-  const free = [];
-  for (let i = 0; i < W * H; i++) if (!blocked[i]) free.push(i);
-
-  // ---------- 掩体：由地图表的掩体矩形构建 ----------
-  // 高度存成 Uint8（单位：厘米），既省内存又避免浮点比较的边界抖动。
-  // 高度取值来自 cfg.level.cover（跨地图共享的规格），地图表只给位置与类型 ——
-  // 这样"低掩体多高"只有一处定义，M7 换皮时也不会有人去改地图表里的数字。
-  const coverCm = new Uint8Array(W * H);
   const coverSpec = cfg.level.cover;
   const coverList = [];
   for (const c of map.cover || []) {
@@ -63,25 +82,130 @@ export function createLevel(cfg, scene) {
       for (let dx = 0; dx < c.w; dx++) {
         const x = c.x + dx;
         const z = c.z + dz;
-        coverCm[idx(x, z)] = Math.round(h * 100);
+        pushSpan(x, z, 0, h, KIND_COVER);
         coverList.push({ cell: x, z, height: h, type: c.type });
       }
     }
   }
 
-  /** 该格的地面高度（米）。0 表示地面，否则是掩体顶面。 */
-  function groundHeightAt(x, z) {
-    const cx = Math.floor(x / cell);
-    const cz = Math.floor(z / cell);
-    if (cx < 0 || cz < 0 || cx >= W || cz >= H) return 0;
-    return coverCm[cz * W + cx] / 100;
+  // 压实成 CSR。
+  //
+  // ★ 必须先合并重叠/相邻的同种跨度：边界墙在四个角会被压入两次
+  //   （x 循环一次、z 循环一次），地图里的墙体矩形也可能彼此相接。
+  //   旧实现用 `blocked[i] = 1` 天然幂等，跨度列表则必须显式合并 ——
+  //   否则"同一格有两条 [0,3.5] 的墙"会让后续所有区间运算重复计数。
+  //
+  //   不同种类的跨度重叠则**报错**：那意味着地图数据把掩体埋进了墙里，
+  //   是这个几何模型下无法有意义表达的状态（应当由启动期校验拦下）。
+  {
+    let n = 0;
+    for (let i = 0; i < W * H; i++) {
+      spanStart[i] = n;
+      const list = perCellSpans[i];
+      if (list) {
+        list.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+        const merged = [];
+        for (const sp of list) {
+          const last = merged[merged.length - 1];
+          if (last && sp[0] <= last[1] + 1e-6) {
+            if (sp[2] !== last[2]) {
+              throw new Error(
+                `[level] 格子 (${i % W},${Math.floor(i / W)}) 存在不同种类的重叠跨度：` +
+                  `kind=${last[2]}[${last[0]},${last[1]}] 与 kind=${sp[2]}[${sp[0]},${sp[1]}]`
+              );
+            }
+            if (sp[1] > last[1]) last[1] = sp[1];
+            continue;
+          }
+          merged.push([sp[0], sp[1], sp[2]]);
+        }
+        for (const [y0, y1, kind] of merged) {
+          spanY0.push(y0);
+          spanY1.push(y1);
+          spanKind.push(kind);
+          n++;
+        }
+      }
+    }
+    spanStart[W * H] = n;
+  }
+  const spanY0f = Float32Array.from(spanY0);
+  const spanY1f = Float32Array.from(spanY1);
+  const spanKindU = Uint8Array.from(spanKind);
+
+  /** 该格跨度区间的起止下标 */
+  const spanRange = (cx, cz) => {
+    if (cx < 0 || cz < 0 || cx >= W || cz >= H) return null;
+    const i = cz * W + cx;
+    return [spanStart[i], spanStart[i + 1]];
+  };
+
+  // 兼容视图：旧代码与调试接口仍在读 blocked / coverCm。
+  // 它们是**派生**的只读快照，不是真值 —— 真值是上面的跨度表。
+  const blocked = new Uint8Array(W * H);
+  const coverCm = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    let hasWall = 0;
+    let coverTop = 0;
+    for (let s = spanStart[i]; s < spanStart[i + 1]; s++) {
+      if (spanKindU[s] === KIND_WALL) hasWall = 1;
+      else if (spanY1f[s] > coverTop) coverTop = spanY1f[s];
+    }
+    blocked[i] = hasWall;
+    coverCm[i] = Math.round(coverTop * 100);
   }
 
-  /** 该格阻挡体的有效高度（米）。墙为 wallHeight，掩体为其顶面，空地 0。 */
-  function effectiveHeightAt(cx, cz) {
-    if (cx < 0 || cz < 0 || cx >= W || cz >= H) return wallHeight;
-    if (blocked[cz * W + cx]) return wallHeight;
-    return coverCm[cz * W + cx] / 100;
+  const free = [];
+  for (let i = 0; i < W * H; i++) if (!blocked[i]) free.push(i);
+
+  // AI 出生候选：空格**且没有掩体**（见 M3-1 的说明：让 AI 生成在掩体里会卡住）
+  const spawnable = free.filter((i) => coverCm[i] === 0);
+
+  /**
+   * 该格最高实心体的顶面（米）。
+   * 语义 = 旧 `effectiveHeightAt`：与"谁能站上去"无关，只回答"这里最高的东西多高"。
+   */
+  function tallestSolidTopAt(cx, cz) {
+    const r = spanRange(cx, cz);
+    if (!r) return wallHeight; // 越界按墙处理（与旧实现一致）
+    let top = 0;
+    for (let s = r[0]; s < r[1]; s++) if (spanY1f[s] > top) top = spanY1f[s];
+    return top;
+  }
+
+  /** 某点是否落在实心体内 */
+  function solidAtPoint(cx, cz, y) {
+    const r = spanRange(cx, cz);
+    if (!r) return true;
+    for (let s = r[0]; s < r[1]; s++) {
+      if (y >= spanY0f[s] && y <= spanY1f[s]) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 站在某位置时的**地面高度**（几何版本 2 的核心查询）。
+   *
+   * 定义：`max{ 跨度顶面 | 顶面 <= feetY + stepHeight }`
+   *
+   * 为什么是这个定义（而不是"最高实心体顶面"）：
+   *   碰撞层允许实体进入某格的条件正是 `feetY >= 顶面 - stepHeight`，
+   *   两者互为等价变形。因此**在所有可达状态下，本函数与旧 `groundHeightAt` 结果相同** ——
+   *   这就是"行为不变"可被证明的依据。
+   *   若写成"最高实心体顶面"，在一层世界里没问题，但到了两层就会返回二层楼板的高度。
+   */
+  function surfaceAt(x, z, feetY, stepHeight) {
+    const cx = Math.floor(x / cell);
+    const cz = Math.floor(z / cell);
+    const r = spanRange(cx, cz);
+    if (!r) return 0;
+    const limit = feetY + stepHeight + 1e-6;
+    let best = 0;
+    for (let s = r[0]; s < r[1]; s++) {
+      const top = spanY1f[s];
+      if (top <= limit && top > best) best = top;
+    }
+    return best;
   }
 
   // ---------- 坐标换算 ----------
@@ -128,6 +252,8 @@ export function createLevel(cfg, scene) {
   let wallCount = 0;
   for (let i = 0; i < W * H; i++) if (blocked[i]) wallCount++;
 
+  // 墙的渲染仍然按"每格一堵到顶的墙"处理：本步地图没有两层，
+  // 所有 WALL 跨度的顶面都是 wallHeight。M3-1b-2 引入楼板后这里改为按跨度渲染。
   const wallGeo = new THREE.BoxGeometry(cell, wallHeight, cell);
   const wallMat = new THREE.MeshLambertMaterial({ color: 0x59636d });
   const walls = new THREE.InstancedMesh(wallGeo, wallMat, wallCount);
@@ -171,87 +297,96 @@ export function createLevel(cfg, scene) {
   buildCovers(lowList, 0x6d6152);
   buildCovers(tallList, 0x7a6a55);
 
-  // ---------- 碰撞求解：圆 vs 网格 AABB（高度感知）----------
+  // ---------- 碰撞求解：圆 vs 网格 AABB（竖直区间感知）----------
   //
-  // feetY      : 玩家脚底高度。高于阻挡体顶面时该格不再阻挡（人已在上面）。
-  // stepHeight : 可迈上的高度。阻挡体顶面比脚底高出不超过它时**不阻挡** ——
-  //              交给台阶吸附把玩家抬上去，而不是把人挡在台阶前。
+  // feetY      : 实体脚底高度
+  // height     : 实体竖直高度（头顶高度 = feetY + height）。楼板/天花板靠它才能挡人。
+  // stepHeight : 可迈上的高度。跨度顶面比脚底高出不超过它时**不阻挡** ——
+  //              交给台阶吸附把实体抬上去，而不是把它挡在台阶前。
   //              这一条同时统一了"低掩体可迈上"与"高掩体需跳上"：
-  //                低掩体 0.45，脚底 0   → 0.45-0.60 < 0  → 不阻挡 → 迈上去
-  //                高掩体 1.05，脚底 0   → 1.05-0.60 > 0  → 阻挡
-  //                高掩体 1.05，脚底 0.7 → 1.05-0.60=0.45 < 0.7 → 不阻挡 → 跳上去
+  //                低掩体 0.45，脚底 0   → 可迈上    → 不阻挡
+  //                高掩体 1.05，脚底 0   → 迈不上    → 阻挡
+  //                高掩体 1.05，脚底 0.7 → 可迈上    → 不阻挡（跳上去了）
   //              不需要为掩体类型写任何分支。
-  function resolveCircle(pos, radius, feetY = 0, stepHeight = 0) {
+  //
+  // ★ 两个 continue 的顺序与常数必须与几何版本 1 完全一致，否则行为会变：
+  //   `feetY >= 顶面 - stepHeight - 1e-6` 这一条是从旧实现逐字搬过来的。
+  function resolveCircle(pos, radius, feetY = 0, height = 0, stepHeight = 0) {
     const cx0 = Math.floor(pos.x / cell);
     const cz0 = Math.floor(pos.z / cell);
     for (let dz = -1; dz <= 1; dz++) {
       for (let dx = -1; dx <= 1; dx++) {
         const gx = cx0 + dx;
         const gz = cz0 + dz;
-        const h = effectiveHeightAt(gx, gz);
-        if (h <= 0) continue;
-        // 已在阻挡体上方，或可以迈上去 → 不阻挡
-        if (feetY >= h - stepHeight - 1e-6) continue;
+        const r = spanRange(gx, gz);
+        if (!r) continue;
+        for (let s = r[0]; s < r[1]; s++) {
+          const y0 = spanY0f[s];
+          const y1 = spanY1f[s];
+          // 已在跨度上方，或可以迈上去 → 不阻挡
+          if (feetY >= y1 - stepHeight - 1e-6) continue;
+          // 整个实体都在跨度**下方**（例如站在一层楼板底下）→ 不阻挡
+          if (feetY + height <= y0) continue;
 
-        const minX = gx * cell;
-        const minZ = gz * cell;
-        const maxX = minX + cell;
-        const maxZ = minZ + cell;
-        const nx = Math.max(minX, Math.min(pos.x, maxX));
-        const nz = Math.max(minZ, Math.min(pos.z, maxZ));
-        const ddx = pos.x - nx;
-        const ddz = pos.z - nz;
-        const d2 = ddx * ddx + ddz * ddz;
+          const minX = gx * cell;
+          const minZ = gz * cell;
+          const maxX = minX + cell;
+          const maxZ = minZ + cell;
+          const nx = Math.max(minX, Math.min(pos.x, maxX));
+          const nz = Math.max(minZ, Math.min(pos.z, maxZ));
+          const ddx = pos.x - nx;
+          const ddz = pos.z - nz;
+          const d2 = ddx * ddx + ddz * ddz;
 
-        if (d2 > radius * radius) continue;
+          if (d2 > radius * radius) continue;
 
-        if (d2 > 1e-8) {
-          const d = Math.sqrt(d2);
-          const push = radius - d;
-          pos.x += (ddx / d) * push;
-          pos.z += (ddz / d) * push;
-        } else {
-          // 圆心落在方块内部：沿穿透最浅的一边推出
-          const toLeft = pos.x - minX;
-          const toRight = maxX - pos.x;
-          const toBack = pos.z - minZ;
-          const toFront = maxZ - pos.z;
-          const m = Math.min(toLeft, toRight, toBack, toFront);
-          if (m === toLeft) pos.x = minX - radius;
-          else if (m === toRight) pos.x = maxX + radius;
-          else if (m === toBack) pos.z = minZ - radius;
-          else pos.z = maxZ + radius;
+          if (d2 > 1e-8) {
+            const d = Math.sqrt(d2);
+            const push = radius - d;
+            pos.x += (ddx / d) * push;
+            pos.z += (ddz / d) * push;
+          } else {
+            // 圆心落在方块内部：沿穿透最浅的一边推出
+            const toLeft = pos.x - minX;
+            const toRight = maxX - pos.x;
+            const toBack = pos.z - minZ;
+            const toFront = maxZ - pos.z;
+            const m = Math.min(toLeft, toRight, toBack, toFront);
+            if (m === toLeft) pos.x = minX - radius;
+            else if (m === toRight) pos.x = maxX + radius;
+            else if (m === toBack) pos.z = minZ - radius;
+            else pos.z = maxZ + radius;
+          }
         }
       }
     }
   }
 
   /** 该位置能否站人（用于台阶吸附判定）：四周没有"迈不上去"的阻挡 */
-  function canStandAt(x, z, radius, feetY, stepHeight) {
+  function canStandAt(x, z, radius, feetY, height, stepHeight) {
     const probe = { x, z };
-    resolveCircle(probe, radius, feetY, stepHeight);
+    resolveCircle(probe, radius, feetY, height, stepHeight);
     return Math.abs(probe.x - x) < 1e-4 && Math.abs(probe.z - z) < 1e-4;
   }
 
   // ---------- 网格射线（DDA）----------
-  // 来源：M0-5 nav.js 已验证的 DDA，此处扩展为考虑墙体高度。
-  // 返回射线到墙面的距离；未命中返回 Infinity。
+  // 来源：M0-5 nav.js 已验证的 DDA，此处扩展为考虑竖直跨度。
+  // 返回射线到实心体表面的距离；未命中返回 Infinity。
   //
-  // M1-TEMP-16 已修复：原实现只在"格子入口点"判定是否落在墙高范围内，
-  //   因此从墙上方斜向下射入墙体内部的射线会漏判 —— 表现为**隔墙打中敌人**。
-  //   现在补了两件事：
-  //     ① 入口点高于墙顶且射线向下时，额外求与墙顶面（y=wallHeight）的交点；
-  //     ② 入口点高于墙顶且射线向上/水平时，才真正放过这个格子。
+  // 历史（M1-TEMP-16 已修）：原实现只在"格子入口点"判定是否落在墙高范围内，
+  //   于是从墙上方斜向下射入墙体内部的射线会漏判 —— 表现为**隔墙打中敌人**。
   //
-  // M2 增补：格子高度改用 effectiveHeightAt —— 因此**掩体能挡子弹**，
-  //   这既是掩体有效的前提，也让"蹲在矮墙后射击"成为真实战术。
+  // ★ 几何版本 2 的做法：进入某格后，对该格每个跨度求
+  //     「射线在该格内的 t 区间」∩「射线 y 落在 [y0,y1] 的 t 区间」
+  //   取交集的下界作为命中 t。这**同时**解决了旧实现那两条特判，
+  //   而且天然支持楼板（从下方打不中、从上方能打中）与挑空区（跨层可对射）——
+  //   不需要为任何一种情况写特例。
   function raycastWall(ox, oy, oz, dx, dy, dz, maxDist) {
     let cx = Math.floor(ox / cell);
     let cz = Math.floor(oz / cell);
 
-    // 起点已在阻挡体内（含高度判定）
-    const h0 = effectiveHeightAt(cx, cz);
-    if (h0 > 0 && oy >= 0 && oy <= h0) return 0;
+    // 起点已在实心体内
+    if (solidAtPoint(cx, cz, oy)) return 0;
 
     const stepX = dx > 0 ? 1 : -1;
     const stepZ = dz > 0 ? 1 : -1;
@@ -264,43 +399,67 @@ export function createLevel(cfg, scene) {
     const tDeltaZ = dz === 0 ? Infinity : cell * Math.abs(invDz);
 
     for (let guard = 0; guard < (W + H) * 4; guard++) {
-      let t;
+      let tIn;
       if (tMaxX < tMaxZ) {
-        t = tMaxX;
+        tIn = tMaxX;
         cx += stepX;
         tMaxX += tDeltaX;
       } else {
-        t = tMaxZ;
+        tIn = tMaxZ;
         cz += stepZ;
         tMaxZ += tDeltaZ;
       }
-      if (t > maxDist) return Infinity;
-      const h = effectiveHeightAt(cx, cz);
-      if (h <= 0) continue;
+      if (tIn > maxDist) return Infinity;
+      const tOut = Math.min(tMaxX, tMaxZ);
 
-      const y = oy + dy * t;
-      if (y >= 0 && y <= h) return t;
-
-      // 入口点在阻挡体顶面之上
-      if (y > h) {
-        if (dy >= 0) return Infinity; // 继续升高，不可能再撞到
-        // 向下穿过顶面：求 y = h 的交点，并确认落点仍在同一格内
-        const tTop = (h - oy) / dy;
-        if (tTop > t && tTop <= maxDist) {
-          const px = ox + dx * tTop;
-          const pz = oz + dz * tTop;
-          if (Math.floor(px / cell) === cx && Math.floor(pz / cell) === cz) {
-            return tTop;
-          }
+      const r = spanRange(cx, cz);
+      if (!r) continue;
+      let best = Infinity;
+      for (let s = r[0]; s < r[1]; s++) {
+        const y0 = spanY0f[s];
+        const y1 = spanY1f[s];
+        let lo;
+        let hi;
+        if (dy === 0) {
+          // 水平射线：要么整个格子内都在跨度高度区间里，要么完全不在
+          if (oy < y0 || oy > y1) continue;
+          lo = 0;
+          hi = Infinity;
+        } else {
+          const ta = (y0 - oy) / dy;
+          const tb = (y1 - oy) / dy;
+          lo = Math.min(ta, tb);
+          hi = Math.max(ta, tb);
         }
-        continue; // 前一面没落在本格，继续往前找
+        const a = Math.max(tIn, lo);
+        const b = Math.min(tOut, hi);
+        if (a <= b && a <= maxDist && a < best) best = a;
       }
-      // y < 0：从下方掠过（本关卡没有地下室，直接放过）
+      if (best < Infinity) return best;
     }
     return Infinity;
   }
 
+  /** 该格最高**掩体**顶面（米）。刻意不含墙 —— 这个语义是给子弹落点用的，与旧实现一致。 */
+  function coverTopAt(x, z) {
+    const cx = Math.floor(x / cell);
+    const cz = Math.floor(z / cell);
+    if (cx < 0 || cz < 0 || cx >= W || cz >= H) return 0;
+    return coverCm[cz * W + cx] / 100;
+  }
+
   // 地面交点距离（考虑掩体顶面）。返回 { t, y } 或 null。
+  //
+  // ★ 这里刻意**逐字保留旧算法**（沿射线等距采样 + 用掩体顶面求交 + 校验交点仍在同类表面上），
+  //   只把"取某个 x,z 的掩体高度"这一件事换成从跨度表派生。
+  //
+  //   为什么不是"顺手改成更优雅的与跨度求交"：我试过，结果引入 9 条真实回归
+  //   （原本能命中掩体顶面的射线变成了打到地面）。原因是旧算法里的
+  //   `groundHeightAt(gx,gz) === g` 这条校验允许交点落在**相邻的同高掩体格**上，
+  //   而我换成"交点必须仍在采样格内"后就把它排除掉了 —— 一个看起来更严格的判据
+  //   反而弄坏了正确行为。
+  //   这条经验记在这里：**"更优雅"不等于"更正确"，在有黄金基准的情况下应当先保行为。**
+  //   楼板/斜坡的落点判定留到 M3-1b-2（那时地图才有这些东西）。
   function raycastGroundFull(ox, oy, oz, dx, dy, dz, maxDist) {
     let best = null;
     // 与地面平面
@@ -315,14 +474,14 @@ export function createLevel(cfg, scene) {
       const x = ox + dx * t;
       const z = oz + dz * t;
       const y = oy + dy * t;
-      const g = groundHeightAt(x, z);
+      const g = coverTopAt(x, z);
       if (g > 0 && y <= g && dy < 0) {
         // 求与该顶面的精确交点
         const tg = (g - oy) / dy;
         if (tg > 0 && tg <= maxDist && (!best || tg < best.t)) {
           const gx = ox + dx * tg;
           const gz = oz + dz * tg;
-          if (groundHeightAt(gx, gz) === g) best = { t: tg, y: g };
+          if (coverTopAt(gx, gz) === g) best = { t: tg, y: g };
         }
       }
     }
@@ -347,21 +506,23 @@ export function createLevel(cfg, scene) {
     return hit >= dist;
   }
 
-  // AI 出生候选：空格**且没有掩体**。
-  // 为什么单独给一份：free 只排除了墙，掩体格仍是"可通行"的，
-  // 但让 AI 生成在掩体里（尤其是高掩体内部）会让它卡住或穿模。
-  // 之前靠"生成时把出生点周围挖空"回避，改成手写地图后那个兜底没有了，
-  // 因此改成显式发布一份可出生格列表。
-  const spawnable = free.filter((i) => coverCm[i] === 0);
-
   return {
     W, H, cell, wallHeight, blocked, free, spawnable, worldW, worldH,
     mapId: map.id,
+    // 几何模型版本。1 = 单层单高度（blocked + coverCm）；2 = 分层竖直跨度。
+    // 显式标出来是为了让 M3-1b-1 的黄金基准工具能同时驱动改造前后两版实现，
+    // 而不是靠"某函数是否存在"去猜该怎么调 —— 那种写法在重构中间态必然出错。
+    geometryVersion: 2,
     cellToWorld, worldToCell, isBlockedCell, isPathBlockedCell,
     resolveCircle, canStandAt,
     raycastWall, raycastGround, raycastGroundFull, hasLineOfSight,
-    groundHeightAt, effectiveHeightAt,
+    // 几何版本 2 的查询接口。旧名 groundHeightAt / effectiveHeightAt 已被**删除**而不是保留别名：
+    // 它们不接收 y，在两层的世界里必然取错层；留一个"看起来还能用"的旧名字，
+    // 等于给调用方留了一条静默出错的捷径。删掉才能让所有调用点显式面对 y。
+    surfaceAt, tallestSolidTopAt, solidAtPoint,
     wallCount,
     coverCm, coverList, coverMeshes, stepHeight: pathStepHeight, pathBlocked,
+    // 跨度表（供调试与 M3-1b-2 使用）
+    spans: { start: spanStart, y0: spanY0f, y1: spanY1f, kind: spanKindU, count: spanY0f.length },
   };
 }

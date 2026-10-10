@@ -371,7 +371,7 @@ export function createPlayer(cfg, level) {
     // ---- 水平位移 + 碰撞 ----
     player.pos.x += player.vel.x * dt;
     player.pos.z += player.vel.z * dt;
-    level.resolveCircle(player.pos, P.radius, player.pos.y, P.stepHeight);
+    level.resolveCircle(player.pos, P.radius, player.pos.y, P.bodyHeight, P.stepHeight);
 
     // ---- 竖直：抬升（台阶 / 跳上高台） / 站立 / 下落 ----
     //
@@ -404,7 +404,7 @@ export function createPlayer(cfg, level) {
       player.pos.y += player.vel.y * dt;
     }
 
-    const groundY = level.groundHeightAt(player.pos.x, player.pos.z);
+    const groundY = level.surfaceAt(player.pos.x, player.pos.z, player.pos.y, P.stepHeight);
 
     // ★ 判断顺序至关重要：**必须先判落地，再判抬升**。
     //
