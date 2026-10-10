@@ -29,9 +29,17 @@ export function createAiManager({ cfg, level, scene, scheduler, player }) {
   //
   // 距离约束仍然生效（离玩家最近 minFromPlayer 格、彼此至少 minBetween 格），
   // 否则会出现"贴在出生点旁刷一堆"或"几个 AI 叠在同一格"。
+  // 分区查找。M3-1b-2 ④ 加了层判据：两层地图里不同层可能覆盖同样的 (x,z)，
+  // 而 AI 出生格是**单层**的格坐标（没有层号）—— 它们一律落在第 0 层，
+  // 所以这里只匹配第 0 层的分区。不加这一条会把二层的分区也匹配进来。
   const zoneOfCell = (cx, cz) =>
     (cfg.map.zones || []).find(
-      (zn) => cx >= zn.x && cx < zn.x + zn.w && cz >= zn.z && cz < zn.z + zn.h
+      (zn) =>
+        (zn.floor || 0) === 0 &&
+        cx >= zn.x &&
+        cx < zn.x + zn.w &&
+        cz >= zn.z &&
+        cz < zn.z + zn.h
     ) || null;
   const freeCellXY = level.spawnable.map((i) => [i % level.W, Math.floor(i / level.W)]);
   const farEnoughFromPlayer = ([cx, cz]) => Math.hypot(cx - px, cz - pz) >= minFromPlayer;
@@ -117,9 +125,12 @@ export function createAiManager({ cfg, level, scene, scheduler, player }) {
     totalCount: ais.length,
     stats,
 
-    /** 玩家开枪后通知附近 AI（听觉）。这是 M1-TEMP-7 重写的一部分 */
-    broadcastGunshot(nowMs, x, z) {
-      for (const a of ais) a.hearGunshot(nowMs, x, z);
+    /**
+     * 玩家开枪后通知附近 AI（听觉）。这是 M1-TEMP-7 重写的一部分。
+     * `y` 是开枪者脚底高度（M3-1b-2 ③ 追加，可选）：AI 据此知道声音是从楼上还是楼下传来的。
+     */
+    broadcastGunshot(nowMs, x, z, y) {
+      for (const a of ais) a.hearGunshot(nowMs, x, z, y);
     },
 
     /**

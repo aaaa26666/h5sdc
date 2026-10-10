@@ -29,7 +29,7 @@ import { createFlow, FLOW, END_REASON } from './core/flow.js';
 import { createHud } from './ui/hud.js';
 import { createDecals } from './ui/decals.js';
 import { createAudio } from './audio/audio.js';
-import { createNavGrid, createAStar, createPathScheduler, makeLos } from './core/navgrid.js';
+import { createLayeredNavGrid, createAStar, createPathScheduler, makeLos } from './core/navgrid.js';
 import { mulberry32 } from './core/rng.js';
 import { sustainedClimbRate } from './core/ballistics.js';
 
@@ -80,9 +80,12 @@ const loot = createLoot(cfg, level, scene);
 const extract = createExtract(cfg, level, scene);
 
 // 导航：网格来自关卡，查询一律经预算调度器（M0 约束 C-1/C-2）
-// 用 pathBlocked 而不是 blocked：高掩体要算作阻挡（否则 AI 会穿过掩体），
-// 低掩体（可迈上）不算 —— AI 与玩家都能直接走上去，不该绕路。
-const navGrid = createNavGrid(level.W, level.H, level.cell, level.pathBlocked);
+//
+// 用关卡的分层网格（M3-1b-2 ②）而不是旧的单层 pathBlocked：
+// 节点 = floor*W*H + cell，可行走性由"该层有没有落脚面 + 有没有迈不过去的实体"决定。
+// 当前地图只有一层，floorCount=1、节点索引恒等于 cell，因此对现有 AI 完全等价
+// （高掩体仍然算阻挡，低掩体仍然可走 —— 这一条由 level 的构建期判据保证，见其注释）。
+const navGrid = createLayeredNavGrid(level.nav);
 const aStar = createAStar(navGrid);
 const scheduler = createPathScheduler(aStar, cfg.aiPathBudget);
 // 该视线函数供后续 AI 侧扩展使用；当前 AI 用的是 level.hasLineOfSight（含高度判定）
@@ -123,7 +126,7 @@ const weaponSys = createWeaponSystem({
       case 'fire':
         combatStats.shotsFired++;
         audio.gunshot(ev.weapon.class, 0);
-        aiManager.broadcastGunshot(lastNowMs, player.state.pos.x, player.state.pos.z);
+        aiManager.broadcastGunshot(lastNowMs, player.state.pos.x, player.state.pos.z, player.state.pos.y);
         player.cancelUse(); // 开火打断治疗
         break;
       case 'hit':
@@ -656,12 +659,28 @@ if (import.meta.env.DEV) {
      *                false = 复位视角与探头（默认，用于从干净状态开始）
      */
     placeNextToWall(keepAim = false) {
+      const eyeY0 = 0 + cfg.player.eyeHeight;
+      const reach0 = cfg.player.leanOffset + cfg.player.leanWallMargin;
       for (const i of level.free) {
         const cx = i % level.W;
         const cz = Math.floor(i / level.W);
-        if (!level.isBlockedCell(cx + 1, cz)) continue;
         const w = level.cellToWorld(cx, cz);
+        // 站位与"贴墙后的落点"都必须是**脚下的空地**，否则玩家一落地就被掩体推开，
+        // 探头方向不再对着墙 —— 表现是"探头没有被收回"（横向速度 0），
+        // 看起来像功能坏了，其实是夹具选了个站不住的点。
+        // 用 surfaceAt 以脚底 0 为基准问，不能用 tallestSolidTopAt：
+        // 两层地图上后者会把 3.6m 的二层楼板算进来，于是每个格子都被判成非空。
+        if (level.surfaceAt(w.x, w.z, 0, level.stepHeight) > 0.01) continue;
         const x = (cx + 1) * level.cell - cfg.player.radius - 0.02;
+        if (level.surfaceAt(x, w.z, 0, level.stepHeight) > 0.01) continue;
+        // ★ 直接**射一次**，而不是用 isBlockedCell 判断右边是不是墙。
+        //   isBlockedCell 是单层语义的快照（"这格有没有墙跨度"），在两层地图上
+        //   它会把**二层**的墙也算进来：实测格 (8,1) 的跨度是 [楼板 3.3~3.6] + [墙 3.6~7.1]，
+        //   一层根本没有墙，射线从眼高打过去什么也打不到 —— 于是探头永远不会被裁剪。
+        //   这里要的判据本来就是"从眼高朝右、在探头可及范围内能不能打到东西"，
+        //   那就直接问射线本身。顺带自动排除了高掩体（1.05m 低于眼高 1.65m）。
+        const d = level.raycastWall(x, eyeY0, w.z, 1, 0, 0, reach0);
+        if (!(d > 0 && d < reach0)) continue;
         this.teleport(x, w.z);
         // 视角是**派生值**（aim + recoil），必须写 aim 并同步，直接写 yaw/pitch 会被覆盖
         if (!keepAim) {
@@ -677,8 +696,16 @@ if (import.meta.env.DEV) {
           cell: [cx, cz],
           wallFaceX: (cx + 1) * level.cell,
           playerX: x,
-          gapToWall: +(((cx + 1) * level.cell - x)).toFixed(3),
+          // ★ 传送目标位置 vs **实际**位置（resolveCircle 之后）。
+          //   两者不一致就说明这个点站不住、玩家被推开了 —— 那样探头方向不再对着墙，
+          //   夹具测的就不是"探头被墙收回"了。这个字段就是用来暴露那种情况的。
+          actualX: +player.state.pos.x.toFixed(3),
+          actualY: +player.state.pos.y.toFixed(3),
+          actualZ: +player.state.pos.z.toFixed(3),
+          goalGap: +((cx + 1) * level.cell - x).toFixed(3),
+          gapToWall: +((cx + 1) * level.cell - player.state.pos.x).toFixed(3),
           leanCurrent: +player.state.leanCurrent.toFixed(4),
+          yaw: +player.state.yaw.toFixed(3),
         };
       }
       return null;
@@ -746,7 +773,13 @@ if (import.meta.env.DEV) {
           const sx = c.cell + dx;
           const sz = c.z + dz;
           if (level.isBlockedCell(sx, sz)) continue;
-          if (level.tallestSolidTopAt(sx, sz) > 0.01) continue;
+          // ★ 起点必须是"**脚下**没有实体"的空地。
+          //   不能用 tallestSolidTopAt：它回答的是"该格最高的东西多高"，
+          //   两层地图上会把 3.6m 的二层楼板也算进来，于是每个格子都被判为非空，
+          //   夹具一个起点都找不到（实测：低/高掩体两条断言都报"未找到"）。
+          //   这里要问的是"脚底这一层有没有东西" —— 用 surfaceAt 以脚底 0 为基准问。
+          const w = level.cellToWorld(sx, sz);
+          if (level.surfaceAt(w.x, w.z, 0, level.stepHeight) > 0.01) continue;
           const from = level.cellToWorld(sx, sz);
           const coverWorld = level.cellToWorld(c.cell, c.z);
           this.teleport(from.x, from.z);
@@ -847,7 +880,12 @@ if (import.meta.env.DEV) {
     },
     /** 制造一次枪声（不造成伤害）。供测试用：验证"被惊动后是否靠近"，而不必把观察对象打死。 */
     makeNoise() {
-      aiManager.broadcastGunshot(performance.now(), player.state.pos.x, player.state.pos.z);
+      aiManager.broadcastGunshot(
+        performance.now(),
+        player.state.pos.x,
+        player.state.pos.z,
+        player.state.pos.y
+      );
       return true;
     },
     killOneAi() {
@@ -859,7 +897,8 @@ if (import.meta.env.DEV) {
         'chest',
         1,
         player.state.pos.x,
-        player.state.pos.z
+        player.state.pos.z,
+        player.state.pos.y
       );
       return true;
     },

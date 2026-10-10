@@ -15,19 +15,35 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { config } from '../src/config/index.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const argv = process.argv.slice(2);
-const TABLE = argv.includes('--table')
-  ? path.resolve(argv[argv.indexOf('--table') + 1])
-  // 默认读**运行时真正使用的**那份地图表（src/config/maps/），而不是文档副本。
-  // 这样"评审看到的图"与"M3-1 实现的布局"不可能不一致。
-  : path.join(ROOT, 'src', 'config', 'maps', 'industrial-01.json');
+const optVal = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
+const TABLE = argv.includes('--table') ? path.resolve(optVal('--table', '')) : null;
 const LOOT_TABLE = path.join(ROOT, 'docs', '07-loot-tables.json');
 
-const M = JSON.parse(fs.readFileSync(TABLE, 'utf8'));
+// M3-1b-2 ④：地图不止一张、而且有两层了。
+//   · 缺省读**当前生效的那张地图**（与运行时同一份数据，不会出现"评审看到的图与实现不符"）
+//   · `--table <path>` 仍可指定任意地图表
+//   · `--floor <n>` 指定画哪一层（两层地图一次只画一层才有信息量）
+const M0 = TABLE ? JSON.parse(fs.readFileSync(TABLE, 'utf8')) : config.map;
 const L = JSON.parse(fs.readFileSync(LOOT_TABLE, 'utf8'));
+const floorList = M0.floors || [{ id: 0, baseY: 0 }];
+const FLOOR = Math.max(0, Math.min(floorList.length - 1, Number(optVal('--floor', 0)) || 0));
+const floorBaseY = (f) => (floorList[f] || floorList[0]).baseY;
+
+/** 把地图表切成"单层视图"：ASCII 图一次只画一层 */
+const M = {
+  ...M0,
+  walls: (M0.walls || []).filter((w) => (w.floor || 0) === FLOOR),
+  cover: (M0.cover || []).filter((c) => (c.floor || 0) === FLOOR),
+  containers: (M0.containers || []).filter((c) => (c.floor || 0) === FLOOR),
+  extracts: (M0.extracts || []).filter((e) => (e.floor || 0) === FLOOR),
+  zones: (M0.zones || []).filter((z) => (z.floor || 0) === FLOOR),
+  routes: FLOOR === 0 ? M0.routes || [] : [],
+};
 const { w: W, h: H, cell } = M.grid;
 
 const failures = [];
@@ -62,6 +78,31 @@ for (const b of M.walls) {
         continue;
       }
       blocked[idx(x, z)] = 1;
+    }
+  }
+}
+
+// ★ 第 0 层之外，"地面"是楼板：**没有楼板的格是洞**（掉下去），
+//   坡顶格也算该层地面（它是二层的入口）。这一条不画出来的话，
+//   二层图会显示成"整片可走"，而实际上一半是悬空的。
+if (FLOOR > 0) {
+  const onFloor = new Set();
+  for (const s of M0.slabs || []) {
+    if ((s.floor || 0) !== FLOOR) continue;
+    for (let dz = 0; dz < s.h; dz++) {
+      for (let dx = 0; dx < s.w; dx++) onFloor.add(idx(s.x + dx, s.z + dz));
+    }
+  }
+  for (const r of M0.ramps || []) {
+    if ((r.floor || 0) + 1 !== FLOOR) continue;
+    const alongX = r.dir === '+x' || r.dir === '-x';
+    const along = alongX ? r.w : r.h;
+    const off = r.dir === '+x' || r.dir === '+z' ? along - 1 : 0;
+    onFloor.add(idx(alongX ? r.x + off : r.x, alongX ? r.z : r.z + off));
+  }
+  for (let z = 0; z < H; z++) {
+    for (let x = 0; x < W; x++) {
+      if (!onFloor.has(idx(x, z))) blocked[idx(x, z)] = 1;
     }
   }
 }
@@ -119,10 +160,13 @@ for (const c of M.cover || []) {
   }
 }
 
-// 容器
+// 容器计数按**全图**统计：07 表的预算是整张图的，不是单层的。
+// （ASCII 图按层过滤是显示需要，不能让"显示口径"污染"预算口径"。）
 const containerCounts = {};
-for (const c of M.containers) {
+for (const c of M0.containers) {
   containerCounts[c.type] = (containerCounts[c.type] || 0) + 1;
+}
+for (const c of M.containers) {
   if (!inBounds(c.x, c.z)) { failures.push(`容器越界: (${c.x},${c.z})`); continue; }
   if (blocked[idx(c.x, c.z)]) { failures.push(`容器落在墙里: ${c.type} (${c.x},${c.z})`); continue; }
   const def = L.containers.find((k) => k.id === c.type);
@@ -144,8 +188,9 @@ for (const e of M.extracts) {
 }
 
 console.log(`\n================ M3-2 动线图：${M.label} ================`);
-console.log(`  数据源: ${path.relative(ROOT, TABLE)}`);
-console.log(`  状态  : 待评审（本图由地图表渲染，与 M3-1 将要实现的数据同源）\n`);
+console.log(`  数据源: ${TABLE ? path.relative(ROOT, TABLE) : `src/config/maps（生效地图 ${M0.id}）`}`);
+console.log(`  楼层  : 第 ${FLOOR} 层（baseY ${floorBaseY(FLOOR)}m，共 ${floorList.length} 层）`);
+console.log(`  状态  : 待评审（本图由地图表渲染，与运行时同一份数据）\n`);
 console.log(`  网格 ${W}x${H} 格，每格 ${cell}m  →  ${W * cell}m x ${H * cell}m\n`);
 
 // 每行 40 字符；为可读性按 2 格一字符？不 —— 保持 1:1，40 列在终端可读
@@ -389,7 +434,7 @@ check('地图表无结构性错误（越界 / 容器落墙里）',
     if (want !== got) bad.push(`${k} 期望 ${want} 实际 ${got}`);
   }
   const totalWant = budget._total;
-  const totalGot = M.containers.length;
+  const totalGot = M0.containers.length;
   check('容器数量与 07 表预算完全一致', bad.length === 0 && totalWant === totalGot,
     bad.length ? bad.join('; ') : `共 ${totalGot} 个（预算 ${totalWant}）`);
 }
@@ -402,19 +447,35 @@ check('地图表无结构性错误（越界 / 容器落墙里）',
 }
 
 {
-  // 撤离点数量与 §2.4 规则
-  const n = M.extracts.length;
+  // 撤离点数量与 §2.4 规则 —— 这是**整张图**的规则，不是单层的，
+  // 所以按全图（M0）判，否则两层图会在每层各判一次、各报一次假失败。
+  const n = M0.extracts.length;
   check('撤离点数量在 2~4 个之间（§2.4）', n >= 2 && n <= 4, `${n} 个`);
-  const cond = M.extracts.filter((e) => e.conditional).length;
+  const cond = M0.extracts.filter((e) => e.conditional).length;
   check('存在条件撤离点（§2.4 要求分常驻与条件）', cond >= 1, `条件点 ${cond} 个，常驻 ${n - cond} 个`);
 }
 
 {
-  // 连通性：从出生点到每个撤离点必须可达（BFS）
-  const spawn = M.zones.find((z) => z.id === 'spawn');
-  const start = [spawn.x + Math.floor(spawn.w / 2), spawn.z + Math.floor(spawn.h / 2)];
-  const seen = new Set([idx(start[0], start[1])]);
-  const queue = [start];
+  // 连通性：从**该层的入口**出发做 BFS。
+  //   第 0 层 = 出生区中心；第 1 层及以上 = 楼梯的坡顶格（上楼后的落脚点）。
+  //   用 role==='spawn' 而不是硬编码分区 id —— id 会随地图变，role 不会。
+  const spawnZone = M.zones.find((z) => z.role === 'spawn');
+  let start = null;
+  if (spawnZone) {
+    start = [spawnZone.x + Math.floor(spawnZone.w / 2), spawnZone.z + Math.floor(spawnZone.h / 2)];
+  } else {
+    const top = (M0.ramps || []).find((r) => (r.floor || 0) + 1 === FLOOR);
+    if (top) {
+      const alongX = top.dir === '+x' || top.dir === '-x';
+      const along = alongX ? top.w : top.h;
+      const off = top.dir === '+x' || top.dir === '+z' ? along - 1 : 0;
+      start = [alongX ? top.x + off : top.x, alongX ? top.z : top.z + off];
+    }
+  }
+  check(`第 ${FLOOR} 层找得到连通性起点（出生区或楼梯坡顶）`, !!start,
+    start ? `起点 (${start[0]},${start[1]})` : '既没有出生区、也没有通向本层的楼梯');
+  const seen = new Set(start ? [idx(start[0], start[1])] : []);
+  const queue = start ? [start] : [];
   while (queue.length) {
     const [x, z] = queue.shift();
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -439,14 +500,24 @@ check('地图表无结构性错误（越界 / 容器落墙里）',
 }
 
 {
-  // 出生区到撤离点 E1 的距离要短（速撤玩法要成立）
-  const spawn = M.zones.find((z) => z.id === 'spawn');
-  const cx = spawn.x + spawn.w / 2;
-  const cz = spawn.z + spawn.h / 2;
-  const e1 = M.extracts.find((e) => e.id === 'e1_sw');
-  const d = Math.hypot(e1.x - cx, e1.z - cz) * cell;
-  check('最近撤离点离出生区足够近（「速撤」玩法成立）', d < 45,
-    `${d.toFixed(0)}m（出生区中心 → ${e1.label}）`);
+  // 出生区到**最近的**撤离点的距离要短（「速撤」玩法要成立）。
+  // 只有当层有出生区时才判 —— 二层没有出生区，这条对它不适用
+  //（用 role 而不是写死 id，也不写死某个撤离点的 id：两者都会随地图变）。
+  const spawn = M.zones.find((z) => z.role === 'spawn');
+  if (!spawn) {
+    check(`第 ${FLOOR} 层没有出生区 → 不适用「速撤距离」`, true, '跳过');
+  } else {
+    const cx = spawn.x + spawn.w / 2;
+    const cz = spawn.z + spawn.h / 2;
+    let nearest = null;
+    for (const e of M.extracts) {
+      const d = Math.hypot(e.x - cx, e.z - cz) * cell;
+      if (!nearest || d < nearest.d) nearest = { d, e };
+    }
+    check('最近撤离点离出生区足够近（「速撤」玩法成立）',
+      !!nearest && nearest.d < 45,
+      nearest ? `${nearest.d.toFixed(0)}m（出生区中心 → ${nearest.e.label}）` : '本层没有撤离点');
+  }
 }
 
 console.log(`\n  校验 ${checks} 项，失败 ${failures.length}，警告 ${warnings.length}`);

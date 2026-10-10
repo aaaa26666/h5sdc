@@ -446,7 +446,12 @@ try {
         let d0 = null;
         let dMin = Infinity;
         let sawEngaged = false;
-        for (let k = 0; k < 12; k++) {
+        // ★ 观察窗口从 12 次（4.8s）放宽到 24 次（9.6s）。
+        //   原因：这张两层地图的可玩面积是单层图的 1.5 倍、隔墙也更密，
+        //   AI 从 12m 外过来常常要绕路 —— 4.8s 内**直线距离**只缩短 2.5m 是正常的，
+        //   但它确实在靠近。窗口太短会把"绕路中"误判成"不靠近"。
+        //   注意这条断言测的是"会不会主动逼近"，放宽的是**时间**而不是判据本身。
+        for (let k = 0; k < 24; k++) {
           await sleep(400);
           // ★ 暂停时局内不推进，读数会**完全冻结**（我第一版就在这里踩了坑：
           //   ai_4 的距离精确停在 17.9m 且状态永不变，看起来像"AI 不更新"，
@@ -775,7 +780,7 @@ try {
       const wall = await call('placeNextToWall', true);
       check('找到贴墙位置且探头量未被复位',
         !!wall && wall.leanCurrent > 0.85,
-        wall ? `距墙 ${wall.gapToWall}m，探头 ${wall.leanCurrent}` : '未找到');
+        wall ? JSON.stringify(wall) : '未找到');
 
       let maxLeanJump = 0;
       let maxLeanSpeed = 0;

@@ -38,6 +38,13 @@ const KIND_SLAB = 2;
 // 不可用；而真实级高 0.18m 要 20 级，更不可能。28° 斜坡的水平投影只有约 2.7 格。
 const KIND_RAMP = 3;
 
+/**
+ * 跨度种类在"重叠合并"时的优先级：越实心的越优先。
+ * 只用于决定合并后那一条跨度叫什么名字（影响渲染与统计），不影响碰撞与射线
+ * —— 那些只看 [y0,y1] 区间本身。
+ */
+const KIND_RANK = [3, 1, 2, 0]; // wall > slab > cover > ramp
+
 export function createLevel(cfg, scene) {
   const map = cfg.map;
   const { w: W, h: H, cell, wallHeight } = map.grid;
@@ -108,7 +115,14 @@ export function createLevel(cfg, scene) {
         const x = c.x + dx;
         const z = c.z + dz;
         pushSpan(x, z, baseY, baseY + h, KIND_COVER);
-        coverList.push({ cell: x, z, height: baseY + h, type: c.type, floor: c.floor || 0 });
+        // ★ height 是**相对所在层**的高度（0.45 / 1.05），top 才是绝对顶面。
+        //   此前这里存的是绝对顶面，而 config 侧的同名字段存的是相对高度 ——
+        //   同一个名字两种含义，单层地图上恰好相等所以一直没暴露；
+        //   两层地图上它立刻说谎：二层的低掩体会被当成 4.05m 的"高掩体"，
+        //   于是"低掩体可迈上"的端到端夹具一个都找不到。
+        coverList.push({
+          cell: x, z, height: h, top: baseY + h, type: c.type, floor: c.floor || 0,
+        });
       }
     }
   }
@@ -152,8 +166,17 @@ export function createLevel(cfg, scene) {
       const off = r.dir === '+x' || r.dir === '+z' ? k : along - 1 - k;
       const cx = alongX ? r.x + off : r.x;
       const cz = alongX ? r.z : r.z + off;
-      rampLo.set(cz * W + cx, { lo: from + step * k, hi: from + step * (k + 1), dir: r.dir });
-      rampList.push({ cell: cx, z: cz, lo: from + step * k, hi: from + step * (k + 1), dir: r.dir });
+      const lo = from + step * k;
+      const hi = from + step * (k + 1);
+      rampLo.set(cz * W + cx, { lo, hi, dir: r.dir });
+      // floor / isTop 是给 M3-1b-2 ② 的分层寻路用的：
+      // 斜坡从 floor 层升到 floor+1 层，而**只有坡顶那一格**同时属于两层
+      // （因为坡顶高度恰好等于上层标高）。更靠下的格在上层是悬空的。
+      rampList.push({
+        cell: cx, z: cz, lo, hi, dir: r.dir,
+        floor: r.floor || 0,
+        isTop: k === along - 1,
+      });
     }
   }
 
@@ -190,14 +213,16 @@ export function createLevel(cfg, scene) {
         const merged = [];
         for (const sp of list) {
           const last = merged[merged.length - 1];
-          if (last && sp[0] <= last[1] + 1e-6) {
-            if (sp[2] !== last[2]) {
-              throw new Error(
-                `[level] 格子 (${i % W},${Math.floor(i / W)}) 存在不同种类的重叠跨度：` +
-                  `kind=${last[2]}[${last[0]},${last[1]}] 与 kind=${sp[2]}[${sp[0]},${sp[1]}]`
-              );
-            }
+          // 只有与前一条**真正重叠**（有体积交叠）才合并。
+          // 只是相接、或完全不相接，一律保留两条 —— 合并相接的会丢掉
+          // "这是两块不同的东西"（例如楼板 [3.3,3.6] 与它上面的掩体 [3.6,4.05]）。
+          if (last && sp[0] < last[1] - 1e-6) {
             if (sp[1] > last[1]) last[1] = sp[1];
+            // ★ M3-1b-2 ④：重叠合并时 kind 取**更实心**的那个。
+            //   "楼板压墙"（一层墙 [0,3.5] + 该格二层楼板 [3.3,3.6]）合并成 [0,3.6] 之后，
+            //   kind 必须是 WALL：渲染成墙才对（顶面 3.6 与楼板齐平、视觉连成一片），
+            //   而"这一层有没有地板"改由**顶面高度**判定（见下面 nav 的构建），不再看 kind。
+            if (KIND_RANK[sp[2]] > KIND_RANK[last[2]]) last[2] = sp[2];
             continue;
           }
           merged.push([sp[0], sp[1], sp[2]]);
@@ -225,14 +250,23 @@ export function createLevel(cfg, scene) {
 
   // 兼容视图：旧代码与调试接口仍在读 blocked / coverCm。
   // 它们是**派生**的只读快照，不是真值 —— 真值是上面的跨度表。
+  //
+  // ★ M3-1b-2 ④ 的两处修正（单层地图下结果与旧版逐字节相同）：
+  //   ① `coverCm` 只统计 **COVER** 跨度。此前它把"最高的非墙跨度"都算进来，
+  //      两层地图上一块 3.6m 的楼板会被当成"3.6m 高的掩体" ——
+  //      于是楼板正下方的一层格子被误判成"迈不过去的障碍"。
+  //   ② 类型从 Uint8 改为 Uint16。Uint8 的上限是 2.55m，装不下二层的掩体
+  //      （3.6 + 1.05 = 4.05m），会**静默截断**成 1.49m —— 比报错更难查。
+  //      M3-1b 方案 §2 早就把"coverCm 是 Uint8"列为装不下两层的原因之一，
+  //      这里把它落实。
   const blocked = new Uint8Array(W * H);
-  const coverCm = new Uint8Array(W * H);
+  const coverCm = new Uint16Array(W * H);
   for (let i = 0; i < W * H; i++) {
     let hasWall = 0;
     let coverTop = 0;
     for (let s = spanStart[i]; s < spanStart[i + 1]; s++) {
       if (spanKindU[s] === KIND_WALL) hasWall = 1;
-      else if (spanY1f[s] > coverTop) coverTop = spanY1f[s];
+      else if (spanKindU[s] === KIND_COVER && spanY1f[s] > coverTop) coverTop = spanY1f[s];
     }
     blocked[i] = hasWall;
     coverCm[i] = Math.round(coverTop * 100);
@@ -318,9 +352,159 @@ export function createLevel(cfg, scene) {
   }
 
   // 供寻路网格直接使用（navgrid 接受的是 Uint8Array，不想为它改接口）
+  //
+  // ★ M3-1b-2 ② 之后，**寻路已经不走它了**（见下面的 nav）。保留它有两个原因：
+  //   ① 它是 unit-tests 里"新判据 vs 旧判据逐格对拍"的那份**旧判据**，
+  //      是"单层行为不变"的直接证据；
+  //   ② 它在单层地图上与 nav.blocked 逐格相同。
+  //   但它在**两层地图上语义是错的**：它把 `coverCm`（含楼板顶面）当成"迈不过去的
+  //   实体高度"，于是二层楼板正下方的一层格子会被判成阻挡 —— 而那里明明可以走。
+  //   两层地图落地（M3-1b-2 ④）时必须删掉它或改成"仅层 0"的视图。
   const pathBlocked = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) {
     pathBlocked[i] = isPathBlockedCell(i % W, Math.floor(i / W)) ? 1 : 0;
+  }
+
+  // ---------- 分层寻路网格（M3-1b-2 ②）----------
+  //
+  // 为什么单层的 pathBlocked 装不下两层：
+  //   二层的可走空间**不是整个平面**，而是"被楼板覆盖的那一部分"。
+  //   同一个 (x,z) 在一层是地面、在二层可能是悬空的。用一个二维 blocked 表
+  //   必然把两层混成一层 —— 那正是方案风险 R4（层歧义被静默吞掉）的寻路版本。
+  //
+  // 节点编号 = floor * W*H + cell。**单层地图下它恒等于旧的 cell 索引**，
+  // 所以这是泛化而不是另起一套：ai.js 现在传的 cell 仍然正确（floor=0）。
+  //
+  // 每格在每层上带一个**落脚高度区间** [lo, hi]：
+  //   · 普通格 = 一个点（该层的地面 / 楼板顶面）
+  //   · 斜坡格 = 坡面在该格内的区间（坡是连续面，所以是区间而不是点）
+  // 相邻两格的区间相距不超过 stepHeight 才连通。这一条同时表达了三件事：
+  //   ① 低掩体（0.45 ≤ stepHeight）可以迈上去 → 不阻挡；
+  //   ② 坡道是连续面 → 相邻坡格首尾相接，人不会"一级一级弹跳"；
+  //   ③ **从一层地面不可能直接踏进坡顶格** —— 两者高度差 2.4m，
+  //      若不拦，`surfaceAt` 会把脚底从 0 直接抬到 2.4m（表现为瞬移/穿模）。
+  const floorCount = floorBases.length;
+  const cellCount = W * H;
+  const navSize = floorCount * cellCount;
+  const navBlocked = new Uint8Array(navSize);
+  const navLo = new Float32Array(navSize);
+  const navHi = new Float32Array(navSize);
+
+  const rampByCell = new Map();
+  for (const r of rampList) rampByCell.set(r.z * W + r.cell, r);
+
+  for (let fl = 0; fl < floorCount; fl++) {
+    const base = floorBases[fl];
+    for (let cz = 0; cz < H; cz++) {
+      for (let cx = 0; cx < W; cx++) {
+        const ci = cz * W + cx;
+        const n = fl * cellCount + ci;
+
+        // 最外圈与越界一律不可走（与单层实现逐字一致）
+        if (cx <= 0 || cz <= 0 || cx >= W - 1 || cz >= H - 1) {
+          navBlocked[n] = 1;
+          continue;
+        }
+
+        const ramp = rampByCell.get(ci);
+        if (ramp && (fl === ramp.floor || (fl === ramp.floor + 1 && ramp.isTop))) {
+          // 坡道格不是实体，不参与"迈不过去"的判定（否则人会撞在楼梯上）。
+          // 在起始层上它的落脚面是整段坡面；在目标层上只有坡顶一个点。
+          if (fl === ramp.floor) {
+            navLo[n] = ramp.lo;
+            navHi[n] = ramp.hi;
+          } else {
+            navLo[n] = base;
+            navHi[n] = base;
+          }
+          continue;
+        }
+
+        // 该层在这一格有没有落脚面？
+        //   层 0：地面平面恒在（这一格就是地面）
+        //   层 L>0：必须有**顶面正好等于该层标高**的实心体，否则是悬空
+        //
+        // ★ 判据只看**顶面高度**，不看 kind。
+        //   "楼板压墙"合并后那一格的 kind 会变成 WALL（更实心），
+        //   若还要求 kind === SLAB，二层在这些格上就没有地板 ——
+        //   那正是"二层地面到处是一格宽的沟"的来源。
+        //   几何上"这一层有没有地板"本来就等于
+        //   "有没有一个实心体的顶面正好落在这一层的标高上"，与它叫墙还是叫楼板无关。
+        let fall = fl === 0 ? 0 : null;
+        if (fall === null) {
+          for (let s = spanStart[ci]; s < spanStart[ci + 1]; s++) {
+            if (Math.abs(spanY1f[s] - base) <= 1e-6) {
+              fall = base;
+              break;
+            }
+          }
+        }
+        if (fall === null) {
+          navBlocked[n] = 1;
+          continue;
+        }
+
+        // 迈不过去的实体 → 阻挡。判据与 isPathBlockedCell 等价：
+        // 存在跨度"从落脚面附近起、且高出脚底超过 stepHeight"。
+        const limit = fall + pathStepHeight + 1e-6;
+        let solid = false;
+        for (let s = spanStart[ci]; s < spanStart[ci + 1]; s++) {
+          if (spanY0f[s] <= limit && spanY1f[s] > limit) {
+            solid = true;
+            break;
+          }
+        }
+        if (solid) {
+          navBlocked[n] = 1;
+          continue;
+        }
+
+        navLo[n] = fall;
+        navHi[n] = fall;
+      }
+    }
+  }
+
+  // 跨层边：只在**坡顶格**上连接相邻两层。
+  //
+  // 代价为 0 而不是方案 §3.4 写的"坡长"：这一步的 from/to 是**同一格、同一世界坐标**，
+  // 几何位移为 0；坡道的水平长度已经由同层的坡格序列（几步同层边）计入。
+  // 若在这里再加一次坡长就是重复计数，而且会让启发式高估（A* 不再最优）。
+  // 竖直分量在二维网格 A* 里本来就被忽略（同层边的代价也只用水平距离），
+  // 加进来反而与同层边的语义不一致。
+  const navLinks = [];
+  for (const r of rampList) {
+    if (!r.isTop) continue;
+    if (r.floor + 1 >= floorCount) {
+      throw new Error(
+        `[level] 斜坡 (${r.cell},${r.z}) 升到了不存在的层 ${r.floor + 1}（只有 ${floorCount} 层）`
+      );
+    }
+    const ci = r.z * W + r.cell;
+    navLinks.push([r.floor * cellCount + ci, (r.floor + 1) * cellCount + ci]);
+  }
+
+  /**
+   * 脚底高度 → 层号（M3-1b-2 ③ 用）。
+   *
+   * 为什么必须有它：AI 要把"我在哪一层"显式说出来，才能把目标位置编码成分层节点。
+   * 判据是"不高于 y 的最高层标高"—— 站在 3.6m 的楼板上就是二层，走在 1.8m 的
+   * 半坡上仍然是一层（还没上到二层的地面）。
+   *
+   * 容差 1e-3 是给浮点留的：坡顶格的 `rampSurfaceAt` 算出来的高度可能比 baseY
+   * 差最后几个 ulp，不留容差会让 AI 在坡顶"差一点点"就被判回一层，然后卡住。
+   */
+  function floorOfY(y) {
+    let f = 0;
+    for (let i = 0; i < floorCount; i++) {
+      if (y >= floorBases[i] - 1e-3) f = i;
+    }
+    return f;
+  }
+
+  /** 该格是不是斜坡（楼梯）。AI 的竖直跟随要区别对待它 —— 见 ai.js 的说明。 */
+  function isRampCell(cx, cz) {
+    return rampLo.has(cz * W + cx);
   }
 
   // ---------- 渲染 ----------
@@ -344,26 +528,92 @@ export function createLevel(cfg, scene) {
   let wallCount = 0;
   for (let i = 0; i < W * H; i++) if (blocked[i]) wallCount++;
 
-  // 墙的渲染仍然按"每格一堵到顶的墙"处理：本步地图没有两层，
-  // 所有 WALL 跨度的顶面都是 wallHeight。M3-1b-2 引入楼板后这里改为按跨度渲染。
-  const wallGeo = new THREE.BoxGeometry(cell, wallHeight, cell);
-  const wallMat = new THREE.MeshLambertMaterial({ color: 0x59636d });
-  const walls = new THREE.InstancedMesh(wallGeo, wallMat, wallCount);
-  walls.castShadow = true;
-  walls.receiveShadow = true;
   const m4 = new THREE.Matrix4();
-  let w = 0;
-  for (let cz = 0; cz < H; cz++) {
-    for (let cx = 0; cx < W; cx++) {
-      if (!blocked[cz * W + cx]) continue;
-      m4.makeTranslation((cx + 0.5) * cell, wallHeight / 2, (cz + 0.5) * cell);
-      walls.setMatrixAt(w++, m4);
+  // 共用的"1 米高盒子"，实际高度靠 scale 表达 —— 这样墙、楼板、掩体可以共用一份几何。
+  const unitBox = new THREE.BoxGeometry(cell, 1, cell);
+
+  // ---------- 墙：按**跨度**渲染 ----------
+  //
+  // M3-1b-1 之前这里是"每格一堵从地面长到 wallHeight 的墙"。
+  // 两层地图推翻了那个假设：二层的墙从 3.6m 起，一层的墙只到 3.5m ——
+  // 只有按跨度画才能表达，也才能让"楼板下方是通的"在视觉上成立。
+  let wallSpanCount = 0;
+  for (let i = 0; i < W * H; i++) {
+    for (let s = spanStart[i]; s < spanStart[i + 1]; s++) {
+      if (spanKindU[s] === KIND_WALL) wallSpanCount++;
     }
   }
-  walls.instanceMatrix.needsUpdate = true;
-  scene.add(walls);
+  {
+    const wallMat = new THREE.MeshLambertMaterial({ color: 0x59636d });
+    const walls = new THREE.InstancedMesh(unitBox, wallMat, Math.max(1, wallSpanCount));
+    walls.castShadow = true;
+    walls.receiveShadow = true;
+    let k = 0;
+    for (let cz = 0; cz < H; cz++) {
+      for (let cx = 0; cx < W; cx++) {
+        const i = cz * W + cx;
+        for (let s = spanStart[i]; s < spanStart[i + 1]; s++) {
+          if (spanKindU[s] !== KIND_WALL) continue;
+          const y0 = spanY0f[s];
+          const h = spanY1f[s] - y0;
+          m4.makeScale(1, h, 1);
+          m4.setPosition((cx + 0.5) * cell, y0 + h / 2, (cz + 0.5) * cell);
+          walls.setMatrixAt(k++, m4);
+        }
+      }
+    }
+    walls.count = k;
+    walls.instanceMatrix.needsUpdate = true;
+    scene.add(walls);
+  }
 
-  // 掩体渲染：视觉略微内缩，让相邻掩体之间看得出分隔（碰撞仍按整格，保持模型简单）
+  // ---------- 楼板：薄板 ----------
+  // 它和墙的唯一区别就是"放多高、多厚"—— 楼板下方留出的净高就是下层天花板，
+  // 这正是"两层"与"一个大台子"的区别。
+  if (slabList.length) {
+    const slabMat = new THREE.MeshLambertMaterial({ color: 0x4a5560 });
+    const slabs = new THREE.InstancedMesh(unitBox, slabMat, slabList.length);
+    slabs.castShadow = true;
+    slabs.receiveShadow = true;
+    slabList.forEach((sl, i) => {
+      m4.makeScale(1, slabThickness, 1);
+      m4.setPosition((sl.cell + 0.5) * cell, sl.top - slabThickness / 2, (sl.z + 0.5) * cell);
+      slabs.setMatrixAt(i, m4);
+    });
+    slabs.instanceMatrix.needsUpdate = true;
+    scene.add(slabs);
+  }
+
+  // ---------- 楼梯：一段坡一个**斜置薄板** ----------
+  // 灰盒阶段不做踏步细节（踏步会把 3.6m 层高变成 15m 长的楼梯，见 KIND_RAMP 的说明）。
+  const rampMat = new THREE.MeshLambertMaterial({ color: 0x6b5f4e });
+  for (const r of map.ramps || []) {
+    const from = floorBaseY(r.floor);
+    const to = floorBaseY((r.floor || 0) + 1);
+    const alongX = r.dir === '+x' || r.dir === '-x';
+    const lenCells = alongX ? r.w : r.h;
+    const run = lenCells * cell;
+    const rise = to - from;
+    const slope = Math.atan2(rise, run);
+    const hypo = Math.hypot(run, rise);
+    const geo = new THREE.BoxGeometry(alongX ? hypo : cell, 0.12, alongX ? cell : hypo);
+    const mesh = new THREE.Mesh(geo, rampMat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    const midX = (alongX ? r.x + r.w / 2 : r.x + 0.5) * cell;
+    const midZ = (alongX ? r.z + 0.5 : r.z + r.h / 2) * cell;
+    mesh.position.set(midX, (from + to) / 2 - 0.06, midZ);
+    // 绕 z 轴正转 → +x 端升高；绕 x 轴正转 → +z 端**降低**（右手系），所以 +z 上升取负角。
+    if (r.dir === '+x') mesh.rotation.z = slope;
+    else if (r.dir === '-x') mesh.rotation.z = -slope;
+    else if (r.dir === '+z') mesh.rotation.x = -slope;
+    else mesh.rotation.x = slope;
+    scene.add(mesh);
+  }
+
+  // 掩体渲染：视觉略微内缩，让相邻掩体之间看得出分隔（碰撞仍按整格，保持模型简单）。
+  // M3-1b-2 ④：底部按**所在层**偏移 —— 否则二层的掩体会从地面长起来、穿过整个楼板
+  //（单层地图下 floor 恒为 0，与旧行为一致）。
   const coverVisualScale = coverSpec.visualScale ?? 0.94;
   const lowList = coverList.filter((c) => c.height <= pathStepHeight);
   const tallList = coverList.filter((c) => c.height > pathStepHeight);
@@ -376,9 +626,10 @@ export function createLevel(cfg, scene) {
     im.castShadow = true;
     im.receiveShadow = true;
     list.forEach((c, i) => {
-      // 几何高度为 1，用缩放表达实际高度，底部贴合地面
+      // 几何高度为 1，用缩放表达实际高度，底部贴合**所在层**的地面
+      const base = floorBaseY(c.floor || 0);
       const s = new THREE.Matrix4().makeScale(1, c.height, 1);
-      s.setPosition((c.cell + 0.5) * cell, c.height / 2, (c.z + 0.5) * cell);
+      s.setPosition((c.cell + 0.5) * cell, base + c.height / 2, (c.z + 0.5) * cell);
       im.setMatrixAt(i, s);
     });
     im.instanceMatrix.needsUpdate = true;
@@ -628,6 +879,8 @@ export function createLevel(cfg, scene) {
     geometryVersion: 2,
     cellToWorld, worldToCell, isBlockedCell, isPathBlockedCell,
     resolveCircle, canStandAt,
+    // M3-1b-2 ③：AI 竖直跟随需要的两个查询
+    floorOfY, isRampCell,
     raycastWall, raycastGround, raycastGroundFull, hasLineOfSight,
     // 几何版本 2 的查询接口。旧名 groundHeightAt / effectiveHeightAt 已被**删除**而不是保留别名：
     // 它们不接收 y，在两层的世界里必然取错层；留一个"看起来还能用"的旧名字，
@@ -637,5 +890,11 @@ export function createLevel(cfg, scene) {
     coverCm, coverList, coverMeshes, stepHeight: pathStepHeight, pathBlocked,
     // 跨度表（供调试与 M3-1b-2 使用）
     spans: { start: spanStart, y0: spanY0f, y1: spanY1f, kind: spanKindU, count: spanY0f.length },
+    // 分层寻路网格（M3-1b-2 ②）。节点 = floor*W*H + cell。
+    // 单层地图下 floorCount=1、节点索引恒等于 cell，因此与旧的单层网格逐格等价。
+    nav: {
+      W, H, cell, floorCount, stepHeight: pathStepHeight,
+      blocked: navBlocked, lo: navLo, hi: navHi, links: navLinks,
+    },
   };
 }

@@ -24,7 +24,17 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
 const optVal = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
 const VERIFY_PATH = argv.includes('--verify') ? path.resolve(optVal('--verify', '')) : null;
-const OUT = path.resolve(optVal('--out', `results/level-golden-${config.map.id}.json`));
+
+// M3-1b-2 ④：地图不止一张了，基准必须能**显式指定地图**。
+// 不指定时会拿"当前生效地图"去比对 —— 校验单层基准
+// （level-golden-industrial_01.json）时那会把"地图不同"报成几何回归。
+const MAP_ID = optVal('--map', null);
+if (MAP_ID && !config.maps[MAP_ID]) {
+  console.error(`[golden] 未知地图 id "${MAP_ID}"，已注册：${Object.keys(config.maps).join('、')}`);
+  process.exit(2);
+}
+const activeCfg = MAP_ID ? { ...config, map: config.maps[MAP_ID] } : config;
+const OUT = path.resolve(optVal('--out', `results/level-golden-${activeCfg.map.id}.json`));
 
 const STEP = config.player.stepHeight;
 const BODY_H = 1.8; // 比对用的实体高度。单层世界里没有任何阻挡在头顶，因此取值不影响结果。
@@ -32,7 +42,7 @@ const BODY_H = 1.8; // 比对用的实体高度。单层世界里没有任何阻
 // three.js 的 Mesh/InstancedMesh 在 Node 里可以构造，只要 scene 是个接收 add 的桩。
 // 因此不需要浏览器就能直接驱动**真实的** level 实现 —— 这是本工具能成立的前提。
 const stubScene = { add() {}, remove() {} };
-const level = createLevel(config, stubScene);
+const level = createLevel(activeCfg, stubScene);
 const V = level.geometryVersion || 1;
 
 /**
@@ -327,10 +337,10 @@ if (VERIFY_PATH) {
 
   console.log(`\n================ M3-1b-1 行为等价校验 ================`);
   console.log(`  基准文件: ${path.relative(ROOT, VERIFY_PATH)}`);
-  console.log(`  基准地图: ${base.mapId}   当前地图: ${config.map.id}`);
+  console.log(`  基准地图: ${base.mapId}   当前地图: ${activeCfg.map.id}`);
   console.log(`  基准几何版本: ${base.geometryVersion}   当前: ${V}`);
   console.log(`  比对条目: ${checked}（容差 ${EPS}）`);
-  if (base.mapId !== config.map.id) {
+  if (base.mapId !== activeCfg.map.id) {
     console.log('  ✗ 地图不一致，基准不可用于本次比对');
     process.exit(1);
   }
@@ -368,7 +378,7 @@ const data = {
   _comment:
     'M3-1b-1 几何行为黄金基准。M3-1b-1 的验收标准是"行为与改造前完全一致"，本文件是它的依据。' +
     '改造（几何版本 1 -> 2）后：node tools/capture-level-golden.mjs --verify <本文件> 必须全部一致。',
-  mapId: config.map.id,
+  mapId: activeCfg.map.id,
   geometryVersion: V,
   grid: { W, H, cell, wallHeight: level.wallHeight },
   stepHeight: STEP,
@@ -382,6 +392,6 @@ data.counts = Object.fromEntries(
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 fs.writeFileSync(OUT, JSON.stringify(data), 'utf8');
 console.log(`\n================ M3-1b-1 黄金基准已录制 ================`);
-console.log(`  地图: ${config.map.id}   几何版本: ${V}`);
+console.log(`  地图: ${activeCfg.map.id}   几何版本: ${V}`);
 for (const [k, v] of Object.entries(data.counts)) console.log(`  ${k.padEnd(10)} ${v} 条`);
 console.log(`  文件: ${path.relative(ROOT, OUT)}  (${(fs.statSync(OUT).size / 1024).toFixed(0)} KB)`);

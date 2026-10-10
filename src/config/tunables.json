@@ -2,11 +2,14 @@
   "_comment": "M1 临时数值表。硬性要求：所有数值集中于此，禁止散落在逻辑代码中。字段命名与结构为 M1 临时方案，逐步迁移至正式配置表体系（见《流程文档》第 8 章）。",
   "raid": {
     "_comment": "单局规则",
-    "timeLimitMs": 240000
+    "timeLimitMs": 780000,
+    "_timeLimitNote": "M3-1b-2 ④：240s → 780s（13 分钟）。依据不是手感，是搜刮预算：地图 87 个容器全部搜完需 296s，而 validate-loot-tables 有一条门禁『全部容器搜完 ≤ 单局时限的 40%』。240s 时该比例为 123%（门禁失败）；780s 时为 37.9%。注意这条预算会随地图**联动**：墙变少 → 可玩面积变大 → 容器按密度自动变多 → 所需时限变长，三者是一根链子，改任何一环都要重算。"
   },
   "level": {
     "_comment": "关卡**共享**规格。M3-1 起地图改为表驱动：尺寸/出生点/墙体/掩体位置/容器/撤离点/AI 配额全部来自 src/config/maps/*.json，本段只保留『不随地图变』的项。",
     "seed": 20260201,
+    "activeMap": "tv_station_01",
+    "_activeMapNote": "M3-1b-2 ④：当前生效的地图表 id（对应 src/config/maps/<file>.json）。可用值见 src/config/index.js 的 MAP_TABLES 注册表。切换回单层图填 industrial_01。",
     "_seedNote": "全局 RNG 种子（AI 抖动、掉落、武器随机）。M3-1 之前它同时充当**地图生成种子**；地图改为表驱动后不再是，但必须保留 —— aiManager / loot / main 都在用它。",
     "cover": {
       "_comment": "掩体高度规格（跨地图共享）。位置与类型在地图表里；此处定义两种类型各有多高。lowHeight 可直接迈上；tallHeight 挡移动也挡子弹、需跳上。",

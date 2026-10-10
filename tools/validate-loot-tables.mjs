@@ -27,6 +27,15 @@ const TABLE = argv.includes('--table')
   ? path.resolve(argv[argv.indexOf('--table') + 1])
   : path.join(ROOT, 'docs', '07-loot-tables.json');
 
+// 单局时限从**配置表**读，不在这里硬编码。
+// M3-1b-2 ④ 把时限从 240s 上调到覆盖"容器密度提高后的搜刮预算"，
+// 若这里还留一份 240000，两处就会分叉 —— 而这份校验的全部意义就是
+// "搜刮预算与时限的关系"，它必须跟着唯一真值走。
+const TUNABLES = JSON.parse(
+  fs.readFileSync(path.join(ROOT, 'src', 'config', 'tunables.json'), 'utf8')
+);
+const RAID_MS = TUNABLES.raid.timeLimitMs;
+
 const failures = [];
 const warnings = [];
 let checks = 0;
@@ -618,12 +627,12 @@ console.log('\n—— ⑥ 容器预算与搜刮耗时 ——');
   console.log(`  容器总数 ${totalCount} 个；全部搜完需 ${fullSearchSec.toFixed(1)}s（不含移动与战斗）`);
   console.log(`  全图理论总价值 ${fullValue.toFixed(0)}（掉率期望，非固定值）`);
 
-  // 单局时限 240s（当前 M2 值）——若纯搜刮就吃掉大半时间，说明容器过多或时限过短
-  const raidMs = 240000;
-  const ratio = (fullSearchSec * 1000) / raidMs;
+  // 时限取自 tunables.raid.timeLimitMs（唯一真值）。若纯搜刮就吃掉大半时间，
+  // 说明容器过多或时限过短 —— 两者都由策划表决定，这里只负责把矛盾报出来。
+  const ratio = (fullSearchSec * 1000) / RAID_MS;
   check('全部容器搜完的耗时不超过单局时限的 40%（给移动与战斗留出空间）',
     ratio <= 0.4,
-    `搜刮占时限 ${(ratio * 100).toFixed(1)}%（单局时限按当前 ${raidMs / 1000}s）`);
+    `搜刮占时限 ${(ratio * 100).toFixed(1)}%（单局时限 ${RAID_MS / 1000}s）`);
   if (ratio > 0.3) {
     warn(`搜刮已占时限 ${(ratio * 100).toFixed(1)}%，接近阈值；若 M4 调整时限需重算`);
   }

@@ -11,7 +11,7 @@
 //   M1-TEMP-8  无受击/死亡表现 → 补了受击闪白与死亡移除（动画仍属美术范畴，不在 M2）
 import * as THREE from 'three';
 import { mulberry32 } from '../core/rng.js';
-import { pickUpdateTier } from '../core/navgrid.js';
+import { pickUpdateTier, nodeIndex, nodeCell } from '../core/navgrid.js';
 import { createVitals, applyHit } from './vitals.js';
 
 const DEG = Math.PI / 180;
@@ -80,6 +80,8 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
     id: `ai_${index}`,
     tier,
     position: { x: spawn.x, y: 0, z: spawn.z },
+    // 竖直速度（M3-1b-2 ③）。只有"真的掉层"时才用得上 —— 见 followGround。
+    vy: 0,
     yaw: rnd() * Math.PI * 2,
     vitals: createVitals({ maxHealth: tier.maxHealth, armorBySlot: tier.armor, cfg }),
     state: AI_STATE.PATROL,
@@ -99,6 +101,11 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
     path: [],
     pathIdx: 0,
     pendingGoalCell: null,
+    // 当前这条路径的**目标节点**，以及最后一次发出的请求目标。
+    // 两者用来区分「目标变了，要重算并从头走」与「同一目标的路径又算了一遍」——
+    // 后者若也把 pathIdx 归零，AI 就会永远停在第一格（见 requestPath 的说明）。
+    pathGoal: null,
+    lastRequestedGoal: null,
     updateTier: null,
     lastUpdateAt: 0,
     updates: 0,
@@ -117,16 +124,56 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
   let hitFlashUntil = 0;
   let dead = false;
 
-  function cellOf(x, z) {
+  /**
+   * 世界坐标 + 脚底高度 → **分层节点**（floor*W*H + cell）。
+   *
+   * M3-1b-2 ③：AI 从此有了明确的"我在第几层"。
+   * 单层地图下 `level.floorOfY` 恒为 0、`nodeIndex(0,cell) === cell`，
+   * 因此本函数与改造前的 `cellOf` 返回**同一个数** —— 这是"单层行为不变"的结构性依据。
+   */
+  function nodeAt(x, z, y) {
     const cx = Math.min(level.W - 1, Math.max(0, Math.floor(x / level.cell)));
     const cz = Math.min(level.H - 1, Math.max(0, Math.floor(z / level.cell)));
-    return cz * level.W + cx;
+    return nodeIndex(level.floorOfY(y), cz * level.W + cx, level.W, level.H);
   }
 
-  function requestPath(targetCell) {
-    if (ai.pendingGoalCell === targetCell) return;
-    ai.pendingGoalCell = targetCell;
-    scheduler.request(ai.id, cellOf(ai.position.x, ai.position.z), targetCell);
+  /**
+   * 只知道**水平**位置时的目标节点（枪声、受击方向都只给得出方向，给不出楼层，
+   * 所以按"我在这一层"去找）。跨层时它会给出一条到楼梯的路径，AI 顺着走上去。
+   */
+  function nodeAtHere(x, z) {
+    return nodeAt(x, z, ai.position.y);
+  }
+
+  /** 目标最后已知位置所在的节点。`lastKnownPos` 可能没有 y（只听到枪声），退化为当前层 */
+  function nodeOfLastKnown(lkp) {
+    return nodeAt(lkp.x, lkp.z, lkp.y ?? ai.position.y);
+  }
+
+  /**
+   * 请求一条通往 targetNode 的路径。
+   *
+   * ★ M3-1b-2 ③：这里补上了**第二个**去重判据，修的是既有缺陷 **M2-BUG-01**
+   *   （完整登记见 docs/M2-TEMP-REGISTRY.md 三点十节）。
+   *
+   * 缺陷原貌：AI 一旦进入 ALERT / COMBAT / SEARCH，就**完全无法沿路径移动**，
+   *   只在自己所在格与下一格之间来回抖（实测 300 帧净位移 0.024m）。
+   *   原因是 `takeResult` 每次拿到结果都会把 `pathIdx` 归零并把 `pendingGoalCell`
+   *   清空 —— 而清空 `pendingGoalCell` 让第一个判据失效，于是这两个状态
+   *   **每帧**都会用同一目标重新请求，结果每两帧回来一次，pathIdx 就每两帧归零，
+   *   `followPath` 一次只处理一个节点，因此永远走不出第一格。
+   *   巡逻状态不受影响（它只在"没有路径"时才请求），所以"AI 会移动"的测试
+   *   一直是绿的 —— 这也是它能活到 M3 的原因。
+   *   （实测确认：改动前的 ai.js 与本步的 ai.js 在这条用例上输出一字不差，
+   *     所以它是既有缺陷，不是本步引入的。）
+   */
+  function requestPath(targetNode) {
+    if (ai.pendingGoalCell === targetNode) return; // 已发出、结果还没回来
+    // 正在走这条路径且目标没变 → 不必重算，更不能把进度抹掉
+    if (ai.pathGoal === targetNode && ai.pathIdx < ai.path.length) return;
+    ai.pendingGoalCell = targetNode;
+    ai.lastRequestedGoal = targetNode;
+    scheduler.request(ai.id, nodeAt(ai.position.x, ai.position.z, ai.position.y), targetNode);
   }
 
   function setState(next, nowMs) {
@@ -148,6 +195,9 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
     if (leavingPatrol) {
       ai.path = [];
       ai.pathIdx = 0;
+      // 一并放弃"当前路径目标"的记录：这样随后请求的新目标一定会被当成"变了"，
+      // 从而从 pathIdx=0 重新开始（否则会拿旧目标的进度去走新路径）。
+      ai.pathGoal = null;
       ai.pendingGoalCell = null;
     }
   }
@@ -167,6 +217,44 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
     dispose();
   }
 
+  /**
+   * 竖直跟随（M3-1b-2 ③）—— 本步的核心。
+   *
+   * 旧写法是一句 `ai.position.y = level.surfaceAt(...)`，它隐含假设
+   * 「地面高度是连续的、落差不会超过 stepHeight」。在单层世界里这成立
+   * （最大落差就是低掩体的 0.45m），**两层世界不成立**：
+   *   · 从二层走出楼板边缘 → `surfaceAt` 直接返回一层地面 0，
+   *     脚底一帧内瞬移 3.6m —— 玩家看到的是 AI 闪现/穿模；
+   *   · 楼梯是 28° 的**连续坡**，单格落差 1.2m > stepHeight，也不能按"走下去"处理。
+   *
+   * 分三种情况，每一种都有明确的理由：
+   *   ① 落差 ≤ stepHeight（迈下台阶）→ 直接贴合。
+   *      **单层地图 100% 走这条分支，因此与旧行为逐字相同** ——
+   *      这一点不是靠"我觉得"，而是由单测遍历所有相邻格对来证明（见 unit-tests）。
+   *   ② 斜坡格 → 直接贴合。坡面高度是按世界坐标插值出来的**连续量**，
+   *      它的"落差"是插值的结果而不是台阶，用台阶判据去切它会把下楼变成抖动。
+   *   ③ 其余（真的掉层）→ 按重力连续下落，落回地面后速度归零。
+   *      重力取 `cfg.player.gravity`：AI 与玩家用同一个重力，
+   *      否则同一段落差会有两种下落曲线（本项目反复踩过"两处各算一份"的坑）。
+   */
+  function followGround(moveDt) {
+    const feet = ai.position.y;
+    const target = level.surfaceAt(ai.position.x, ai.position.z, feet, level.stepHeight);
+    const cx = Math.floor(ai.position.x / level.cell);
+    const cz = Math.floor(ai.position.z / level.cell);
+    if (level.isRampCell(cx, cz) || feet - target <= level.stepHeight) {
+      ai.position.y = target;
+      ai.vy = 0;
+      return;
+    }
+    ai.vy += cfg.player.gravity * moveDt;
+    ai.position.y += ai.vy * moveDt;
+    if (ai.position.y <= target) {
+      ai.position.y = target;
+      ai.vy = 0;
+    }
+  }
+
   function moveToward(tx, tz, moveDt, speedScale) {
     const dx = tx - ai.position.x;
     const dz = tz - ai.position.z;
@@ -182,14 +270,16 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
     // 所以 AI 不会穿模、也不会卡在掩体前。若两边用不同数值，就会出现
     // "玩家能过 AI 不能过"或"AI 穿过掩体"的不一致。
     level.resolveCircle(ai.position, 0.45, ai.position.y, cfg.ai.bodyHeight, level.stepHeight);
-    // 贴地：AI 站到该格的地面高度上（地面 0 / 低掩体顶面）
-    ai.position.y = level.surfaceAt(ai.position.x, ai.position.z, ai.position.y, level.stepHeight);
+    followGround(moveDt);
     return dist;
   }
 
   function followPath(moveDt) {
     if (ai.pathIdx >= ai.path.length) return false;
-    const cell = ai.path[ai.pathIdx];
+    // 路径里存的是**分层节点**。取格坐标前必须先剥掉层号：
+    // 节点 = floor*W*H + cell，若直接把节点当 cell 用，
+    // 二层的节点会被解析成"图里面另一个位置"，表现为 AI 走完全无关的路线。
+    const cell = nodeCell(ai.path[ai.pathIdx], level.W, level.H);
     const cx = cell % level.W;
     const cz = (cell / level.W) | 0;
     const tx = (cx + 0.5) * level.cell;
@@ -245,7 +335,16 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
           break;
         }
         if (ai.pathIdx >= ai.path.length) {
-          requestPath(level.free[Math.floor(rnd() * level.free.length)]);
+          // 巡逻目标落在**我所在的这一层**上。单层时 nodeIndex(0,cell) === cell，
+          // 与旧写法（直接传 level.free 的格索引）完全等价。
+          requestPath(
+            nodeIndex(
+              level.floorOfY(ai.position.y),
+              level.free[Math.floor(rnd() * level.free.length)],
+              level.W,
+              level.H
+            )
+          );
         }
         break;
       }
@@ -263,11 +362,12 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
         if (seen) {
           const eye = player.eyePosition();
           if (distToPlayer > cfg.aiCombat.preferredRangeM + 3) {
-            requestPath(cellOf(eye.x, eye.z));
+            // 用**眼睛的 y** 定层：玩家在二层时 AI 才会去爬楼梯，而不是在楼下打转
+            requestPath(nodeAt(eye.x, eye.z, eye.y));
           } else if (distToPlayer < cfg.aiCombat.minRangeM) {
             const bx = ai.position.x - (eye.x - ai.position.x);
             const bz = ai.position.z - (eye.z - ai.position.z);
-            requestPath(cellOf(bx, bz));
+            requestPath(nodeAtHere(bx, bz));
           }
         }
         break;
@@ -285,8 +385,14 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
         }
         if (ai.lastKnownPos) {
           const d = Math.hypot(ai.lastKnownPos.x - ai.position.x, ai.lastKnownPos.z - ai.position.z);
-          if (d < 1.5) ai.lastKnownPos = null;
-          else requestPath(cellOf(ai.lastKnownPos.x, ai.lastKnownPos.z));
+          // ★ "到了没"必须**同层**才算数。
+          //   只用水平距离时，站在一层正下方会以为"已经在目标点上了"，
+          //   于是把 lastKnownPos 清掉、掉回巡逻 —— 表现为"AI 站在楼梯口不动了"。
+          //   单层地图下这里恒为同层，所以与旧行为完全一致。
+          const sameFloor =
+            level.floorOfY(ai.lastKnownPos.y ?? ai.position.y) === level.floorOfY(ai.position.y);
+          if (sameFloor && d < 1.5) ai.lastKnownPos = null;
+          else requestPath(nodeOfLastKnown(ai.lastKnownPos));
         }
         break;
       }
@@ -295,7 +401,7 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
         const dz = ai.position.z - player.state.pos.z;
         const len = Math.hypot(dx, dz) || 1;
         requestPath(
-          cellOf(
+          nodeAtHere(
             ai.position.x + (dx / len) * cfg.aiCombat.retreatDistanceM,
             ai.position.z + (dz / len) * cfg.aiCombat.retreatDistanceM
           )
@@ -431,7 +537,12 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
       return mesh;
     },
 
-    hearGunshot(nowMs, x, z) {
+    /**
+     * 听觉。`y` 是可选的第 4 个参数（M3-1b-2 ③ 加的）：
+     * 枪声能给出方向和大概高度，但这属于"锦上添花"的信息，
+     * 所以缺省允许——不传时按"我在这一层"处理，而不是让调用方必须编一个高度出来。
+     */
+    hearGunshot(nowMs, x, z, y) {
       if (dead) return;
       const d = Math.hypot(x - ai.position.x, z - ai.position.z);
       if (d > cfg.aiPerception.hearingGunshotRangeM) return;
@@ -439,7 +550,7 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
       // ★ 每次都更新听到的位置，而不是"只在从没听过时记一次"。
       //   旧写法 `if (!ai.lastKnownPos)` 会让 AI 永远朝着**第一次**听到枪声的地方走，
       //   之后玩家移动到哪都不影响 —— 表现为"它跑去了一个玩家早就不在的地方"。
-      ai.lastKnownPos = { x, z };
+      ai.lastKnownPos = { x, y, z };
       ai.lastKnownAt = nowMs;
     },
 
@@ -452,15 +563,19 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
      *   这正是"被玩家攻击后漫无目的乱跑"的直接原因（旧版没有这两个参数，
      *   受击只切了个 ALERT，既没有最后已知位置、也没有记忆时间戳，
      *   于是下一帧 SEARCH 立刻判定记忆过期并掉回 PATROL）。
+     * fromY（M3-1b-2 ③ 追加，可选）：攻击者所在的高度 —— 用来判断它在楼上还是楼下。
+     *   调用方传的是**射击者眼高**（脚底 + eyeHeight）：层高 3.6m 远大于眼高 1.65m，
+     *   所以用它定层不会跨错层，也就不必为此把玩家的脚底高度一路传下来。
+     *   省略时按"攻击者在我这一层"处理 —— 枪声与受击方向本来就只给得出水平方向。
      */
-    applyHitFrom(weapon, ammo, zone, distanceM, fromX, fromZ) {
+    applyHitFrom(weapon, ammo, zone, distanceM, fromX, fromZ, fromY) {
       if (dead) return null;
       const r = applyHit(ai.vitals, { weapon, ammo, zone, distanceM, cfg });
       hitFlashUntil = performance.now() + 90;
       const now = performance.now();
       if (Number.isFinite(fromX) && Number.isFinite(fromZ)) {
         // 挨打 = 知道打自己的人在哪。这条比"看到"还可靠（子弹是从那边来的）
-        ai.lastKnownPos = { x: fromX, z: fromZ };
+        ai.lastKnownPos = { x: fromX, y: fromY, z: fromZ };
         ai.lastKnownAt = now;
       }
       if (r.dead) die();
@@ -498,7 +613,8 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
       const seen = canSee(player);
       if (seen) {
         ai.lastSeenAt = nowMs;
-        ai.lastKnownPos = { x: player.state.pos.x, z: player.state.pos.z };
+        // 记下 y：跨层追击要靠它判断"玩家在楼上还是楼下"（③）
+        ai.lastKnownPos = { x: player.state.pos.x, y: player.state.pos.y, z: player.state.pos.z };
         ai.lastKnownAt = nowMs;
       }
 
@@ -528,7 +644,13 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
       const r = scheduler.takeResult(ai.id);
       if (r) {
         ai.path = Array.from(r.buf);
-        ai.pathIdx = 0;
+        // ★ 只有**目标真的变了**才重置进度（M2-BUG-01，见 requestPath 的说明）。
+        //   无条件归零会让"同一目标的路径又被算了一遍"也清掉进度，
+        //   而 ALERT/COMBAT/SEARCH 每帧都在请求同一目标 —— AI 因此永远停在第一格。
+        if (ai.lastRequestedGoal !== ai.pathGoal) {
+          ai.pathIdx = 0;
+          ai.pathGoal = ai.lastRequestedGoal;
+        }
         ai.pendingGoalCell = null;
       }
 

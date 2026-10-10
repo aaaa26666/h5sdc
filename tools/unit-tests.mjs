@@ -865,9 +865,14 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
   //   我第一版写成"从掩体格中心起射"，射线根本没**经过**掩体，因此无论有没有缺陷都通过 ——
   //   注入自检（把缺陷放回去）显示仍然 123/123 全绿，才暴露了那条断言是空的。
   //   教训：回归测试必须复现**触发条件**，而不只是复现"结果看起来不对"。
+  //
+  // ★ M3-1b-2 ④：本组**显式使用单层对照地图 industrial_01**。
+  //   这条缺陷的触发条件是"低掩体后面有墙"，而"墙顶以上"这个反向对照只有在
+  //   **单层**地图上才成立（两层地图的墙顶之上还有二层楼板与掩体，射线本来就该命中）。
+  //   用当前生效地图会让它随地图切换而语义漂移 —— 那不是回归，是判据不该跟着走。
   {
     const { createLevel } = await import('../src/level/level.js');
-    const lvl = createLevel(config, { add() {}, remove() {} });
+    const lvl = createLevel({ ...config, map: config.maps.industrial_01 }, { add() {}, remove() {} });
     const cell = lvl.cell;
     const coverCellSet = new Set(lvl.coverList.map((c) => c.z * lvl.W + c.cell));
 
@@ -913,6 +918,686 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
         !Number.isFinite(tOver),
         `y=${(lvl.wallHeight + 0.5).toFixed(1)}m 平射实得 ${Number.isFinite(tOver) ? tOver.toFixed(3) + 'm' : '未命中'}`);
     }
+  }
+
+  // ---- M3-1b-2 ②：分层寻路 ----
+  //
+  // ② 给寻路加了"层"这一维。它要在**真实地图**上满足与 ① 相同的验收标准
+  // ——「行为不变」；而"分层能力真的可用"必须用**合成两层地图**来证明
+  // （正式地图此刻还是一层，拿它测不出任何分层行为）。
+  //
+  // 这里刻意"对拍而不是自证"：参考 Dijkstra 是独立写出来的，不复用被测代码的任何一行。
+  // ① 的教训（"从不失败的检查等于没有检查"）同样适用 ——
+  // 所以每条对拍断言后面都配了一条"跑到了足够多输入"的计数断言。
+  {
+    const { createNavGrid, createLayeredNavGrid, createAStar, nodeIndex, nodeFloor, nodeCell } =
+      await import('../src/core/navgrid.js');
+    const { createLevel } = await import('../src/level/level.js');
+
+    // 与 navgrid 内部同值的常量：若不写成同一个数，对拍会出现 1e-9 级的假分歧
+    const SQRT2 = 1.41421356;
+    const D8 = [
+      [1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1],
+      [1, 1, SQRT2], [1, -1, SQRT2], [-1, 1, SQRT2], [-1, -1, SQRT2],
+    ];
+
+    // ============ (1) 真实地图（单层对照）：行为不变 ============
+    // 显式用 industrial_01 —— 本组断言的全部意义就是"分层改造没有改坏**单层**行为"，
+    // 而两层地图上「旧的 isPathBlockedCell」本来就会把楼板当成掩体（那正是 ② 要修的东西），
+    // 拿它当基准只会得到"预期之内的不一致"。
+    const lvl = createLevel({ ...config, map: config.maps.industrial_01 }, { add() {}, remove() {} });
+    const W = lvl.W;
+    const H = lvl.H;
+    const NN = W * H;
+    const blocked = lvl.pathBlocked;
+
+    const grid = createNavGrid(W, H, lvl.cell, blocked);
+    check('单层网格：floorCount=1，节点编号空间与旧的 W*H 完全一致',
+      grid.floorCount === 1 && grid.size === NN && grid.cellCount === NN,
+      `floorCount=${grid.floorCount} size=${grid.size}`);
+    check('节点编号 floor*W*H+cell 可无损往返（分层寻路的索引语义）',
+      nodeFloor(nodeIndex(1, 123, W, H), W, H) === 1 && nodeCell(nodeIndex(1, 123, W, H), W, H) === 123);
+
+    // ★ ② 在真实地图上的"行为不变"主证据：
+    //   `lvl.pathBlocked`（旧的 isPathBlockedCell：墙 / coverCm）与
+    //   `lvl.nav.blocked`（新的分层判据：落脚面 + 迈不过去的跨度）
+    //   是**两段独立代码**，它们必须在单层地图上逐格一致。
+    let dOld = -1;
+    let dWrap = -1;
+    for (let i = 0; i < NN; i++) {
+      if (lvl.pathBlocked[i] !== lvl.nav.blocked[i] && dOld < 0) dOld = i;
+      if (grid.blocked[i] !== lvl.nav.blocked[i] && dWrap < 0) dWrap = i;
+    }
+    check('新分层判据与旧的 isPathBlockedCell 在真实地图上逐格一致（单层行为不变）',
+      dOld < 0,
+      dOld < 0 ? '' : `首个分歧格 (${dOld % W},${(dOld / W) | 0})`);
+    check('单层包装 createNavGrid 的阻挡表 == level 的分层寻路数据（逐格）',
+      dWrap < 0,
+      dWrap < 0 ? '' : `首个分歧格 (${dWrap % W},${(dWrap / W) | 0})`);
+
+    // 参考实现：朴素 Dijkstra（O(N²)，N=1600，单次约 10ms，只跑 8 个源点）
+    const refAll = (src) => {
+      const dist = new Float64Array(NN).fill(Infinity);
+      const done = new Uint8Array(NN);
+      dist[src] = 0;
+      for (let it = 0; it < NN; it++) {
+        let u = -1;
+        let best = Infinity;
+        for (let i = 0; i < NN; i++) if (!done[i] && dist[i] < best) { best = dist[i]; u = i; }
+        if (u < 0) break;
+        done[u] = 1;
+        const cx = u % W;
+        const cz = (u / W) | 0;
+        for (let k = 0; k < 8; k++) {
+          const nx = cx + D8[k][0];
+          const nz = cz + D8[k][1];
+          if (nx < 0 || nz < 0 || nx >= W || nz >= H) continue;
+          const ni = nz * W + nx;
+          if (blocked[ni]) continue;
+          // 对角线不得"切角"（与 A* 的判据一致，否则两者本来就会给出不同结果）
+          if (D8[k][0] !== 0 && D8[k][1] !== 0 &&
+              (blocked[cz * W + nx] || blocked[nz * W + cx])) continue;
+          const nd = dist[u] + D8[k][2];
+          if (nd < dist[ni]) dist[ni] = nd;
+        }
+      }
+      return dist;
+    };
+
+    const aStar = createAStar(grid);
+    const pathCost = (buf, len) => {
+      let c = 0;
+      for (let i = 1; i < len; i++) {
+        const a = buf[i - 1];
+        const b = buf[i];
+        c += (a % W) !== (b % W) && ((a / W) | 0) !== ((b / W) | 0) ? SQRT2 : 1;
+      }
+      return c;
+    };
+
+    const freeCells = [];
+    for (let i = 0; i < NN; i++) if (!blocked[i]) freeCells.push(i);
+
+    const mismatches = [];
+    const illegal = [];
+    let pairs = 0;
+    for (let s = 0; s < 8; s++) {
+      const src = freeCells[Math.floor(((s + 0.5) * freeCells.length) / 8)];
+      const dist = refAll(src);
+      for (let t = 0; t < 4; t++) {
+        const gi = (Math.floor(((t + 0.5) * freeCells.length) / 4) + s * 197) % freeCells.length;
+        const goal = freeCells[gi];
+        if (goal === src) continue;
+        pairs++;
+        const r = aStar(src, goal);
+        const len = r.len;
+        const buf = Array.from(r.buf.subarray(0, len)); // 内部缓冲会被下次调用复用，必须先拷出来
+        const ref = dist[goal];
+        if (len === 0) {
+          if (Number.isFinite(ref)) mismatches.push(`(${src})→(${goal}) A* 无路径，参考代价 ${ref.toFixed(3)}`);
+          continue;
+        }
+        if (!Number.isFinite(ref)) {
+          mismatches.push(`(${src})→(${goal}) A* 有路径，参考判定不可达`);
+        } else if (Math.abs(pathCost(buf, len) - ref) > 1e-4) {
+          mismatches.push(
+            `(${src})→(${goal}) 代价 ${pathCost(buf, len).toFixed(4)} vs 参考 ${ref.toFixed(4)}`
+          );
+        }
+        if (buf[0] !== src || buf[len - 1] !== goal) {
+          illegal.push(`(${src})→(${goal}) 首尾不符`);
+          continue;
+        }
+        for (let i = 1; i < len; i++) {
+          const a = buf[i - 1];
+          const b = buf[i];
+          const ax = a % W, az = (a / W) | 0, bx = b % W, bz = (b / W) | 0;
+          const dx = Math.abs(ax - bx);
+          const dz = Math.abs(az - bz);
+          if (dx > 1 || dz > 1 || (dx === 0 && dz === 0)) { illegal.push(`(${src})→(${goal}) 第 ${i} 步不相邻`); break; }
+          if (blocked[b]) { illegal.push(`(${src})→(${goal}) 第 ${i} 步踏入阻挡格`); break; }
+          if (dx === 1 && dz === 1 && (blocked[az * W + bx] || blocked[bz * W + ax])) {
+            illegal.push(`(${src})→(${goal}) 第 ${i} 步对角切角`);
+            break;
+          }
+        }
+      }
+    }
+    check('对拍确实跑了足够多的点对（防止抽样写空导致下面的断言恒真）', pairs >= 24, `${pairs} 对`);
+    check('单层地图：A* 的最短路代价与独立 Dijkstra 逐对一致',
+      mismatches.length === 0, mismatches.slice(0, 3).join(' ｜ '));
+    check('单层地图：A* 的路径逐格合法（相邻、不踏阻挡、对角不切角）',
+      illegal.length === 0, illegal.slice(0, 3).join(' ｜ '));
+
+    // ============ (2) 合成两层地图：分层能力确实可用 ============
+    //
+    // 布局（刻意让坡顶格**紧邻**二层楼板，这样"能不能上楼"只取决于分层逻辑）：
+    //   一层地面 0m 全通；二层楼板 x 20..25, z 20..25（标高 3.6m）；
+    //   楼梯 x 17..19, z 20 沿 +x，坡顶格 (19,20) 与楼板 (20,20) 相邻。
+    const synthetic = {
+      ...config.map,
+      id: 'synthetic_nav_two_floor',
+      floors: [{ id: 0, baseY: 0, label: '一层' }, { id: 1, baseY: 3.6, label: '二层' }],
+      slabThickness: 0.3,
+      walls: [],
+      cover: [],
+      slabs: [{ x: 20, z: 20, w: 6, h: 6, floor: 1 }],
+      ramps: [{ x: 17, z: 20, w: 3, h: 1, dir: '+x', floor: 0 }],
+    };
+    const lvl2 = createLevel({ ...config, map: synthetic }, { add() {}, remove() {} });
+    const CC = W * H;
+    const at1 = (cx, cz) => cz * W + cx;
+    const at2 = (cx, cz) => CC + cz * W + cx;
+
+    check('合成图确实建出了两层（否则下面的分层断言全部无意义）',
+      lvl2.nav.floorCount === 2 && lvl2.nav.blocked.length === 2 * CC,
+      `floorCount=${lvl2.nav.floorCount} 长度=${lvl2.nav.blocked.length}`);
+    check('合成图一层：无墙无掩体时所有内部格可走',
+      (() => {
+        for (let cz = 1; cz < H - 1; cz++) {
+          for (let cx = 1; cx < W - 1; cx++) if (lvl2.nav.blocked[at1(cx, cz)]) return false;
+        }
+        return true;
+      })());
+    check('合成图二层：被楼板覆盖的格可走',
+      lvl2.nav.blocked[at2(22, 22)] === 0);
+    check('合成图二层：没有被楼板覆盖的格是**悬空**的 → 不可走',
+      lvl2.nav.blocked[at2(2, 2)] === 1);
+    check('合成图二层：坡顶格是二层的入口（同时属于两层）',
+      lvl2.nav.blocked[at2(19, 20)] === 0);
+    check('合成图二层：坡道下端的格在二层是悬空的 → 不可走',
+      lvl2.nav.blocked[at2(17, 20)] === 1);
+    check('层内可走性与"楼板覆盖"一致，而不是"整层都可走"（这正是两层与单层的区别）',
+      lvl2.nav.blocked[at2(30, 30)] === 1 && lvl2.nav.blocked[at1(30, 30)] === 0);
+
+    check('跨层边只有一条，且两端是同一个坡顶格（相邻两层）',
+      lvl2.nav.links.length === 1 &&
+        lvl2.nav.links[0][0] === at1(19, 20) &&
+        lvl2.nav.links[0][1] === at2(19, 20),
+      JSON.stringify(lvl2.nav.links));
+
+    const grid2 = createLayeredNavGrid(lvl2.nav);
+    const aStar2 = createAStar(grid2);
+    const spawn = config.map.playerSpawn;
+    const startNode = nodeIndex(0, at1(spawn.x, spawn.z), W, H);
+    const goalNode = nodeIndex(1, at1(22, 22), W, H); // 二层 (22,22)：楼板覆盖范围内
+
+    const up = aStar2(startNode, goalNode);
+    const upPath = Array.from(up.buf.subarray(0, up.len));
+    check('一层出生点 → 二层楼板点：A* 必须给出路径（方案 §7 验收 3 的最小形态）',
+      upPath.length > 0, `len=${upPath.length}`);
+
+    // ★ 下面四条断言**不包在 `if (upPath.length > 0)` 里**：
+    //   一旦包上，自检 2（删掉跨层边）时 upPath 为空 → 整段被跳过 → 四条全部恒真。
+    //   无条件执行时，"没有路径"会让它们各自以"0 次 / 未跨层 / 0 个坡格"失败。
+    const upFloors = upPath.map((n) => nodeFloor(n, W, H));
+    const changes = [];
+    for (let i = 1; i < upFloors.length; i++) {
+      if (upFloors[i] !== upFloors[i - 1]) changes.push(i);
+    }
+    check('跨层恰好发生一次（图里只有一个楼梯）', changes.length === 1, `${changes.length} 次`);
+    check('跨层方向是一层 → 二层',
+      changes.length === 1 && upFloors[changes[0] - 1] === 0 && upFloors[changes[0]] === 1,
+      changes.length === 1 ? `${upFloors[changes[0] - 1]} → ${upFloors[changes[0]]}` : '未跨层');
+    const crossIdx = changes.length === 1 ? changes[0] : -1;
+    check('跨层点必须落在坡顶格上（不是凭空穿过楼板）',
+      crossIdx > 0 &&
+        nodeCell(upPath[crossIdx], W, H) === at1(19, 20) &&
+        nodeCell(upPath[crossIdx - 1], W, H) === at1(19, 20),
+      crossIdx > 0
+        ? `跨层格 (${nodeCell(upPath[crossIdx], W, H) % W},${(nodeCell(upPath[crossIdx], W, H) / W) | 0})`
+        : '路径不存在或未跨层');
+    // 路径必须真的沿坡道走完 3 格，而不是"从旁边跳上坡顶"
+    const rampCells = new Set([17, 18, 19].map((x) => at1(x, 20)));
+    let rampTouched = 0;
+    for (const n of upPath) {
+      if (nodeFloor(n, W, H) === 0 && rampCells.has(nodeCell(n, W, H))) rampTouched++;
+    }
+    check('路径必须完整走过坡道的 3 格（不能从侧面跳上坡顶）',
+      rampTouched === 3, `经过 ${rampTouched} 个坡格`);
+
+    check('二层 → 一层：楼梯双向可用', aStar2(goalNode, startNode).len > 0);
+    check('二层悬空格不可作为目标（A* 必须返回无路径）',
+      aStar2(startNode, nodeIndex(1, at1(2, 2), W, H)).len === 0);
+
+    // ★ 防"瞬移上坡"：一层地面与坡顶格的高度差是 2.4m，
+    //   若高度差门槛失效，实体走到那里会被 surfaceAt 一把抬到 2.4m 以上。
+    const below = nodeIndex(0, at1(20, 20), W, H); // 一层：坡顶格旁边、楼板正下方
+    const top0 = nodeIndex(0, at1(19, 20), W, H);  // 坡顶格在**一层**的表示
+    const gap = Math.max(
+      lvl2.nav.lo[below] - lvl2.nav.hi[top0],
+      lvl2.nav.lo[top0] - lvl2.nav.hi[below]
+    );
+    check('一层地面与坡顶格的高度差超过 stepHeight（这条边必须被剪掉）',
+      gap > lvl2.nav.stepHeight,
+      `高度差 ${gap.toFixed(2)}m vs stepHeight ${lvl2.nav.stepHeight}m`);
+    // 坡道格在起始层上的落脚高度必须是**区间**（坡是连续面），不是单点
+    check('坡道格带落脚高度区间（连续坡面，而不是台阶）',
+      lvl2.nav.hi[top0] - lvl2.nav.lo[top0] > 0.1 &&
+        Math.abs(lvl2.nav.hi[top0] - 3.6) < 1e-4,
+      `[${lvl2.nav.lo[top0].toFixed(2)}, ${lvl2.nav.hi[top0].toFixed(2)}]`);
+
+    const around = aStar2(below, top0);
+    const aroundPath = Array.from(around.buf.subarray(0, around.len));
+    check('从楼板下方到坡顶格必须绕经坡道（不能一步跨上去）',
+      aroundPath.length > 2, `len=${aroundPath.length}`);
+    // ★ 这条断言**不能**包在 `if (aroundPath.length > 2)` 里：
+    //   注入自检时那条路径会退化成 2 格，条件不成立 → 断言被整段跳过 → 恒真。
+    //   （① 的"空断言"教训：条件化的检查等于没有检查。）
+    const prev = aroundPath.length >= 2 ? aroundPath[aroundPath.length - 2] : -1;
+    check('坡顶格的唯一入口是坡道上一格 (18,20)',
+      prev >= 0 && nodeFloor(prev, W, H) === 0 && nodeCell(prev, W, H) === at1(18, 20),
+      prev < 0
+        ? '路径不存在，无从进入坡顶格'
+        : `实得前驱 (${nodeCell(prev, W, H) % W},${(nodeCell(prev, W, H) / W) | 0}) 层 ${nodeFloor(prev, W, H)}`);
+
+    // 性能：C-2 的预算是单帧寻路 ≤ 2ms。这里量的是**单次 A* 纯计算**（不含调度器）。
+    const t0 = performance.now();
+    const REPS = 300;
+    for (let i = 0; i < REPS; i++) aStar(freeCells[0], freeCells[freeCells.length - 1]);
+    const perCall = (performance.now() - t0) / REPS;
+    check('单层地图上 A* 单次耗时远低于 C-2 的 2ms 预算',
+      perCall < 2, `${perCall.toFixed(4)} ms/次`);
+
+    const t1 = performance.now();
+    for (let i = 0; i < REPS; i++) aStar2(startNode, goalNode);
+    const perCallTwo = (performance.now() - t1) / REPS;
+    check('两层地图上（含跨层）A* 单次耗时同样远低于 2ms 预算',
+      perCallTwo < 2, `${perCallTwo.toFixed(4)} ms/次`);
+  }
+
+  // ---- M3-1b-2 ③：AI 竖直跟随与跨层追击 ----
+  //
+  // ③ 要回答两个问题，而且两个都必须**可以被证伪**：
+  //   (a) 单层地图上 AI 的竖直行为有没有被改掉？
+  //   (b) 两层地图上 AI 能不能真的经由楼梯追到另一层的玩家，
+  //       以及"掉层"时是连续下落还是瞬移？
+  //
+  // 每组前面都先跑一条"夹具前提"断言（例如"这一步确实走出了楼板"）——
+  // ① 的教训：夹具没复现触发条件时，后面的断言无论有没有缺陷都会通过。
+  {
+    const { createAi } = await import('../src/gameplay/ai.js');
+    const { createLevel } = await import('../src/level/level.js');
+    const { createLayeredNavGrid: mkGrid, createAStar: mkAStar, createPathScheduler: mkSched, nodeIndex } =
+      await import('../src/core/navgrid.js');
+
+    const scene = { add() {}, remove() {} };
+    const STEP = config.player.stepHeight;
+    const maxStepOf = (arr) => {
+      let m = 0;
+      for (let i = 1; i < arr.length; i++) m = Math.max(m, Math.abs(arr[i] - arr[i - 1]));
+      return m;
+    };
+    const midCount = (arr) => arr.filter((y) => y > 0.2 && y < 3.4).length;
+
+    // ============ (a) 单层对照地图：竖直行为不变 ============
+    const lvl = createLevel({ ...config, map: config.maps.industrial_01 }, scene);
+    const W = lvl.W;
+    const H = lvl.H;
+
+    check('单层地图上 floorOfY 恒为 0（AI 的"层"在这一维上退化掉了）',
+      [0, 0.2, 0.45, 1.4, 1.65, 2.9, 3.4].every((y) => lvl.floorOfY(y) === 0));
+    check('单层地图上 nodeIndex(0,cell) === cell（分层节点退化成旧格索引）',
+      (() => {
+        for (let i = 0; i < W * H; i++) if (nodeIndex(0, i, W, H) !== i) return false;
+        return true;
+      })());
+
+    // ★ (a) 的**主证据**：`followGround` 在单层地图上永远走"直接贴合"分支。
+    //   分支条件是 `feet - target <= stepHeight`。这里遍历所有相邻可走格对，
+    //   按真实过程（用 A 的落脚高度作为走到 B 时的脚底高度）算出落差。
+    //   只要落差恒 ≤ stepHeight，③ 新增的"连续下落"在单层地图上就是**死代码**，
+    //   于是竖直行为与改造前逐字相同 —— 这是结构性论证，不是抽样观察。
+    {
+      const walkable = (i) => !lvl.pathBlocked[i];
+      const surfaceOf = (i, feetY) =>
+        lvl.surfaceAt(((i % W) + 0.5) * lvl.cell, (((i / W) | 0) + 0.5) * lvl.cell, feetY, STEP);
+      let worstDrop = -Infinity;
+      let worstPair = null;
+      let pairs = 0;
+      for (let i = 0; i < W * H; i++) {
+        if (!walkable(i)) continue;
+        const hi = surfaceOf(i, 0);
+        const cx = i % W;
+        const cz = (i / W) | 0;
+        for (const [dx, dz] of [[1, 0], [0, 1]]) {
+          const nx = cx + dx;
+          const nz = cz + dz;
+          if (nx >= W || nz >= H) continue;
+          const ni = nz * W + nx;
+          if (!walkable(ni)) continue;
+          pairs++;
+          const drop = hi - surfaceOf(ni, hi);
+          if (drop > worstDrop) {
+            worstDrop = drop;
+            worstPair = [i, ni];
+          }
+        }
+      }
+      check('单层地图：任何相邻可走格之间的落差都不超过 stepHeight（下落分支在单层永不触发）',
+        worstDrop <= STEP,
+        `最大落差 ${worstDrop.toFixed(3)}m vs stepHeight ${STEP}m` +
+          (worstPair ? `（格 ${worstPair[0]} → ${worstPair[1]}）` : ''));
+      check('这条遍历确实扫到了有高差的相邻格对（防止遍历写空导致上面那条恒真）',
+        pairs > 500 && worstDrop > 0,
+        `${pairs} 对，最大落差 ${worstDrop.toFixed(3)}m（必须 > 0 才说明扫到了低掩体那种高差）`);
+    }
+
+    // ============ (b) 两层地图：AI 经由楼梯追上二层的玩家 ============
+    const mkTwoFloor = (id, ramps) => ({
+      ...config.map,
+      id,
+      floors: [{ id: 0, baseY: 0, label: '一层' }, { id: 1, baseY: 3.6, label: '二层' }],
+      slabThickness: 0.3,
+      walls: [],
+      cover: [],
+      slabs: [{ x: 20, z: 20, w: 6, h: 6, floor: 1 }],
+      ramps,
+    });
+    {
+      const lvl2 = createLevel(
+        { ...config, map: mkTwoFloor('synthetic_ai_stairs', [{ x: 17, z: 20, w: 3, h: 1, dir: '+x', floor: 0 }]) },
+        scene
+      );
+      const cellW = lvl2.cell;
+      const at = (cx, cz) => ({ x: (cx + 0.5) * cellW, z: (cz + 0.5) * cellW });
+      const goal = at(22, 22); // 二层楼板中央
+      const player = {
+        state: { pos: { x: goal.x, y: 3.6, z: goal.z } },
+        eyePosition: () => ({ x: goal.x, y: 3.6 + config.player.eyeHeight, z: goal.z }),
+      };
+      const scheduler = mkSched(mkAStar(mkGrid(lvl2.nav)), config.aiPathBudget);
+      const ai = createAi({
+        cfg: config, level: lvl2, scene,
+        spawnCell: [17, 25], index: 0, tier: config.aiTiers[0],
+        scheduler, rngSeed: 20261010,
+      });
+      const p0 = at(17, 25);
+      ai.position.x = p0.x;
+      ai.position.y = 0;
+      ai.position.z = p0.z;
+
+      const inner = ai.state;
+      inner.state = 'search'; // 走"朝最后已知位置去"的分支（与听觉/受击后的行为同一路径）
+      const ctx = { onPlayerHit() {}, reactScale: 1, accuracyScale: 1 };
+      const rampCells = new Set([17, 18, 19].map((x) => 20 * W + x));
+
+      const ys = [];
+      let rampFrames = 0;
+      let t = 0;
+      for (let f = 0; f < 900; f++) {
+        // 模拟"AI 持续知道玩家在二层"。不刷新的话记忆会过期、掉回巡逻，
+        // 那样测的就变成"AI 会不会随机逛到楼梯"了。
+        inner.lastKnownPos = { x: goal.x, y: 3.6, z: goal.z };
+        inner.lastKnownAt = t;
+        inner.stateEnteredAt = t;
+        t += 1000 / 60;
+        scheduler.processFrame();
+        ai.update(1 / 60, t, player, ctx);
+        ys.push(ai.position.y);
+        if (rampCells.has(Math.floor(ai.position.z / cellW) * W + Math.floor(ai.position.x / cellW))) {
+          rampFrames++;
+        }
+      }
+
+      check('AI 追击位于二层的玩家：最终真的上到了二层',
+        lvl2.floorOfY(ai.position.y) === 1 && Math.abs(ai.position.y - 3.6) < 0.05,
+        `最终 (${ai.position.x.toFixed(1)}, ${ai.position.y.toFixed(2)}, ${ai.position.z.toFixed(1)})，` +
+          `层 ${lvl2.floorOfY(ai.position.y)}`);
+      check('上楼的路径确实经过坡道格（不是从楼板里穿上去）',
+        rampFrames > 0, `在坡道格上停留 ${rampFrames} 帧`);
+      check('上楼过程被观测到多个中间高度（不是一帧跳到 3.6m）',
+        midCount(ys) >= 5, `中间高度采样 ${midCount(ys)} 个`);
+      check('跨层追击全程没有超过 1.5m 的单帧高度突变（不瞬移 / 不穿模）',
+        maxStepOf(ys) <= 1.5, `最大单帧变化 ${maxStepOf(ys).toFixed(3)}m`);
+    }
+
+    // ============ (c) 掉层：必须是连续下落，不能瞬移 ============
+    //
+    // 为什么必须单独测这一组：(b) 里 AI 是**沿坡道**上楼的，全程不会掉层 ——
+    // 只测 (b) 的话，"下落的连续性"这条逻辑没有任何防线（空断言）。
+    // 这里刻意造一个**没有楼梯**的地图：AI 在二层、玩家在一层，
+    // A* 找不到跨层路径（len=0）→ 走 SEARCH 的兜底移动直接朝玩家逼近
+    // → 走出楼板边缘 → 触发下落分支。
+    {
+      const lvl3 = createLevel({ ...config, map: mkTwoFloor('synthetic_ai_no_stairs', []) }, scene);
+      const cellW = lvl3.cell;
+      const at = (cx, cz) => ({ x: (cx + 0.5) * cellW, z: (cz + 0.5) * cellW });
+
+      const grid3 = mkGrid(lvl3.nav);
+      const aStar3 = mkAStar(grid3);
+      // 夹具前提：确认"跨层不可达"这个触发条件真的成立
+      check('夹具前提：无楼梯时二层到一层正下方确实不可达（这正是要测的触发条件）',
+        aStar3(nodeIndex(1, 22 * W + 22, W, H), nodeIndex(0, 22 * W + 22, W, H)).len === 0);
+
+      const far = at(30, 22); // 一层，楼板正东侧的空地上
+      const player = {
+        state: { pos: { x: far.x, y: 0, z: far.z } },
+        eyePosition: () => ({ x: far.x, y: config.player.eyeHeight, z: far.z }),
+      };
+      const scheduler = mkSched(aStar3, config.aiPathBudget);
+      const ai = createAi({
+        cfg: config, level: lvl3, scene,
+        spawnCell: [22, 22], index: 1, tier: config.aiTiers[0],
+        scheduler, rngSeed: 777,
+      });
+      const p0 = at(22, 22);
+      ai.position.x = p0.x;
+      ai.position.y = 3.6; // 一开始就站在二层
+      ai.position.z = p0.z;
+
+      const inner = ai.state;
+      inner.state = 'search';
+      const ctx = { onPlayerHit() {}, reactScale: 1, accuracyScale: 1 };
+
+      const ys = [];
+      let steppedOff = false;
+      let t = 0;
+      for (let f = 0; f < 900; f++) {
+        inner.lastKnownPos = { x: far.x, y: 0, z: far.z };
+        inner.lastKnownAt = t;
+        inner.stateEnteredAt = t;
+        t += 1000 / 60;
+        scheduler.processFrame();
+        ai.update(1 / 60, t, player, ctx);
+        ys.push(ai.position.y);
+        if (ai.position.x > 26 * cellW) steppedOff = true;
+      }
+
+      check('夹具前提：AI 确实走出了二层楼板（否则下落分支根本没被走到）',
+        steppedOff, `最终 x=${ai.position.x.toFixed(2)}（楼板东边界 ${(26 * cellW).toFixed(2)}）`);
+      check('掉层后 AI 落到了一层地面（没有停在空中，也没有卡在楼板里）',
+        Math.abs(ai.position.y) < 0.05,
+        `最终 y=${ai.position.y.toFixed(3)}`);
+      check('掉到一层是**连续下落**：观测到多个中间高度，而不是一帧瞬移 3.6m',
+        midCount(ys) >= 5,
+        `中间高度采样 ${midCount(ys)} 个（瞬移写法只会取到 0 个）`);
+      check('掉层过程中没有超过 1.5m 的单帧高度突变',
+        maxStepOf(ys) <= 1.5, `最大单帧变化 ${maxStepOf(ys).toFixed(3)}m`);
+    }
+  }
+
+  // ---- M3-1b-2 ④：真实两层地图上「楼梯必须真的走得上去」 ----
+  //
+  // 这条断言针对一个**实际发生过的缺陷**（试玩反馈："楼梯无法抵达二楼，被地板塞满了"）：
+  // 楼梯井的每一格都被铺了二层楼板。
+  // 那时 A* **仍然会给出一条经过楼梯的路径** —— 分层寻路只看"格可走性 + 落脚高度门槛"，
+  // 而坡格在两层都有落脚面，所以在它眼里楼梯是通的。
+  // 但玩家在坡道上时，身体竖直区间 `[脚底, 脚底+1.8]` 会与楼板 `[3.3,3.6]` 相交，
+  // 被 `resolveCircle` 顶住 —— 于是"路径存在"和"人上得去"是两回事。
+  //
+  // 结论：**只断言路径存在是不够的**，必须断言沿路径前进时几何不会把人挡住。
+  // 显式用 tv_station_01，这样无论当前生效地图是哪张，这条防线都在。
+  {
+    const { createLevel } = await import('../src/level/level.js');
+    const {
+      createLayeredNavGrid: mkG, createAStar: mkA,
+      nodeIndex: ni, nodeFloor: nf, nodeCell: nc,
+    } = await import('../src/core/navgrid.js');
+
+    const lvl = createLevel({ ...config, map: config.maps.tv_station_01 }, { add() {}, remove() {} });
+    const W2 = lvl.W;
+    const H2 = lvl.H;
+    check('电视台地图确实是两层（否则本组断言无从测起）', lvl.nav.floorCount === 2,
+      `floorCount=${lvl.nav.floorCount}`);
+
+    // ★ 楼梯井不得被楼板覆盖 —— 这一条直接、廉价，而且是上面那个缺陷的**充分条件**。
+    //   它比"跑一遍路径"更早、更明确地定位问题（报出是哪一格把楼梯堵了）。
+    {
+      const blockedStairs = [];
+      for (const r of config.maps.tv_station_01.ramps || []) {
+        const alongX = r.dir === '+x' || r.dir === '-x';
+        const along = alongX ? r.w : r.h;
+        const cross = alongX ? r.h : r.w;
+        for (let k = 0; k < along; k++) {
+          const off = r.dir === '+x' || r.dir === '+z' ? k : along - 1 - k;
+          for (let t = 0; t < cross; t++) {
+            const cx = alongX ? r.x + off : r.x + t;
+            const cz = alongX ? r.z + t : r.z + off;
+            // 该格在**上一层**有没有被楼板盖住
+            const covered = (config.maps.tv_station_01.slabs || []).some(
+              (s) =>
+                (s.floor || 0) === (r.floor || 0) + 1 &&
+                cx >= s.x && cx < s.x + s.w && cz >= s.z && cz < s.z + s.h
+            );
+            if (covered) blockedStairs.push(`(${cx},${cz})`);
+          }
+        }
+      }
+      check('楼梯井的每一格都没有被上层楼板盖住（否则人会被楼板顶住、上不去）',
+        blockedStairs.length === 0,
+        blockedStairs.length ? `被盖住的楼梯格：${blockedStairs.join(' ')}` : '全部贯通');
+    }
+
+    const grid = mkG(lvl.nav);
+    const aStar = mkA(grid);
+    const spawn = config.maps.tv_station_01.playerSpawn;
+    const start = ni(0, spawn.z * W2 + spawn.x, W2, H2);
+    const topExtracts = (config.maps.tv_station_01.extracts || []).filter((e) => (e.floor || 0) > 0);
+    check('电视台地图存在二层撤离点（本组断言的对象）', topExtracts.length > 0, `${topExtracts.length} 个`);
+
+    const body = config.player.bodyHeight;
+    const step = config.player.stepHeight;
+    for (const e of topExtracts) {
+      const r = aStar(start, ni(1, e.z * W2 + e.x, W2, H2));
+      const path = Array.from(r.buf.subarray(0, r.len));
+      check(`一层出生点 → 二层「${e.label}」有路径（A* 层面）`, path.length > 0, `len=${path.length}`);
+      if (!path.length) continue;
+
+      // 几何可行性：沿路径**逐采样点**前进，脚底按 surfaceAt 递推，检查没有被 resolveCircle 推开。
+      // 只看格中心会漏掉"两格之间被挡住"的情况，所以相邻格连线上也采样。
+      let prevY = 0;
+      let pushAt = null;
+      let maxRise = 0;
+      for (let k = 0; k < path.length && !pushAt; k++) {
+        const c = nc(path[k], W2, H2);
+        const wx = c % W2;
+        const wz = (c / W2) | 0;
+        const samples = [];
+        if (k === 0) {
+          samples.push([wx + 0.5, wz + 0.5]);
+        } else {
+          const pc = nc(path[k - 1], W2, H2);
+          const px = pc % W2;
+          const pz = (pc / W2) | 0;
+          for (let t = 1; t <= 4; t++) {
+            samples.push([px + 0.5 + ((wx - px) * t) / 4, pz + 0.5 + ((wz - pz) * t) / 4]);
+          }
+        }
+        for (const [sx, sz] of samples) {
+          const X = sx * lvl.cell;
+          const Z = sz * lvl.cell;
+          const feet = lvl.surfaceAt(X, Z, prevY, step);
+          const probe = { x: X, y: feet, z: Z };
+          lvl.resolveCircle(probe, 0.4, feet, body, step);
+          const push = Math.hypot(probe.x - X, probe.z - Z);
+          if (push > 0.05) {
+            pushAt = `格 (${wx},${wz}) 附近 (${sx.toFixed(1)},${sz.toFixed(1)}) 被推开 ${push.toFixed(2)}m`;
+            break;
+          }
+          maxRise = Math.max(maxRise, feet - prevY);
+          prevY = feet;
+        }
+      }
+      check('沿该路径前进时不会被几何挡住（楼梯井必须贯通到顶）',
+        pushAt === null, pushAt || `全程可通行；最大单步爬升 ${maxRise.toFixed(2)}m`);
+      check('该路径确实跨越了两层',
+        path.some((n) => nf(n, W2, H2) === 1),
+        `包含 ${path.filter((n) => nf(n, W2, H2) === 1).length} 个二层节点`);
+    }
+  }
+
+  // ---- M3-1b-2 ④（第二轮）：**楼板压墙** ----
+  //
+  // 几何模型原先不允许"楼板与墙重叠"（一层墙 [0,3.5] 与该格二层楼板 [3.3,3.6] 有体积交叠），
+  // 于是**一层墙格在二层不能有楼板**。后果有两个，都是玩家能直接看到的：
+  //   · 二层地面到处是一格宽的沟；
+  //   · 二层无法有自己的隔墙 —— 一加墙就正好压在一层门洞形成的 1 格宽"桥"上，把二层切断
+  //     （实测二层连通块只剩 43/589）。
+  //
+  // 现在：重叠的两条跨度**合并成一条贯通实体**（kind 取更实心的 WALL），
+  // 而"这一层有没有地板"改由**顶面高度**判定（不看 kind）。
+  // 于是同一格可以"一层是墙、二层是楼面"，二层成为一个完整平面。
+  {
+    const { createLevel } = await import('../src/level/level.js');
+    const { createLayeredNavGrid: mkG3, nodeIndex: ni3 } = await import('../src/core/navgrid.js');
+    const M2 = config.maps.tv_station_01;
+    const lvl = createLevel({ ...config, map: M2 }, { add() {}, remove() {} });
+    const W3 = lvl.W;
+    const CC3 = W3 * lvl.H;
+
+    // 楼梯井 / 电梯井 / 挑空本来就不铺楼板，验证时要避开它们
+    const skip = new Set();
+    for (const r of M2.ramps || []) {
+      const alongX = r.dir === '+x' || r.dir === '-x';
+      const along = alongX ? r.w : r.h;
+      const cross = alongX ? r.h : r.w;
+      for (let k = 0; k < along; k++) {
+        const off = r.dir === '+x' || r.dir === '+z' ? k : along - 1 - k;
+        for (let t = 0; t < cross; t++) {
+          skip.add(`${alongX ? r.x + off : r.x + t},${alongX ? r.z + t : r.z + off}`);
+        }
+      }
+    }
+    const wall1Cells = [];
+    for (const w of M2.walls || []) {
+      if ((w.floor || 0) !== 0) continue;
+      for (let dz = 0; dz < w.h; dz++) {
+        for (let dx = 0; dx < w.w; dx++) {
+          const x = w.x + dx;
+          const z = w.z + dz;
+          if (x < 1 || x > 38 || z < 1 || z > 38) continue;
+          if (skip.has(`${x},${z}`)) continue;
+          wall1Cells.push([x, z]);
+        }
+      }
+    }
+    const probed = wall1Cells[0] || null;
+    check('找得到一个「一层有墙」的格用于验证楼板压墙', !!probed,
+      probed ? `格 (${probed[0]},${probed[1]})，共 ${wall1Cells.length} 个候选` : '没找到');
+
+    if (probed) {
+      const [px, pz] = probed;
+      const n1 = ni3(1, pz * W3 + px, W3, lvl.H);
+      check('★ 楼板压墙生效：一层墙格在**二层**是可走的（不再是一个洞）',
+        lvl.nav.blocked[n1] === 0,
+        `二层 blocked=${lvl.nav.blocked[n1]}，落脚高度 ${lvl.nav.lo[n1].toFixed(2)}m`);
+      check('同一格在**一层**仍然是墙（不可走）',
+        lvl.nav.blocked[ni3(0, pz * W3 + px, W3, lvl.H)] === 1);
+      const top = lvl.surfaceAt((px + 0.5) * lvl.cell, (pz + 0.5) * lvl.cell, 3.6, config.player.stepHeight);
+      check('一层墙顶就是二层的楼面（以二层脚底问 surfaceAt 得到 3.6）',
+        Math.abs(top - 3.6) < 1e-4, `实得 ${top.toFixed(3)}`);
+    }
+
+    const wall2Count = (M2.walls || []).filter((w) => (w.floor || 0) === 1).length;
+    check('二层有自己的隔墙（这与「楼板压墙」是同一件事的两面）', wall2Count > 0,
+      `${wall2Count} 个二层墙体矩形`);
+    let diff = 0;
+    for (let i = 0; i < CC3; i++) {
+      if (lvl.nav.blocked[ni3(0, i, W3, lvl.H)] !== lvl.nav.blocked[ni3(1, i, W3, lvl.H)]) diff++;
+    }
+    check('两层的可行走区域确实不同（不是同一张图叠两遍）', diff > 100,
+      `${diff} 格的阻挡状态不同`);
   }
 }
 

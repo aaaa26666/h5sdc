@@ -175,7 +175,7 @@ export function createWeaponSystem({ cfg, level, player, rng, emit }) {
       // 传入**开火者位置**：AI 挨打后据此知道该往哪还手。
       // 不传的话它只会切个 ALERT、没有最后已知位置，随即掉回巡逻乱跑 ——
       // 这就是"被玩家攻击后不会靠近还击"的直接原因。
-      const res = bestTarget.applyHitFrom(wdef, ammo, bestZone, best, ox, oz);
+      const res = bestTarget.applyHitFrom(wdef, ammo, bestZone, best, ox, oz, oy);
       if (!res) return { kind: 'wall', point, distance: best };
       stats.hits++;
       if (bestZone === 'head') stats.headshots++;

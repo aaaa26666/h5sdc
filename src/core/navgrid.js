@@ -1,5 +1,13 @@
 // 网格导航：A* / 流场 / 视线 + **寻路查询预算调度器**
 //
+// M3-1b-2 ②：网格从"二维格"泛化为**分层节点**（节点 = floor*W*H + cell）。
+//   动机：二层的可走空间不是整个平面，而是被楼板覆盖的那部分 —— 同一个 (x,z)
+//   在一层是地面、在二层可能是悬空。一个二维 blocked 表必然把两层混成一层。
+//   做法：每格每层带一个**落脚高度区间**，格边要求"区间相距 ≤ stepHeight"；
+//   楼梯的坡顶格上连一条跨层边。详见 createLayeredNavGrid 的注释。
+//   单层地图下 floorCount=1、区间恒为 [0,0]、stepHeight 为 0，
+//   所有新判据恒真 —— 与改造前逐条等价。
+//
 // 来源与依据：
 //   A* 与流场沿用 M0-5 验证台已验证的实现（当次实测：A* 单次 0.0184ms、
 //   流场全图重算 0.0718ms、视线单次 93ns）。
@@ -19,8 +27,91 @@ export const DY = [0, 0, 1, -1, 1, -1, 1, -1];
 const OPP = [1, 0, 3, 2, 7, 6, 5, 4];
 const SQRT2 = 1.41421356;
 
+/**
+ * 单层网格：`createLayeredNavGrid` 在 floorCount=1 时的便捷包装。
+ *
+ * 保留它而不是删掉，是因为"单层"是分层模型的一个**真实退化情形**
+ * （节点索引恒等于 cell），而不是历史包袱；测试也用它来证明
+ * 分层实现没有把单层行为改掉。
+ */
 export function createNavGrid(W, H, cell, blocked) {
-  return { W, H, cell, blocked, size: W * H };
+  const n = W * H;
+  return createLayeredNavGrid({
+    W, H, cell,
+    floorCount: 1,
+    stepHeight: 0,
+    blocked,
+    lo: new Float32Array(n),
+    hi: new Float32Array(n),
+    links: null,
+  });
+}
+
+/** 分层节点编号：`floor * W*H + cell`。单层时恒等于 cell。 */
+export function nodeIndex(floor, cell, W, H) {
+  return floor * (W * H) + cell;
+}
+/** 分层节点 -> 层号 */
+export function nodeFloor(node, W, H) {
+  return (node / (W * H)) | 0;
+}
+/** 分层节点 -> 该层的 cell 索引（与 ai.js 的 cellOf 同一套编号） */
+export function nodeCell(node, W, H) {
+  return node % (W * H);
+}
+
+/**
+ * 分层导航网格（M3-1b-2 ②）。
+ *
+ * 与单层网格的唯一结构差别是**节点空间**：
+ *   节点 = floor * W*H + cell（floor = 0 时与旧编号完全相同）
+ * 以及每条格边都要**同时**满足两个条件：
+ *   ① 目标格在该层不是阻挡（墙 / 迈不过去的高掩体 / 上层悬空处）；
+ *   ② 两格的落脚高度区间相距不超过 stepHeight。
+ *
+ * 为什么需要 ②：二层的地面标高是 3.6m。若只看"格可走"，从一层地面
+ * 走进坡顶格（坡面 2.4~3.6m）会被判为合法，而实体的 y 是由
+ * `level.surfaceAt` 从几何推出来的 —— 于是脚底会被**瞬间抬升 2.4m**，
+ * 表现为瞬移/穿模。高度差门槛把这类边直接剪掉，不需要为楼梯写特例。
+ *
+ * 跨层边（楼梯）来自 `links`：只在**坡顶格**上连接相邻两层，代价为 0
+ * （同一格、同一世界坐标，位移为 0；坡长已由同层的坡格序列计入）。
+ * 代价为 0 也让启发式保持可采纳 —— A* 仍然给出最短路径。
+ */
+export function createLayeredNavGrid(spec) {
+  const { W, H, cell, blocked, lo, hi } = spec;
+  const floorCount = spec.floorCount ?? 1;
+  const stepHeight = spec.stepHeight ?? 0;
+  const cellCount = W * H;
+  const size = floorCount * cellCount;
+  if (blocked.length !== size) {
+    throw new Error(`[navgrid] blocked 长度 ${blocked.length} 与 floorCount*W*H ${size} 不符`);
+  }
+  if (lo.length !== size || hi.length !== size) {
+    throw new Error(`[navgrid] 落脚高度区间长度 ${lo.length}/${hi.length} 与节点数 ${size} 不符`);
+  }
+
+  // 跨层边的 CSR（与关卡几何一样用扁平数组，避免对象数组的指针追逐）
+  const links = spec.links || [];
+  const linkStart = new Int32Array(size + 1);
+  const linkTo = new Int32Array(links.length * 2);
+  for (const [a, b] of links) {
+    linkStart[a + 1]++;
+    linkStart[b + 1]++;
+  }
+  for (let i = 0; i < size; i++) linkStart[i + 1] += linkStart[i];
+  {
+    const cursor = Int32Array.from(linkStart.subarray(0, size));
+    for (const [a, b] of links) {
+      linkTo[cursor[a]++] = b;
+      linkTo[cursor[b]++] = a;
+    }
+  }
+
+  return {
+    W, H, cell, floorCount, cellCount, size, stepHeight,
+    blocked, lo, hi, linkStart, linkTo, linkCount: links.length,
+  };
 }
 
 /** 网格 DDA 视线：两点之间是否无遮挡 */
@@ -63,10 +154,17 @@ export function makeLos(grid) {
   };
 }
 
-/** A* 求解器。所有状态用 TypedArray + 世代戳复用，堆预分配，目标是每帧零分配 */
+/**
+ * A* 求解器。所有状态用 TypedArray + 世代戳复用，堆预分配，目标是每帧零分配。
+ *
+ * M3-1b-2 ②：从"二维格"泛化为"分层节点"（节点 = floor*W*H + cell）。
+ * 单层网格下 cellCount == N、所有 lo/hi == 0、stepHeight == 0，
+ * 因此每条新加的判据都恒真 —— 行为与改造前**结构性等价**，不是靠特判维持。
+ */
 export function createAStar(grid) {
-  const { W, H, blocked } = grid;
-  const N = W * H;
+  const { W, H, blocked, lo, hi, stepHeight, linkStart, linkTo } = grid;
+  const cellCount = grid.cellCount ?? W * H;
+  const N = grid.size ?? W * H;
   const gScore = new Float32Array(N);
   const cameFrom = new Int32Array(N);
   const seenGen = new Int32Array(N);
@@ -77,6 +175,15 @@ export function createAStar(grid) {
   const hNode = new Int32Array(CAP);
   const hKey = new Float32Array(CAP);
   let heapSize = 0;
+
+  /**
+   * 两格的落脚高度区间是否接得上（相距不超过 stepHeight）。
+   * 区间相交或相接时差值为负 → 必然通过。
+   * 单层地图里 lo = hi = 0 且 stepHeight = 0，因此恒真。
+   */
+  function stepOk(a, b) {
+    return Math.max(lo[a] - hi[b], lo[b] - hi[a]) <= stepHeight + 1e-6;
+  }
 
   function heapPush(node, key) {
     if (heapSize >= CAP) return;
@@ -119,38 +226,51 @@ export function createAStar(grid) {
   const pathBuf = new Int32Array(N);
 
   /** @returns {{buf:Int32Array, len:number}} len=0 表示无路径 */
-  function findPath(startCell, goalCell) {
-    if (blocked[startCell] || blocked[goalCell]) return { buf: pathBuf, len: 0 };
+  function findPath(startNode, goalNode) {
+    if (blocked[startNode] || blocked[goalNode]) return { buf: pathBuf, len: 0 };
     gen++;
     heapSize = 0;
-    const gx = goalCell % W;
-    const gz = (goalCell / W) | 0;
+    const gFloor = (goalNode / cellCount) | 0;
+    const gCell = goalNode - gFloor * cellCount;
+    const gx = gCell % W;
+    const gz = (gCell / W) | 0;
 
-    seenGen[startCell] = gen;
-    gScore[startCell] = 0;
-    cameFrom[startCell] = -1;
-    heapPush(startCell, 0);
+    seenGen[startNode] = gen;
+    gScore[startNode] = 0;
+    cameFrom[startNode] = -1;
+    heapPush(startNode, 0);
 
     let found = false;
     while (heapSize > 0) {
       const cur = heapPop();
       if (closedGen[cur] === gen) continue;
       closedGen[cur] = gen;
-      if (cur === goalCell) {
+      if (cur === goalNode) {
         found = true;
         break;
       }
-      const cx = cur % W;
-      const cz = (cur / W) | 0;
+      const base = ((cur / cellCount) | 0) * cellCount;
+      const cCell = cur - base;
+      const cx = cCell % W;
+      const cz = (cCell / W) | 0;
       const gc = gScore[cur];
+
+      // 同层 8 邻接
       for (let k = 0; k < 8; k++) {
         const nx = cx + DX[k];
         const nz = cz + DY[k];
         if (nx < 0 || nz < 0 || nx >= W || nz >= H) continue;
-        const ni = nz * W + nx;
+        const ni = base + nz * W + nx;
         if (blocked[ni]) continue;
+        if (!stepOk(cur, ni)) continue;
         const diag = k >= 4;
-        if (diag && (blocked[cz * W + nx] || blocked[nz * W + cx])) continue;
+        if (diag) {
+          const s1 = base + cz * W + nx;
+          const s2 = base + nz * W + cx;
+          if (blocked[s1] || blocked[s2]) continue;
+          // 对角两侧的落脚面也必须接得上，否则会"斜穿"过一段爬不上去的高度差
+          if (!stepOk(cur, s1) || !stepOk(cur, s2)) continue;
+        }
         const ng = gc + (diag ? SQRT2 : 1);
         if (seenGen[ni] !== gen || ng < gScore[ni]) {
           seenGen[ni] = gen;
@@ -158,15 +278,34 @@ export function createAStar(grid) {
           cameFrom[ni] = cur;
           const hx = Math.abs(nx - gx);
           const hz = Math.abs(nz - gz);
-          const hh = hx + hz + (SQRT2 - 2) * Math.min(hx, hz);
-          heapPush(ni, ng + hh);
+          heapPush(ni, ng + hx + hz + (SQRT2 - 2) * Math.min(hx, hz));
+        }
+      }
+
+      // 跨层边（楼梯坡顶）。代价为 0 —— 同一格、同一世界坐标，几何位移为 0；
+      // 也正因为它非负且为 0，水平 octile 距离仍是真实代价的下界（启发式可采纳，
+      // A* 的最优性不变），因此这里不需要给 h 补一个层差项。
+      for (let e = linkStart[cur]; e < linkStart[cur + 1]; e++) {
+        const ni = linkTo[e];
+        if (blocked[ni]) continue;
+        const ng = gc;
+        if (seenGen[ni] !== gen || ng < gScore[ni]) {
+          seenGen[ni] = gen;
+          gScore[ni] = ng;
+          cameFrom[ni] = cur;
+          const nCell = ni - ((ni / cellCount) | 0) * cellCount;
+          const nx = nCell % W;
+          const nz = (nCell / W) | 0;
+          const hx = Math.abs(nx - gx);
+          const hz = Math.abs(nz - gz);
+          heapPush(ni, ng + hx + hz + (SQRT2 - 2) * Math.min(hx, hz));
         }
       }
     }
 
     if (!found) return { buf: pathBuf, len: 0 };
     let len = 0;
-    let c = goalCell;
+    let c = goalNode;
     while (c !== -1 && len < N) {
       pathBuf[len++] = c;
       c = cameFrom[c];
@@ -214,6 +353,9 @@ export function createPathScheduler(findPath, budget) {
   };
 
   function request(agentId, startCell, goalCell) {
+    // startCell / goalCell 实际是**分层节点编号**（floor*W*H + cell）。
+    // 单层地图下它与旧的格索引是同一个数，因此调度器不需要为分层做任何改动：
+    // 它只负责"排队 + 限流"，不关心节点空间长什么样。
     seq++;
     // 同 agent 的旧请求直接丢弃（目标已变，算它没意义）
     if (pending.has(agentId)) {

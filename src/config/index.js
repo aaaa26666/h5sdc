@@ -23,10 +23,33 @@ import tunables from './tunables.json' with { type: 'json' };
 import weaponsTable from './weapons.json' with { type: 'json' };
 import combatTable from './combat.json' with { type: 'json' };
 import aiTable from './ai.json' with { type: 'json' };
-import mapTable from './maps/industrial-01.json' with { type: 'json' };
+import mapTableIndustrial from './maps/industrial-01.json' with { type: 'json' };
+import mapTableTvStation from './maps/tv-station-01.json' with { type: 'json' };
 
 function fail(msg) {
   throw new Error(`[config] ${msg}`);
+}
+
+// ---------------------------------------------------------------------------
+// 地图注册表与"当前生效地图"（M3-1b-2 ④）
+//
+// 从"只有一张地图"改为"可注册多张 + 由 `tunables.level.activeMap` 选择"。
+// 为什么不是直接把 industrial-01 改造成两层：单层地图的几何黄金基准
+// （results/level-golden-industrial_01.json，92012 条采样）需要一个稳定的对照物 ——
+// 它正是"分层改造没有把单层行为改坏"的证据。旧图留着，新图并存，
+// 黄金基准工具用 `--map <id>` 显式指定要验证哪一张。
+// ---------------------------------------------------------------------------
+const MAP_TABLES = {
+  industrial_01: mapTableIndustrial,
+  tv_station_01: mapTableTvStation,
+};
+const activeMapId = tunables.level.activeMap || 'industrial_01';
+const mapTable = MAP_TABLES[activeMapId];
+if (!mapTable) {
+  fail(
+    `tunables.level.activeMap="${activeMapId}" 没有对应的地图表` +
+      `（已注册：${Object.keys(MAP_TABLES).join('、')}）`
+  );
 }
 
 /**
@@ -55,7 +78,17 @@ function assertUnique(rows, key, tableName) {
 
 // ---------------------------------------------------------------------------
 // 地图表 -> 网格（校验与派生共用同一份构建逻辑，避免两处各算一份）
+//
+// M3-1b-2 ④：地图表支持**分层**（floors / slabs / ramps，以及 walls/cover 的
+// floor 字段）。缺省时 floors = [{id:0, baseY:0}] —— 也就是原来的单层地图，
+// 现有表一字不用改（这一点由"单层地图的派生结果不变"这条断言守着）。
+//
+// 这里刻意只做**纯数据**校验：坐标、层号、矩形是否越界、楼板与墙是否重叠。
+// "可走性"属于几何，由 level.js 在构建跨度表时断言 —— 两份代码各管一段，
+// 避免同一个判据在两处各算一份然后慢慢分叉（本项目反复踩过的坑）。
 // ---------------------------------------------------------------------------
+const RAMP_DIRS = ['+x', '-x', '+z', '-z'];
+
 function buildMapGrid(map) {
   const W = map.grid.w;
   const H = map.grid.h;
@@ -63,35 +96,74 @@ function buildMapGrid(map) {
     fail(`地图 ${map.id} 的网格尺寸非法：${W}x${H}`);
   }
 
-  const blocked = new Uint8Array(W * H);
   const idx = (x, z) => z * W + x;
   const inBounds = (x, z) => x >= 0 && z >= 0 && x < W && z < H;
 
-  // 最外圈强制为墙（与既有约定一致：玩家不可能走出地图）
-  for (let x = 0; x < W; x++) { blocked[idx(x, 0)] = 1; blocked[idx(x, H - 1)] = 1; }
-  for (let z = 0; z < H; z++) { blocked[idx(0, z)] = 1; blocked[idx(W - 1, z)] = 1; }
+  // ---- 层 ----
+  const floors = map.floors || [{ id: 0, baseY: 0 }];
+  if (!Array.isArray(floors) || floors.length === 0) fail(`地图 ${map.id} 的 floors 必须是非空数组`);
+  for (let i = 0; i < floors.length; i++) {
+    if (typeof floors[i].baseY !== 'number') fail(`floors[${i}] 缺少数值 baseY`);
+    if (i > 0 && !(floors[i].baseY > floors[i - 1].baseY)) {
+      fail(
+        `floors 的 baseY 必须严格升序（floors[${i}]=${floors[i].baseY} 不大于 ${floors[i - 1].baseY}）`
+      );
+    }
+  }
+  const floorCount = floors.length;
+  const baseYOf = (f) => floors[f || 0].baseY;
+  const wallHeight = map.grid.wallHeight;
+  const slabThickness = map.slabThickness ?? 0.3;
+  if (!(slabThickness > 0)) fail('slabThickness 必须为正');
+
+  const useFloor = (label, f) => {
+    const v = f || 0;
+    if (!Number.isInteger(v) || v < 0 || v >= floorCount) {
+      fail(`${label} 的 floor=${f} 非法（地图共 ${floorCount} 层）`);
+    }
+    return v;
+  };
+
+  const wallCells = Array.from({ length: floorCount }, () => new Set());
+  const coverCells = Array.from({ length: floorCount }, () => new Set());
+  const slabCells = Array.from({ length: floorCount }, () => new Set());
+  const rampCells = Array.from({ length: floorCount }, () => new Set());
+  // 斜坡的**坡顶**格：它同时是上一层地面的一部分（level.js 的分层寻路用的是同一判据）
+  const rampTopCells = Array.from({ length: floorCount }, () => new Set());
+  const coverCmByFloor = Array.from({ length: floorCount }, () => new Uint16Array(W * H));
+
+  // 最外圈强制为墙（每层都有，与既有约定一致：玩家不可能走出地图）
+  for (let f = 0; f < floorCount; f++) {
+    for (let x = 0; x < W; x++) {
+      wallCells[f].add(idx(x, 0));
+      wallCells[f].add(idx(x, H - 1));
+    }
+    for (let z = 0; z < H; z++) {
+      wallCells[f].add(idx(0, z));
+      wallCells[f].add(idx(W - 1, z));
+    }
+  }
 
   assertUnique(map.walls, 'id', `map(${map.id}).walls`);
-  const wallCells = new Set();
   for (const b of map.walls) {
+    const f = useFloor(`墙体 ${b.id}`, b.floor);
     if (!(b.w > 0 && b.h > 0)) fail(`墙体 ${b.id} 的尺寸非法`);
     for (let dz = 0; dz < b.h; dz++) {
       for (let dx = 0; dx < b.w; dx++) {
         const x = b.x + dx;
         const z = b.z + dz;
         if (!inBounds(x, z)) fail(`墙体 ${b.id} 越界到 (${x},${z})，网格为 ${W}x${H}`);
-        blocked[idx(x, z)] = 1;
-        wallCells.add(idx(x, z));
+        wallCells[f].add(idx(x, z));
       }
     }
   }
 
-  // 掩体：高度取自 tunables.level.cover（共享规格），本表只给位置与类型
+  // 掩体：高度取自 tunables.level.cover（共享规格），本表只给位置、类型与层
   const coverSpec = tunables.level.cover;
   if (!coverSpec) fail('缺少 tunables.level.cover（掩体高度规格）');
-  const coverCm = new Uint8Array(W * H);
   const coverList = [];
   for (const c of map.cover || []) {
+    const f = useFloor('掩体', c.floor);
     const h = c.type === 'tall' ? coverSpec.tallHeight : coverSpec.lowHeight;
     if (typeof h !== 'number' || !(h > 0)) fail(`掩体类型 ${c.type} 未在 tunables.level.cover 中定义高度`);
     for (let dz = 0; dz < c.h; dz++) {
@@ -99,14 +171,79 @@ function buildMapGrid(map) {
         const x = c.x + dx;
         const z = c.z + dz;
         if (!inBounds(x, z)) fail(`掩体 (${x},${z}) 越界`);
-        if (wallCells.has(idx(x, z))) fail(`掩体 (${x},${z}) 与墙体重叠 —— 掩体不该埋进墙里`);
-        coverCm[idx(x, z)] = Math.round(h * 100);
-        coverList.push({ cell: x, z, height: h, type: c.type });
+        if (wallCells[f].has(idx(x, z))) {
+          fail(`第 ${f} 层的掩体 (${x},${z}) 与墙体重叠 —— 掩体不该埋进墙里`);
+        }
+        coverCells[f].add(idx(x, z));
+        coverCmByFloor[f][idx(x, z)] = Math.round((baseYOf(f) + h) * 100);
+        coverList.push({ cell: x, z, height: h, type: c.type, floor: f });
       }
     }
   }
 
-  return { W, H, blocked, coverCm, coverList, wallCells, idx, inBounds };
+  // 楼板（第 f 层的地面）
+  for (const s of map.slabs || []) {
+    const f = useFloor('楼板', s.floor);
+    if (f === 0) fail('楼板不能放在第 0 层 —— 地面本来就存在，不需要铺');
+    if (!(s.w > 0 && s.h > 0)) fail(`楼板 (${s.x},${s.z}) 的尺寸非法`);
+    for (let dz = 0; dz < s.h; dz++) {
+      for (let dx = 0; dx < s.w; dx++) {
+        const x = s.x + dx;
+        const z = s.z + dz;
+        if (!inBounds(x, z)) fail(`楼板 (${x},${z}) 越界`);
+        slabCells[f].add(idx(x, z));
+      }
+    }
+  }
+
+  // 楼梯
+  for (const r of map.ramps || []) {
+    const f = useFloor('楼梯', r.floor);
+    if (f + 1 >= floorCount) fail(`楼梯 (${r.x},${r.z}) 在第 ${f} 层，但没有上一层可去`);
+    if (!RAMP_DIRS.includes(r.dir)) {
+      fail(`楼梯 (${r.x},${r.z}) 的 dir="${r.dir}" 非法（应为 +x/-x/+z/-z）`);
+    }
+    const alongX = r.dir === '+x' || r.dir === '-x';
+    const along = alongX ? r.w : r.h;
+    if (!(along >= 1)) fail(`楼梯 (${r.x},${r.z}) 沿 ${r.dir} 方向长度为 0`);
+    for (let k = 0; k < along; k++) {
+      const off = r.dir === '+x' || r.dir === '+z' ? k : along - 1 - k;
+      const x = alongX ? r.x + off : r.x;
+      const z = alongX ? r.z : r.z + off;
+      if (!inBounds(x, z)) fail(`楼梯 (${r.x},${r.z}) 越界到 (${x},${z})`);
+      rampCells[f].add(idx(x, z));
+      if (k === along - 1) rampTopCells[f + 1].add(idx(x, z));
+    }
+  }
+
+  // ★ M3-1b-2 ④（第二轮）："楼板压墙"从**报错**改为**允许**。
+  //
+  // 原判据是"第 f 层楼板与第 g 层墙不得重叠"。它在几何上确实重叠
+  //（一层墙 [0,3.5] 与该格二层楼板 [3.3,3.6]），但由此推出的结论是错的：
+  // 我原本据此让**一层墙格在二层不铺楼板**，结果二层地面到处是一格宽的沟，
+  // 二层也没法有自己的隔墙（一加墙就正好压在那些 1 格宽的"桥"上，把二层切断）。
+  //
+  // 正确做法是让几何模型接受它：重叠的两条跨度合并成一条贯通实体
+  //（[0,3.6]，kind 取更实心的 WALL），而"这一层有没有地板"改由**顶面高度**判定。
+  // 这样一层墙顶照样是二层的楼面，二层是一个完整平面，两层可以各有一套隔墙。
+  // 合并与判定的实现见 src/level/level.js 的跨度合并与 nav 构建。
+
+  // 兼容视图：第 0 层的 blocked / coverCm。下游（loot / extract / main）读的是它，
+  // 单层地图下这两个数组与改造前逐字节相同。
+  const blocked = new Uint8Array(W * H);
+  const coverCm = new Uint16Array(W * H);
+  for (const i of wallCells[0]) blocked[i] = 1;
+  coverCm.set(coverCmByFloor[0]);
+
+  return {
+    W, H, blocked, coverCm, coverList, wallCells: wallCells[0], idx, inBounds,
+    floors, floorCount, baseYOf, slabThickness,
+    wallCellsByFloor: wallCells,
+    coverCellsByFloor: coverCells,
+    slabCellsByFloor: slabCells,
+    rampCellsByFloor: rampCells,
+    rampTopCellsByFloor: rampTopCells,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -117,40 +254,84 @@ function buildMapGrid(map) {
 // 让它在启动时带着坐标报错，比事后从现象倒推便宜得多。
 // ---------------------------------------------------------------------------
 function validateMap(map, grid) {
-  const { W, H, blocked, coverCm, idx, inBounds } = grid;
+  const { W, H, idx, inBounds } = grid;
 
-  const mustBeClear = (label, x, z) => {
+  /**
+   * 某位置在该层能不能放东西（出生点 / 容器 / 撤离点）。
+   *
+   * M3-1b-2 ④ 加了 floor 参数。第 0 层以外**还必须有落脚面**
+   * （楼板或楼梯坡顶格）—— 否则那个容器会悬在半空，玩家走过去直接掉下去。
+   * 这一条是手写两层坐标时最容易犯、也最难从现象倒推的错误。
+   */
+  const mustBeClear = (label, x, z, floor) => {
+    const f = floor || 0;
     if (!inBounds(x, z)) fail(`${label} (${x},${z}) 越界，网格 ${W}x${H}`);
-    if (blocked[idx(x, z)]) fail(`${label} (${x},${z}) 落在墙体里`);
-    if (coverCm[idx(x, z)] > 0) fail(`${label} (${x},${z}) 落在掩体里 —— 会让玩家/容器卡住`);
+    if (grid.wallCellsByFloor[f].has(idx(x, z))) fail(`${label} (${x},${z}) 在第 ${f} 层落在墙体里`);
+    if (grid.coverCellsByFloor[f].has(idx(x, z))) {
+      fail(`${label} (${x},${z}) 在第 ${f} 层落在掩体里 —— 会让玩家/容器卡住`);
+    }
+    if (
+      f > 0 &&
+      !grid.slabCellsByFloor[f].has(idx(x, z)) &&
+      !grid.rampTopCellsByFloor[f].has(idx(x, z))
+    ) {
+      fail(`${label} (${x},${z}) 在第 ${f} 层是**悬空**的（该格既没有楼板，也不是楼梯坡顶）`);
+    }
   };
 
-  mustBeClear('地图 playerSpawn', map.playerSpawn.x, map.playerSpawn.z);
+  mustBeClear('地图 playerSpawn', map.playerSpawn.x, map.playerSpawn.z, map.playerSpawn.floor);
 
-  const zoneAt = (x, z) =>
-    (map.zones || []).find((zn) => x >= zn.x && x < zn.x + zn.w && z >= zn.z && z < zn.z + zn.h) || null;
+  // 分区：M3-1b-2 ④ 起带 floor（缺省 0）。两层地图里不同层的分区必须用不同 id，
+  // 否则 aiSpawns 的引用分不清是哪一层。
+  const zoneAt = (x, z, f) =>
+    (map.zones || []).find(
+      (zn) =>
+        (zn.floor || 0) === (f || 0) &&
+        x >= zn.x &&
+        x < zn.x + zn.w &&
+        z >= zn.z &&
+        z < zn.z + zn.h
+    ) || null;
 
   assertUnique(map.zones, 'id', `map(${map.id}).zones`);
   assertUnique(map.extracts, 'id', `map(${map.id}).extracts`);
-  if (!zoneAt(map.playerSpawn.x, map.playerSpawn.z)) fail('地图 playerSpawn 不在任何分区内');
+  const spawnFloor = map.playerSpawn.floor || 0;
+  if (!zoneAt(map.playerSpawn.x, map.playerSpawn.z, spawnFloor)) {
+    fail(
+      `地图 playerSpawn (${map.playerSpawn.x},${map.playerSpawn.z}) ` +
+        `不在第 ${spawnFloor} 层的任何分区内`
+    );
+  }
 
   for (const e of map.extracts) {
-    mustBeClear(`撤离点 ${e.id}`, e.x, e.z);
+    mustBeClear(`撤离点 ${e.id}`, e.x, e.z, e.floor);
     if (!(e.radiusCells > 0)) fail(`撤离点 ${e.id} 的 radiusCells 必须为正`);
   }
   const extractCount = map.extracts.length;
   if (extractCount < 2 || extractCount > 4) fail(`撤离点必须为 2~4 个（§2.4），当前 ${extractCount} 个`);
   if (!map.extracts.some((e) => e.conditional)) fail('§2.4 要求区分常驻点与条件点，但没有任何条件点');
 
-  // 容器：只校验**位置合法性**（不落墙里/掩体里/出界、且在分区内）。
+  // M3-1b-2 ④：撤离点必须**分布在不止一层**。
+  // 否则二层只有风险没有回报出口，玩家上二层就只剩"下去一条路"——
+  // 那正是方案 §10.6 要求"至少一个撤离点在二层"的原因。
+  if (grid.floorCount > 1) {
+    const extractFloors = new Set(map.extracts.map((e) => e.floor || 0));
+    if (extractFloors.size < 2) {
+      fail(`两层地图的撤离点必须分布在不止一层（当前只有第 ${[...extractFloors].join('/')} 层）`);
+    }
+  }
+
+  // 容器：只校验**位置合法性**（不落墙里/掩体里/出界、不悬空、且在分区内）。
   //
   // 「容器数量是否符合策划预算」刻意**不在这里查** —— 运行时不关心策划想要几个箱子，
   // 它只按地图表摆。那条属性属于**内容审核**，由 tools/render-map.mjs 拿地图表与
   // 掉落权重表对照检查（它已经在做）。在这里再存一份预算常量会变成第三处真值，
   // 而"同一份数据存在多处"正是本项目反复踩过的坑。
   for (const c of map.containers) {
-    mustBeClear(`容器 ${c.type}`, c.x, c.z);
-    if (!zoneAt(c.x, c.z)) fail(`容器 ${c.type} (${c.x},${c.z}) 不在任何分区内`);
+    mustBeClear(`容器 ${c.type}`, c.x, c.z, c.floor);
+    if (!zoneAt(c.x, c.z, c.floor || 0)) {
+      fail(`容器 ${c.type} (${c.x},${c.z}) 不在第 ${c.floor || 0} 层的任何分区内`);
+    }
   }
   if (!map.containers.length) fail('地图没有任何容器');
 
@@ -296,6 +477,12 @@ const CELL = mapTable.grid.cell;
 
 export const map = mapTable;
 
+/** 全部已注册的地图表（供黄金基准等工具按 id 取用，而不是只能拿到当前生效的那张） */
+export const maps = MAP_TABLES;
+
+/** 当前生效地图的 id（供报告与工具标注来源） */
+export const activeMap = activeMapId;
+
 /** 地图派生：把格坐标换算成运行时需要的形状 */
 const derivedExtractZones = mapTable.extracts.map((e) => ({
   id: e.id,
@@ -308,6 +495,8 @@ const derivedExtractZones = mapTable.extracts.map((e) => ({
 export const config = {
   ...tunables,
   map: mapTable,
+  /** 已注册的全部地图表。测试与工具需要"显式指定某一张图"（例如单层对照）时用它 */
+  maps: MAP_TABLES,
   weapons: weaponsTable.weapons,
   ammo: weaponsTable.ammo,
   startLoadout: weaponsTable.startLoadout,
