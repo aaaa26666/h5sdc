@@ -19,9 +19,29 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = REPO_ROOT;
 // 允许指定路径：这样可以测试"解压出来的那一份"，而不是只测构建目录里的原件
 const pathArg = process.argv.slice(2).find((a) => !a.startsWith('--'));
-const GAME = pathArg
-  ? path.resolve(pathArg)
-  : path.join(ROOT, 'release', '搜打撤PVE-M2-免安装', 'game.html');
+
+/**
+ * 缺省目标：release/ 下**任何一个**已构建的包里去找 game.html。
+ *
+ * 原先这里写死了包名（`搜打撤PVE-M2-免安装`），于是包名一升级（M2 → M3）
+ * 这个自检就静默地指向一个不存在的路径 —— 它不会报"配置过期"，
+ * 只会报"文件找不到"，看起来像打包坏了。改成自动发现，包名再变也不用动这里。
+ */
+function findDefaultGame() {
+  const rel = path.join(ROOT, 'release');
+  try {
+    for (const d of fs.readdirSync(rel, { withFileTypes: true })) {
+      if (!d.isDirectory()) continue;
+      const p = path.join(rel, d.name, 'game.html');
+      if (fs.existsSync(p)) return p;
+    }
+  } catch {
+    /* release/ 不存在时走下面的兜底 */
+  }
+  return path.join(rel, 'game.html');
+}
+
+const GAME = pathArg ? path.resolve(pathArg) : findDefaultGame();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
