@@ -22,7 +22,7 @@ const ROOT = path.resolve(HERE, '..');
 const argv = process.argv.slice(2);
 const optVal = (f, d) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : d);
 const TABLE = argv.includes('--table') ? path.resolve(optVal('--table', '')) : null;
-const LOOT_TABLE = path.join(ROOT, 'docs', '07-loot-tables.json');
+const LOOT_TABLE = path.join(ROOT, 'src', 'config', 'loot.json');
 
 // M3-1b-2 ④：地图不止一张、而且有两层了。
 //   · 缺省读**当前生效的那张地图**（与运行时同一份数据，不会出现"评审看到的图与实现不符"）
@@ -42,7 +42,9 @@ const M = {
   containers: (M0.containers || []).filter((c) => (c.floor || 0) === FLOOR),
   extracts: (M0.extracts || []).filter((e) => (e.floor || 0) === FLOOR),
   zones: (M0.zones || []).filter((z) => (z.floor || 0) === FLOOR),
-  routes: FLOOR === 0 ? M0.routes || [] : [],
+  // 动线按层过滤。原先写死成"只有第 0 层有动线"，两层图的二层动线因此被静默丢弃 ——
+  // 与容器/撤离点丢 floor 是同一类错误，只是发生在工具侧。
+  routes: (M0.routes || []).filter((r) => (r.floor || 0) === FLOOR),
 };
 const { w: W, h: H, cell } = M.grid;
 
@@ -337,7 +339,13 @@ console.log('\n—— 动线统计 ——');
         }
         if (!cover) openCells++;
         const zn = zoneAt(x, z);
-        if (zn && zn.role === 'resource') zonesHit.add(zn.id);
+        // 分区角色在两张图里命名不一致：industrial 用 'resource'，tv-station 用 'loot'。
+        // 只认其中一个会让"顺路分区"恒为 0 —— 那样帕累托支配检查就退化成
+        // "只看长度和暴露段"，而**顺路能搜到多少恰恰是"绕远"的唯一理由**。
+        // 这个失效是静默的：检查仍然打印、仍然 PASS，只是不再表达它该表达的东西。
+        // [M3-TEMP-8] 兼容只是止血：两张地图表的分区角色命名应当统一，
+        // 否则下一个读这张表的工具还会踩同一个坑。
+        if (zn && (zn.role === 'resource' || zn.role === 'loot')) zonesHit.add(zn.id);
       }
     }
     return {

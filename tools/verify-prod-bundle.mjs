@@ -44,6 +44,11 @@ const FORBIDDEN = [
   'killOneAi',
   'teleportToSafeSpot',
   'setTimeLimitMs',
+  // M3 新增的调试接口（M3-BUG-01 的回归夹具依赖 teleportToContainer 的 floor 参数，
+  // 以及快照里的 embedded 判据 —— 它们同样必须只存在于开发构建）
+  'teleportToContainer',
+  'teleportToExtract',
+  'debugContainerList',
 ];
 
 console.log('\n================ 生产产物校验（调试接口必须已被剔除）================\n');

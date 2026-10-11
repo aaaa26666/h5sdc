@@ -11,7 +11,7 @@
 // M3-1 增补：地图由**地图表**驱动（此前是种子随机生成）。
 //   地图表是尺寸/出生点/墙体/掩体/容器/撤离点/AI 配额的唯一来源，
 //   本文件把它**派生成既有字段**（level.playerSpawnCell / extract.zones /
-//   loot.containerCells），这样下游模块（player / extract / loot / main）零改动。
+//   loot.containers），这样下游模块（player / extract / loot / main）零改动。
 //   派生而不是复制，是为了避免同一份数据存在两处、然后慢慢分叉。
 
 // 注意：这里显式使用 import attributes（with { type: 'json' }）。
@@ -25,6 +25,12 @@ import combatTable from './combat.json' with { type: 'json' };
 import aiTable from './ai.json' with { type: 'json' };
 import mapTableIndustrial from './maps/industrial-01.json' with { type: 'json' };
 import mapTableTvStation from './maps/tv-station-01.json' with { type: 'json' };
+// M3-3 ~ M3-6 的运行时真值。此前它放在 docs/07-loot-tables.json，
+// 只有 tools 读得到，src 里根本没有引用 —— 于是"89 个容器共用一套权重"。
+// 与地图表的处理一致：迁入 src/config 作为**唯一真值**，docs 下的旧副本删除，
+// 避免两份数据各自演化（地图表当年就是这么迁的）。
+import lootTable from './loot.json' with { type: 'json' };
+import { OPEN_RULE, resolveMs } from '../core/extractRules.js';
 
 function fail(msg) {
   throw new Error(`[config] ${msg}`);
@@ -253,6 +259,114 @@ function buildMapGrid(map) {
 // 在运行时的表现是"玩家卡住""容器搜不到""AI 刷在墙里"这类难查的现象。
 // 让它在启动时带着坐标报错，比事后从现象倒推便宜得多。
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// M4-1 撤离点开放规则的结构校验
+//
+// 为什么在**启动期**校验而不是等玩家跑到撤离点才发现：
+//   规则写错（类型拼错、只给了 from 没给 to、窗口 to <= from）的运行时表现
+//   是"这个点怎么都开不了"或"这个点永远开着"，现场很难反推是哪张表哪一行写错了。
+//   启动即报错可以直接指出是哪个撤离点的哪个字段。
+//
+// 另一条重要的是**一致性**：地图表原本有 `conditional: true/false` 这个标记，
+// 而 M4-1 引入了 openRule。两者表达同一件事却可能各说各话 ——
+// 那正是本项目反复踩过的"两份真值分叉"。因此这里强制二者一致。
+// ---------------------------------------------------------------------------
+function validateOpenRule(e) {
+  const r = e.openRule;
+  const tag = `撤离点 ${e.id} 的 openRule`;
+  const type = r && r.type ? r.type : OPEN_RULE.ALWAYS;
+  const isConditional = type !== OPEN_RULE.ALWAYS;
+
+  if (!!e.conditional !== isConditional) {
+    fail(
+      `${tag} 与 conditional 标记不一致：` +
+        `规则类型是 ${type}（= ${isConditional ? '条件点' : '常驻点'}），但 conditional=${!!e.conditional}`
+    );
+  }
+  if (type === OPEN_RULE.ALWAYS) return;
+
+  const legal = Object.values(OPEN_RULE);
+  if (!legal.includes(type)) {
+    fail(`${tag} 的类型 "${r.type}" 不是合法规则（可用：${legal.join(' / ')}）`);
+  }
+
+  const hasPair = (ms, fr) => (typeof ms === 'number' && ms >= 0) || (typeof fr === 'number' && fr >= 0);
+  const checkFrac = (fr, name) => {
+    if (typeof fr !== 'number') return;
+    if (fr < 0 || fr > 1) fail(`${tag}.${name} = ${fr} 超出 [0, 1]（它是相对单局时限的比例）`);
+  };
+
+  if (type === OPEN_RULE.TIME_AFTER) {
+    if (!hasPair(r.afterMs, r.afterFraction)) {
+      fail(`${tag}（timeAfter）必须给出 afterMs 或 afterFraction，否则门槛是 0 —— 等于常驻点`);
+    }
+    checkFrac(r.afterFraction, 'afterFraction');
+    return;
+  }
+
+  if (type === OPEN_RULE.KILLS_AFTER) {
+    if (typeof r.kills !== 'number' || !Number.isInteger(r.kills) || !(r.kills > 0)) {
+      fail(`${tag}（killsAfter）的 kills 必须是正整数，当前 ${r.kills}`);
+    }
+    return;
+  }
+
+  // timeWindow
+  if (!hasPair(r.fromMs, r.fromFraction)) fail(`${tag}（timeWindow）必须给出 fromMs 或 fromFraction`);
+  if (!hasPair(r.toMs, r.toFraction)) fail(`${tag}（timeWindow）必须给出 toMs 或 toFraction`);
+  checkFrac(r.fromFraction, 'fromFraction');
+  checkFrac(r.toFraction, 'toFraction');
+
+  const limit = tunables.raid ? tunables.raid.timeLimitMs : 0;
+  const from = resolveMs(r.fromMs, r.fromFraction, limit);
+  const to = resolveMs(r.toMs, r.toFraction, limit);
+  if (from !== null && to !== null && !(to > from)) {
+    fail(`${tag}（timeWindow）的窗口无效：from=${from}ms 必须小于 to=${to}ms`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// M4-2 撤离倒计时中断规则的校验
+//
+// 与撤离点开放规则同理：这些数值决定"中断会不会发生、中断后还剩多少"，
+// 写错了的运行时表现是"撤离永远重置"或"永远重置不了"，很难反推。
+// 而且它们必须**显式存在** —— 缺失时不能悄悄退化成"永不中断"，
+// 那等于用一个默认值替策划做了决定。
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// M4-5 单局时限与超时告警阈值
+//
+// 告警阈值此前写死在 hud.js（30000），是典型的魔法数字 ——
+// 改它必须改代码，而它明明是个策划数值。搬到表之后仍要校验，
+// 免得填出一个"比单局时限还长"的阈值（那样告警永远不触发，且没人会发现）。
+// ---------------------------------------------------------------------------
+function validateRaidTiming() {
+  const raid = tunables.raid || {};
+  if (!(raid.timeLimitMs > 0)) fail(`tunables.raid.timeLimitMs 必须为正，当前 ${raid.timeLimitMs}`);
+  if (typeof raid.warningThresholdMs !== 'number' || raid.warningThresholdMs < 0) {
+    fail(`tunables.raid.warningThresholdMs 必须为非负数字，当前 ${raid.warningThresholdMs}`);
+  }
+  if (raid.warningThresholdMs > raid.timeLimitMs) {
+    fail(
+      `超时告警阈值 ${raid.warningThresholdMs}ms 超过单局时限 ${raid.timeLimitMs}ms ` +
+        '—— 那样告警永远不会触发'
+    );
+  }
+}
+
+function validateExtractInterrupt() {
+  const ex = tunables.extract || {};
+  if (!(ex.countdownMs > 0)) fail(`tunables.extract.countdownMs 必须为正，当前 ${ex.countdownMs}`);
+  const it = ex.interrupt;
+  if (!it) fail('tunables.extract.interrupt 缺失：撤离倒计时的中断规则必须有显式配置（M4-2）');
+  if (typeof it.leaveGraceMs !== 'number' || it.leaveGraceMs < 0) {
+    fail(`tunables.extract.interrupt.leaveGraceMs 必须为非负数字，当前 ${it.leaveGraceMs}`);
+  }
+  if (typeof it.keepFraction !== 'number' || it.keepFraction < 0 || it.keepFraction > 1) {
+    fail(`tunables.extract.interrupt.keepFraction 必须落在 [0, 1]，当前 ${it.keepFraction}`);
+  }
+}
+
 function validateMap(map, grid) {
   const { W, H, idx, inBounds } = grid;
 
@@ -306,6 +420,7 @@ function validateMap(map, grid) {
   for (const e of map.extracts) {
     mustBeClear(`撤离点 ${e.id}`, e.x, e.z, e.floor);
     if (!(e.radiusCells > 0)) fail(`撤离点 ${e.id} 的 radiusCells 必须为正`);
+    validateOpenRule(e);
   }
   const extractCount = map.extracts.length;
   if (extractCount < 2 || extractCount > 4) fail(`撤离点必须为 2~4 个（§2.4），当前 ${extractCount} 个`);
@@ -461,6 +576,8 @@ function validate() {
   // 地图表：构建网格 + 校验 + 派生
   const grid = buildMapGrid(mapTable);
   validateMap(mapTable, grid);
+  validateExtractInterrupt();
+  validateRaidTiming();
 }
 
 validate();
@@ -469,7 +586,7 @@ validate();
 // 地图表的派生视图
 //
 // 下游模块（player / extract / loot / aiManager / main）原本读的是 tunables 里的
-// level.playerSpawnCell / extract.zones / loot.containerCells。这些字段现在由地图表
+// level.playerSpawnCell / extract.zones / loot.containers。这些字段现在由地图表
 // 派生出来，因此**下游一行都不用改**，而数据的唯一来源变成了地图表。
 // ---------------------------------------------------------------------------
 const mapGrid = buildMapGrid(mapTable);
@@ -488,8 +605,15 @@ const derivedExtractZones = mapTable.extracts.map((e) => ({
   id: e.id,
   label: e.label,
   cell: [e.x, e.z],
+  // floor 必须带上：两层图的撤离点分布在不止一层（tv_station_01 的 e2_roof 在二层），
+  // 丢掉它之后判定只剩水平距离，站在一层同一 xz 就能触发二层的撤离点。
+  // 单层图（industrial_01）的撤离点没有 floor 字段，缺省 0 不改变既有行为。
+  floor: e.floor || 0,
   radius: e.radiusCells * CELL,
   conditional: !!e.conditional,
+  // M4-1：开放规则随撤离点一起派生。它决定了"这个点什么时候能用"，
+  // 与位置、层号一样属于地图表的真值，不能由代码另外猜一份。
+  openRule: e.openRule || null,
 }));
 
 export const config = {
@@ -497,6 +621,8 @@ export const config = {
   map: mapTable,
   /** 已注册的全部地图表。测试与工具需要"显式指定某一张图"（例如单层对照）时用它 */
   maps: MAP_TABLES,
+  /** 掉落表（M3-3/4/5/6 的唯一真值：容器分级、稀有度、物品池、背包、安全箱） */
+  lootTable,
   weapons: weaponsTable.weapons,
   ammo: weaponsTable.ammo,
   startLoadout: weaponsTable.startLoadout,
@@ -530,7 +656,18 @@ export const config = {
   },
   loot: {
     ...tunables.loot,
-    containerCells: mapTable.containers.map((c) => [c.x, c.z]),
+    // 形状从 [x, z] 改为对象，因为两个字段丢不得：
+    //   floor —— 容器落在不同标高上。M3-1b-2 ④ 只映射 [x,z]，结果二层 44 个容器
+    //            被摆到了一层高度，且判定不分层，站在一层能隔层搜二层的箱子。
+    //   type  —— 民用/军用/保险箱/钥匙房。掉落分级按它取池（M3-4 接入 07 掉落表时用）。
+    //            此前 89 个容器共用 tunables.loot.items 一套权重，价值梯度完全不存在。
+    // 单层图（industrial_01）的容器没有 floor 字段，缺省 0 不改变既有行为。
+    containers: mapTable.containers.map((c) => ({
+      x: c.x,
+      z: c.z,
+      floor: c.floor || 0,
+      type: c.type,
+    })),
   },
   /** 掩体的实际格子（校验后的结果，含高度与类型） */
   coverList: mapGrid.coverList,

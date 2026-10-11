@@ -18,6 +18,7 @@
 // 需要人眼旁观时加 --headed。
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { launchBrowser, describeMode, ROOT as REPO_ROOT } from './lib/browser.mjs';
 
@@ -26,6 +27,97 @@ const ROOT = REPO_ROOT;
 const URL_BASE = process.argv.find((a) => a.startsWith('http')) || 'http://127.0.0.1:5180/';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------------------------------------------------------------------------
+// 端口自管：校验 -> 关闭残留 -> 重新拉起
+//
+// 为什么必须有这一段：vite 在端口被占时**静默换端口**（5180 被占就跑 5181），
+// 而本文件默认连 5180 —— 于是会连到上一次没退干净的旧实例：
+//   · 旧实例可能是改代码之前的版本，测的是旧行为；
+//   · 更糟的是它会表现为"Waiting failed: 20000ms exceeded"，看起来像代码回归。
+// 这个坑在 M4-5 / M4-6 期间踩了三次，每次都要手动 netstat 排查。
+// 现在改成：目标端口被谁占了就关掉谁，然后拉起一个**确知版本**的实例。
+// ---------------------------------------------------------------------------
+const TARGET_PORT = Number(new URL(URL_BASE).port || 80);
+const KEEP_SERVER = process.argv.includes('--keep-server');
+
+/** 跑一条命令并取回 stdout（用 spawn 而不是 spawnSync —— 后者在本沙箱会 EBUSY） */
+function run(cmd, args) {
+  return new Promise((resolve) => {
+    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    let out = '';
+    p.stdout.on('data', (d) => {
+      out += d;
+    });
+    p.stderr.on('data', () => {});
+    p.on('error', () => resolve(out));
+    p.on('close', () => resolve(out));
+  });
+}
+
+/** 找出占用目标端口且处于 LISTENING 的进程 PID 列表 */
+async function pidsOnPort(port) {
+  const out = await run('netstat', ['-ano', '-p', 'TCP']);
+  const pids = new Set();
+  for (const line of out.split(/\r?\n/)) {
+    if (!/LISTENING/i.test(line)) continue;
+    // 形如： TCP    127.0.0.1:5180    0.0.0.0:0    LISTENING    12345
+    const m = line.match(/[:\.](\d+)\s+\S+\s+LISTENING\s+(\d+)/i);
+    if (!m) continue;
+    if (Number(m[1]) === port) pids.add(Number(m[2]));
+  }
+  return [...pids];
+}
+
+async function killPidTree(pid) {
+  await run('taskkill', ['/PID', String(pid), '/T', '/F']);
+}
+
+async function isServing(port) {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1500) });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 保证目标端口上跑着**本次拉起**的 dev server。
+ * @returns {Promise<object|null>} 拉起的子进程（结束时据此关闭；外部已提供时可能为 null）
+ */
+async function ensureServer(port) {
+  const occupants = await pidsOnPort(port);
+  if (occupants.length) {
+    console.log(
+      `  端口 ${port} 被占用（PID ${occupants.join(', ')}）—— ` +
+        '这通常是上一次没退干净的 dev server，会让测试连到旧版本。正在关闭并重新拉起…'
+    );
+    for (const pid of occupants) await killPidTree(pid);
+    await sleep(1200); // 等端口真正释放，否则新实例又会静默换端口
+  }
+
+  const viteBin = path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js');
+  const child = spawn(process.execPath, [viteBin, '--port', String(port), '--host', '127.0.0.1'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  // 子进程的输出必须被消费，否则管道写满会把它卡住
+  child.stdout.on('data', () => {});
+  child.stderr.on('data', () => {});
+
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    if (await isServing(port)) {
+      console.log(`  dev server 已就绪：http://127.0.0.1:${port}/ （PID ${child.pid}）`);
+      return child;
+    }
+    await sleep(300);
+  }
+  throw new Error(`dev server 在 30 秒内没有起来（端口 ${port}）`);
+}
+
+const serverChild = await ensureServer(TARGET_PORT);
 
 const results = [];
 let currentGroup = '';
@@ -60,6 +152,9 @@ browser.on('disconnected', () => lifecycle.push('browser.disconnected'));
 
 const snap = () => page.evaluate(() => window.__m2.snapshot());
 const call = (fn, ...args) => page.evaluate((f, a) => window.__m2[f](...a), fn, args);
+/** 快照里没有撤离点 id，按世界坐标定位（容差 1.5m，格边长 2.5m） */
+const byPos = (list, x, z, tol = 1.5) =>
+  (list || []).find((e) => Math.abs(e.x - x) < tol && Math.abs(e.z - z) < tol) || null;
 
 const pauseRecoveries = [];
 async function ensureRunning(tag) {
@@ -120,6 +215,36 @@ try {
     check('初始位置不在墙内', s.player.cellBlocked === false);
     const locked = await page.evaluate(() => document.pointerLockElement !== null);
     check('指针锁定生效', locked === true);
+
+    // M4-6：小地图。它由 Canvas 绘制，纯逻辑单测覆盖不到渲染，
+    // 所以在这里验证画布确实按配置尺寸建立、且标注了当前层。
+    const mm = await page.evaluate(() => {
+      const c = document.getElementById('minimap');
+      const label = document.getElementById('minimapLabel');
+      const q = document.getElementById('questText');
+      if (!c) return null;
+      const cs = getComputedStyle(c);
+      // 小地图在左上：检查它所在面板确实靠左上，而不是还留在右下
+      const r = c.getBoundingClientRect();
+      return {
+        w: c.width, h: c.height,
+        radius: cs.borderRadius,
+        left: r.left, top: r.top,
+        label: label ? label.textContent.trim() : '',
+        quest: q ? q.textContent.trim() : '',
+      };
+    });
+    check('M4-6：小地图画布已建立且尺寸取自配置（168×168）',
+      !!mm && mm.w === 168 && mm.h === 168, mm ? `${mm.w}×${mm.h}` : '找不到画布');
+    check('M4-6：小地图是**圆形**（border-radius 50%）',
+      !!mm && /50%/.test(mm.radius), mm ? `border-radius=${mm.radius}` : '无样式');
+    check('M4-6：小地图已移到**左上角**（与血条等换位）',
+      !!mm && mm.left < 200 && mm.top < 200, mm ? `left=${Math.round(mm.left)} top=${Math.round(mm.top)}` : '无位置');
+    check('M4-6：小地图标注了当前所在层',
+      !!mm && /第\s*[12]\s*层/.test(mm.label), mm ? `标注"${mm.label}"` : '无标注');
+    // [M4-TEMP-4] 任务追踪占位（任务线属 M5-6）
+    check('M4-6：任务追踪已显示（当前为占位值，见 M4-TEMP-4）',
+      !!mm && mm.quest.length > 0, mm ? `显示"${mm.quest}"` : '无任务行');
   }
 
   // ============================================================
@@ -624,10 +749,239 @@ try {
     await page.waitForFunction(() => window.__m2.snapshot().flow === 'ended', { timeout: 8000 });
     check('生命归零判定阵亡', (await snap()).endReason === 'dead');
 
+    // M4-4：阵亡不只要判定为 dead，还要真的产出"死亡口径"的结算结果 ——
+    // carried=false、只保安全箱、且损失是**逐件**列出来的（不只是一个估值）。
+    const dr = (await snap()).raidResult;
+    check('★ 阵亡结算采用死亡口径（carried=false，只保住安全箱里的）',
+      !!dr && dr.carried === false && dr.outcome === 'death',
+      dr ? `carried=${dr.carried} outcome=${dr.outcome} 带出${dr.loot.keptValue}/损失${dr.loot.lostValue}` : '没有结算结果');
+    check('M4-4：结算里带有损失清单与保险箱清单两个数组（供界面逐件列出）',
+      !!dr && Array.isArray(dr.lostItems) && Array.isArray(dr.safeItems),
+      dr ? `lostItems=${dr.lostItems.length} safeItems=${dr.safeItems.length}` : '没有结算结果');
+
     await loadAndStart();
     await call('setTimeLimitMs', 800);
     await page.waitForFunction(() => window.__m2.snapshot().flow === 'ended', { timeout: 10000 });
     check('超时判定失败', (await snap()).endReason === 'timeout');
+
+    // M4-5：超时同样要产出明确的结算结果（与阵亡同一失败口径：只保安全箱）。
+    // 只检查 endReason 不够 —— 那只能证明"判了超时"，不能证明"结算是对的"。
+    const tr = (await snap()).raidResult;
+    check('★ M4-5：超时走失败口径结算（不带出战利品，只保安全箱）',
+      !!tr && tr.carried === false && tr.outcome === 'death',
+      tr ? `carried=${tr.carried} outcome=${tr.outcome} 带出${tr.loot.keptValue}` : '没有结算结果');
+
+    // 主动放弃（M4 DoD 五条路径里的"主动退出"）。
+    // 走**真实 UI 流程**而不是 DEV 接口：点按钮 -> 弹二次确认 -> 取消/确认。
+    // 只测 DEV 接口会漏掉"按钮根本没接上"或"点了直接放弃、没有确认"这类问题。
+    await loadAndStart();
+    await page.evaluate(() => document.getElementById('btnAbandon').click());
+    const dlgOpen = await page.evaluate(() =>
+      document.getElementById('screenAbandon').classList.contains('on'));
+    const stillRaid = (await snap()).flow === 'raid';
+    check('★ 点"放弃本局"**不会**立即放弃，而是弹出二次确认',
+      dlgOpen && stillRaid, `弹窗=${dlgOpen} 仍在局内=${stillRaid}`);
+
+    await page.evaluate(() => document.getElementById('btnAbandonCancel').click());
+    const afterCancel = await snap();
+    check('取消后弹窗关闭，且仍留在局内（放弃没有被偷偷执行）',
+      afterCancel.flow === 'raid' && afterCancel.endReason === null,
+      `flow=${afterCancel.flow} reason=${afterCancel.endReason}`);
+
+    await page.evaluate(() => document.getElementById('btnAbandon').click());
+    await page.evaluate(() => document.getElementById('btnAbandonConfirm').click());
+    await page.waitForFunction(() => window.__m2.snapshot().flow === 'ended', { timeout: 8000 });
+    const abSnap = await snap();
+    check('确认后判定 abandoned', abSnap.endReason === 'abandoned',
+      `reason=${abSnap.endReason}`);
+    const ar = abSnap.raidResult;
+    check('★ 主动放弃按未撤离口径结算（只保住安全箱里的）',
+      !!ar && ar.carried === false && ar.outcome === 'death',
+      ar ? `carried=${ar.carried} outcome=${ar.outcome} 带出${ar.loot.keptValue}` : '没有结算结果');
+  }
+
+  // ============================================================
+  // M4-7 断线 / 刷新
+  //
+  // M4 约束词把它列为**必须实测**的一项：
+  //   「必须实测：结算过程中途强行刷新浏览器，重进后数据是否一致」。
+  // 所以这里是真的 reload 一次，而不是只验证代码路径存在。
+  // ============================================================
+  group('M4-7 断线 / 刷新');
+  {
+    await loadAndStart();
+    // 先捡点东西，让"断线后带走什么"有可核对的数字
+    await call('teleportToContainer', 0);
+    await page.keyboard.down('KeyF');
+    await sleep(6000);
+    await page.keyboard.up('KeyF');
+    await sleep(300);
+    const before = await snap();
+    const beforeSafe = before.loot.safe.value;
+    check('夹具成立：刷新前背包里已有东西可结算',
+      before.loot.inventory >= 1, `背包 ${before.loot.inventory} 件 / 保险箱 ${beforeSafe}`);
+
+    // 强行刷新 —— 这就是"断线 / 关闭页面"
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => typeof window.__m2 !== 'undefined', { timeout: 15000 });
+
+    const noticeShown = await page.evaluate(
+      () => !document.getElementById('interruptedNotice').hidden
+    );
+    check('★ 中途刷新后重进，能看到"上局未正常结束"提示（不是静默丢弃）',
+      noticeShown === true, `提示可见=${noticeShown}`);
+
+    await page.evaluate(() => document.getElementById('interruptedNotice').click());
+    await sleep(300);
+    const res = await page.evaluate(() => window.__m2.snapshot().raidResult);
+    check('★ 点击提示给出上局结算，且口径为"未撤离"',
+      !!res && res.reason === 'disconnected' && res.carried === false,
+      res ? `reason=${res.reason} carried=${res.carried}` : '没有结算');
+    check('★ 重进后的结算与刷新前一致（保险箱保住的部分分毫不差）',
+      !!res && res.loot.keptValue === beforeSafe,
+      res ? `重进后带出 ${res.loot.keptValue} vs 刷新前保险箱 ${beforeSafe}` : '没有结算');
+
+    // ★ 界面这一层也必须断言。
+    //   只查 `raidResult` 不够：那个对象是纯函数产物，**即使一个字都没画到界面上**
+    //   它照样是有的 —— 我改 M4-BUG-02 时就一度让这条路径只结算、不显示，
+    //   而当时所有断言仍然全绿。这条断言就是为了让"结算页真的画出来了"成为事实。
+    //   结算正文写在 `#screenEnd` 里的 `#endBody`（见 index.html）。
+    const endShown = await page.evaluate(
+      () => document.getElementById('screenEnd').classList.contains('on')
+    );
+    const endText = await page.evaluate(() => {
+      const b = document.getElementById('endBody');
+      return b ? b.textContent.replace(/\s+/g, ' ').trim() : '';
+    });
+    check('★ 点击提示后结算页真的画出内容（不是"只结算、不显示"）',
+      endShown === true && endText.length > 0 && endText.includes(String(beforeSafe)),
+      `结算页可见=${endShown}，正文含"${beforeSafe}"=${endText.includes(String(beforeSafe))}（正文 ${endText.length} 字）`);
+
+    // 幂等：结算过一次后再刷新，不该再弹（否则会重复发放/重复打扰）
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => typeof window.__m2 !== 'undefined', { timeout: 15000 });
+    const again = await page.evaluate(
+      () => !document.getElementById('interruptedNotice').hidden
+    );
+    check('★ 幂等：结算过一次后再刷新不再提示（不会重复结算）',
+      again === false, `再次提示=${again}`);
+  }
+
+  // ============================================================
+  // M4-BUG-01 / M4-BUG-02 回归防线
+  //
+  // 这两条缺陷的共同点与 M3-BUG-01 一样：**断言的对象与被破坏的对象不是同一个**。
+  //   · M4-BUG-01：调试接口 killOneAi 一调就抛异常（从 M0~M2 那次提交起就是坏的），
+  //     而 verify-prod-bundle 只查"这个名字有没有进生产包"、从不调用它 ——
+  //     于是 M4-1 的 killsAfter 撤离点（e4_archive）根本无法被端到端验证。
+  //     修好它之后还有第二层：击杀计数原先只由"玩家用枪打死"自增，这个接口绕过了
+  //     武器路径，于是 AI 死了、kills 仍是 0，那条撤离点照样开不了。
+  //   · M4-BUG-02：`startRaid()` 无条件清快照，而补结算只挂在"点击提示"上 ——
+  //     玩家不点提示直接开新局，上局（含安全箱里本该保住的）静默消失。
+  // ============================================================
+  group('M4-BUG-01 killsAfter 撤离点（此前零覆盖）');
+  {
+    await loadAndStart();
+    const s0 = await snap();
+    const e4 = byPos(s0.extract, (6 + 0.5) * 2.5, (6 + 0.5) * 2.5);
+    check('夹具成立：地图里存在 killsAfter 撤离点（e4_archive，二层）',
+      !!e4 && e4.rule === 'killsAfter', e4 ? `rule=${e4.rule} open=${e4.open} 还需=${e4.remainingKills}` : '没找到');
+
+    if (e4) {
+      check('开局（0 杀）未开放，且给出"还需几名"',
+        e4.open === false && e4.remainingKills === 3,
+        `open=${e4.open} remainingKills=${e4.remainingKills}`);
+
+      await page.evaluate(({ x, z }) => window.__m2.teleport(x, z, 1), { x: e4.x, z: e4.z });
+      await sleep(1200);
+      const sb = await snap();
+      const e4b = byPos(sb.extract, e4.x, e4.z);
+      check('★ 站在未开放的撤离点里不累积进度（不会偷偷撤离）',
+        e4b && e4b.progress === 0, `progress=${e4b ? e4b.progress : 'n/a'}`);
+
+      // ★ 这一条就是 M4-BUG-01 的防线本身：接口必须可用，且必须记入击杀数
+      const killErrs = [];
+      const killsSeq = [];
+      for (let i = 0; i < 3; i++) {
+        const r = await page.evaluate(() => {
+          try { return { ok: true, ret: window.__m2.killOneAi() }; }
+          catch (e) { return { ok: false, msg: String((e && e.message) || e) }; }
+        });
+        if (!r.ok) killErrs.push(r.msg);
+        await sleep(250);
+        killsSeq.push((await snap()).kills);
+      }
+      check('★ 调试接口 killOneAi() 可用（不再抛 ballistics 部位伤害异常）',
+        killErrs.length === 0, killErrs.length ? `${killErrs.length}/3 次抛错：${killErrs[0]}` : '三次调用均成功');
+      check('★ 每次击杀都记入"累计击杀数"（夹具绕过了武器路径，计数必须仍然成立）',
+        killsSeq.join(',') === '1,2,3', `kills 序列 = ${killsSeq.join(',')}`);
+
+      await sleep(400);
+      const sk = await snap();
+      const e4c = byPos(sk.extract, e4.x, e4.z);
+      check('★ 累计 3 杀后 killsAfter 撤离点开放',
+        e4c && e4c.open === true, e4c ? `open=${e4c.open} reason=${e4c.reason}` : 'n/a');
+
+      if (e4c && e4c.open) {
+        const t0 = Date.now();
+        let ended = null;
+        while (Date.now() - t0 < 25000) {
+          await page.evaluate(() => window.__m2.healPlayer(9999));
+          const s = await snap();
+          if (s.flow === 'ended') { ended = s; break; }
+          await sleep(250);
+        }
+        check('★ 在 killsAfter 撤离点完成撤离并走 extract 口径结算',
+          ended && ended.endReason === 'extracted' && ended.raidResult && ended.raidResult.carried === true,
+          ended ? `reason=${ended.endReason} carried=${ended.raidResult && ended.raidResult.carried}` : '25 秒内未结束');
+      }
+    }
+  }
+
+  group('M4-BUG-02 不点提示直接开新局（此前会静默丢档）');
+  {
+    await loadAndStart();
+    await call('teleportToContainer', 0);
+    await page.keyboard.down('KeyF');
+    await sleep(6000);
+    await page.keyboard.up('KeyF');
+    await sleep(6000);                       // 等定期快照（5s）落地
+    const before = await snap();
+    const beforeSafe = before.loot.safe.value;
+    const cpBefore = await page.evaluate(() => localStorage.getItem('h5_extract_raid_checkpoint'));
+    check('夹具成立：刷新前有战利品且定期快照已写入',
+      cpBefore !== null && before.loot.inventory >= 1,
+      `背包 ${before.loot.inventory} 件 / 保险箱 ${beforeSafe}`);
+
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => typeof window.__m2 !== 'undefined', { timeout: 15000 });
+    const oldCp = await page.evaluate(() => localStorage.getItem('h5_extract_raid_checkpoint'));
+    const oldRaidId = oldCp ? JSON.parse(oldCp).raidId : null;
+
+    // ★ 关键动作：**不点提示**，直接开新局
+    await page.click('#btnStart');
+    await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 10000 });
+    await sleep(500);
+    const res = await page.evaluate(() => window.__m2.snapshot().raidResult);
+    check('★ 不点提示直接开新局，上局仍被补结算（不再静默丢档）',
+      !!res && res.reason === 'disconnected' && res.carried === false,
+      res ? `reason=${res.reason} carried=${res.carried}` : '没有结算 —— 上局被丢了');
+    check('★ 补结算保住了安全箱（与"点提示"这条路径的结果一致）',
+      !!res && res.loot.keptValue === beforeSafe,
+      res ? `带出 ${res.loot.keptValue} vs 刷新前保险箱 ${beforeSafe}` : 'n/a');
+
+    // 新局现在**开局就写自己的第一笔快照**，所以"存在快照"不是残留信号 ——
+    // 用 raidId 区分：换成了新局的 id，才说明上局那份已被结算清除。
+    const newCp = await page.evaluate(() => localStorage.getItem('h5_extract_raid_checkpoint'));
+    const newRaidId = newCp ? JSON.parse(newCp).raidId : null;
+    check('★ 上局快照已被结算清除（现存的是新局自己的快照，raidId 已换）',
+      oldRaidId && newRaidId && newRaidId !== oldRaidId,
+      `旧 ${oldRaidId} → 新 ${newRaidId}`);
+    check('★ 新局开局立刻就有快照（覆盖"开局几秒内被强杀"这个丢档窗口）',
+      !!newCp && JSON.parse(newCp).elapsedMs < 3000 && JSON.parse(newCp).items.length === 0,
+      newCp ? `elapsedMs=${JSON.parse(newCp).elapsedMs} items=${JSON.parse(newCp).items.length}` : '没有快照');
+    const noticeAfter = await page.evaluate(() => !document.getElementById('interruptedNotice').hidden);
+    check('补结算后提示已收起（不会一直挂着）', noticeAfter === false, `提示=${noticeAfter}`);
   }
 
   // ============================================================
@@ -1002,7 +1356,12 @@ try {
       // 致命问题判据
       if (s.flow !== 'raid' && s.flow !== 'ended') FATAL.push(`第${i}局：流程卡在 ${s.flow}`);
       if (s.player.health < 0) FATAL.push(`第${i}局：生命为负 ${s.player.health}`);
-      if (s.player.cellBlocked) FATAL.push(`第${i}局：玩家穿进墙体`);
+      // ★ M3-BUG-01：这里原先查的是 `s.player.cellBlocked`，而它是**第 0 层的快照**。
+      //   两层地图上"一层是墙、二层是楼面"是常态（tv_station_01 的 44 个二层容器里
+      //   有 6 个正落在这种格上），走到那里就会被误报成"玩家穿进墙体"，
+      //   于是这条 DoD 判据会抓到一个并不存在的问题。
+      //   真正表达"有没有穿模"的是 `embedded`：脚底是否插在本格的实体跨度内部。
+      if (s.player.embedded) FATAL.push(`第${i}局：玩家穿进实体（脚底插在跨度内）`);
       if (Number.isNaN(s.player.x) || Number.isNaN(s.player.z)) FATAL.push(`第${i}局：坐标 NaN`);
       if (Number.isNaN(s.player.health)) FATAL.push(`第${i}局：生命 NaN`);
       if (errsNow > 0) FATAL.push(`第${i}局：出现 ${errsNow} 条页面异常`);
@@ -1044,6 +1403,89 @@ try {
   }
 
   // ============================================================
+  // M3-BUG-01 回归：两层地图上的"站位合法性"与"有没有穿模"是两件事
+  //
+  // 缺陷原貌：十局稳定性测试用 `player.cellBlocked` 判"玩家穿进墙体"，
+  //   而该判据来自 `level.isBlockedCell` —— **第 0 层的快照**。
+  //   两层地图上"一层是墙、二层是楼面"是常态，于是站在那些格的二层玩家
+  //   会被判成穿墙。tv_station_01 的 44 个二层容器里有 6 个正落在这种格上，
+  //   也就是说：**只要走到那些容器旁边，这条 DoD 判据就会误报**。
+  // ============================================================
+  group('M3-BUG-01 两层站位判据');
+  {
+    await loadAndStart();
+    // 二层容器的所在地由地图表保证：该层不落墙里、不悬空。
+    // 其中一部分格子的**一层是墙**（楼板压墙）—— 那正是旧判据会误报的位置，
+    // 所以夹具必须主动找这种格子，而不是随便抽一个容器（抽不中就测不到东西）。
+    const scan = await page.evaluate(async () => {
+      const out = [];
+      for (const c of window.__m2.debugContainerList().filter((x) => x.floor === 1)) {
+        window.__m2.teleport(c.x, c.z, 1);
+        await new Promise((r) => requestAnimationFrame(r));
+        const s = window.__m2.snapshot();
+        out.push({
+          cell: [Math.floor(c.x / s.level.cell), Math.floor(c.z / s.level.cell)],
+          y: s.player.y,
+          cellBlocked: s.player.cellBlocked,
+          embedded: s.player.embedded,
+        });
+      }
+      return out;
+    });
+    const onTopFloor = scan.filter((r) => r.y > 3.5);
+    const gapCells = scan.filter((r) => r.cellBlocked && !r.embedded);
+    const embeddedAny = scan.filter((r) => r.embedded);
+
+    check('夹具成立：二层容器格上玩家确实站在二层（脚底 > 3.5m）',
+      scan.length > 0 && onTopFloor.length === scan.length,
+      `${scan.length} 个二层容器格，落在二层的 ${onTopFloor.length} 个`);
+
+    check('★ 存在"一层是墙、二层可走"的格（楼板压墙），旧判据在这些格上必然误报',
+      gapCells.length > 0,
+      gapCells.length
+        ? `${gapCells.length} 个，例 ${gapCells.slice(0, 3).map((r) => `(${r.cell})`).join(' ')} —— 其中 cellBlocked=true 而 embedded=false`
+        : '一个都没找到（那么本组断言无从测起）');
+
+    check('★ 这些格上玩家并没有穿模（embedded 全为 false）',
+      embeddedAny.length === 0,
+      embeddedAny.length ? `误报 ${embeddedAny.length} 个：${embeddedAny.map((r) => `(${r.cell}) y=${r.y.toFixed(2)}`).join(' ')}` : `${scan.length} 个容器格全部 embedded=false`);
+  }
+
+  // ============================================================
+  // M3：**二层**的完整闭环（搜刮 → 撤离 → 结算）
+  //
+  // 此前这条闭环只用 `teleportToContainer()` / `teleportToExtract()` 跑过，
+  // 而两者都没有层参数、永远停在一层 —— 于是"二层能不能搜、能不能撤"
+  // （M3 的核心交付之一）在端到端层面一次都没被走过。
+  // ============================================================
+  group('M3 二层闭环');
+  {
+    await loadAndStart();
+    const tp = await page.evaluate(() => window.__m2.teleportToContainer(1));
+    await sleep(200);
+    await page.keyboard.down('KeyF');
+    await sleep(9000);
+    await page.keyboard.up('KeyF');
+    await sleep(200);
+    const looted = await snap();
+    check('二层容器可被搜索开启（按 F）',
+      looted.loot.opened >= 1 && looted.player.y > 3.5,
+      `开启 ${looted.loot.opened} 个，玩家 y=${looted.player.y.toFixed(2)}`);
+
+    const ex = await page.evaluate(() => window.__m2.teleportToExtract(1));
+    check('夹具成立：存在二层撤离点且玩家被送到该层',
+      ex && ex.floor === 1, ex ? `撤离点 ${ex.id}（第 ${ex.floor} 层）` : '没有二层撤离点');
+    const ended = await waitForEnd(40000);
+    const done = await snap();
+    check('★ 在二层完成撤离并结算（此前端到端从未覆盖）',
+      ended && done.endReason === 'extracted',
+      `flow=${done.flow} reason=${done.endReason}`);
+    check('撤离结算带出了二层搜到的战利品',
+      done.flow === 'ended' && looted.loot.inventory >= 1,
+      `背包 ${looted.loot.inventory} 件 / 估值 ${looted.loot.value}`);
+  }
+
+  // ============================================================
   group('运行时错误');
   {
     const real = pageErrors.filter((e) => !/favicon/i.test(e));
@@ -1059,6 +1501,16 @@ try {
   for (const s of [...new Set(pageErrors)].slice(0, 10)) console.log('  - ' + s);
 } finally {
   await browser.close();
+  // 关掉本次自己拉起的 dev server —— 不留残留，否则下一次又会连到旧实例。
+  // （–keep-server 可保留，便于跑完接着在浏览器里看。）
+  if (serverChild && !serverChild.killed) {
+    if (KEEP_SERVER) {
+      console.log(`\n  已保留 dev server（PID ${serverChild.pid}），退出前需手动关闭。`);
+    } else {
+      await killPidTree(serverChild.pid);
+      console.log(`\n  已关闭本次拉起的 dev server（PID ${serverChild.pid}）。`);
+    }
+  }
 }
 
 const passed = results.filter((r) => r.pass).length;

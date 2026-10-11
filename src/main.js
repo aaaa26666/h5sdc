@@ -25,6 +25,14 @@ import { createWeaponSystem } from './gameplay/weapon.js';
 import { createAiManager } from './gameplay/aiManager.js';
 import { createLoot } from './gameplay/loot.js';
 import { createExtract } from './gameplay/extract.js';
+import { createInventory } from './gameplay/inventory.js';
+// M4-3：结算改由独立的纯函数产出（src/core/raidResult.js），
+// 不再在 endRaid 里现拼数据 —— 那样无法单测、无法重放，也谈不上幂等。
+import { buildRaidResult } from './core/raidResult.js';
+import { createMinimap } from './ui/minimap.js';
+// M4-7：断线/刷新策略。快照的纯逻辑在 core，存储在 platform，本文件只做接线。
+import { buildCheckpoint, checkpointToFacts } from './core/raidCheckpoint.js';
+import { saveCheckpoint, loadCheckpoint, clearCheckpoint, isAvailable } from './platform/raidStore.js';
 import { createFlow, FLOW, END_REASON } from './core/flow.js';
 import { createHud } from './ui/hud.js';
 import { createDecals } from './ui/decals.js';
@@ -68,6 +76,9 @@ scene.add(sun.target);
 
 // ---------------- 世界与系统 ----------------
 const hud = createHud();
+// M4-6：小地图。数据每帧由主循环组装后喂给它，它只画不判。
+const minimap = createMinimap(hud.el.minimap, cfg);
+let minimapLastDraw = 0;
 const settings = loadSettings();
 const input = createInput(renderer.domElement, cfg, settings);
 const flow = createFlow(cfg);
@@ -76,8 +87,39 @@ const audio = createAudio();
 const level = createLevel(cfg, scene);
 const player = createPlayer(cfg, level);
 const decals = createDecals(scene);
-const loot = createLoot(cfg, level, scene);
+// M3-5 背包（二维网格 + 负重）与 M3-6 安全箱。
+// 先于 loot 创建：开箱回调要把物品塞进背包，而钥匙房要先查背包里有没有门禁卡。
+const inventory = createInventory(cfg);
 const extract = createExtract(cfg, level, scene);
+const loot = createLoot(cfg, level, scene, {
+  /**
+   * 开箱（或拾取遗留）：逐件尝试入包，装不下的**留在容器里**而不是凭空消失。
+   * 容量与负重因此成为真约束 —— 这正是"搜"这个字的核心取舍。
+   */
+  onOpened(container, items) {
+    const taken = [];
+    const left = [];
+    for (const it of items) {
+      const r = inventory.tryAdd(it);
+      if (r.ok) taken.push(it);
+      else left.push(it);
+    }
+    container.items = left;
+
+    if (taken.length) {
+      audio.dropTier(container.dropSoundTier);
+      const rarityLabel = container.rarity ? `（${container.colorHex ? '' : ''}${container.rarity}）` : '';
+      hud.toast(`搜到 ${taken.length} 件${rarityLabel}：${taken.map((i) => i.label).join('、')}`);
+    }
+    if (left.length) {
+      const why = inventory.weightKg() + left[0].weightKg > inventory.weightLimitKg ? '超重' : '没地方放';
+      hud.toast(`背包${why}，留下 ${left.length} 件（可腾出空间后再来拿）`);
+    } else if (!taken.length) {
+      hud.toast('空容器');
+    }
+  },
+  hasKey: (itemId) => inventory.items.some((e) => e.item.id === itemId),
+});
 
 // 导航：网格来自关卡，查询一律经预算调度器（M0 约束 C-1/C-2）
 //
@@ -112,6 +154,24 @@ const combatStats = {
   deaths: 0,
   emptyClicks: 0,
 };
+
+/**
+ * 击杀计数的**唯一权威**是 `aiManager.kills`（它由"谁死"决定），
+ * `combatStats.kills` 是给它做的缓存 —— 这里负责把缓存同步过来。
+ *
+ * 为什么需要它：`combatStats.kills` 原先只在武器的 `hit` 事件里自增
+ * （`if (ev.killed) ...`），也就是**只有"玩家用枪打死"这条路**会记数。
+ * 于是一旦有别的来源淘汰 AI，计数就与事实脱节 —— 而 M4-1 的 `killsAfter`
+ * 撤离点（e4_archive 要求累计 3 杀）正是读这个数。
+ * 实测：调试接口 killOneAi 确实把 AI 打死了（存活 6→5→4），但 kills 一直是 0，
+ * 那条撤离点因此永远开不了（[M4-BUG-01] 的第二层）。
+ *
+ * 用 max 而不是覆盖：`aiManager.noteKill()` 在武器事件里**先于**死亡清扫执行，
+ * 取 max 才能保证任何一帧的读数都不会倒退（计数是单调量）。
+ */
+function syncKills() {
+  if (aiManager.kills > combatStats.kills) combatStats.kills = aiManager.kills;
+}
 const weaponRng = mulberry32(cfg.level.seed + 7717);
 
 let footstepsAccum = 0;
@@ -172,6 +232,15 @@ const weaponSys = createWeaponSystem({
 // ---------------- 局内状态 ----------------
 let kills = 0;
 let lastNowMs = 0;
+// M4-2：最近一帧的撤离结果。`ex` 是帧内局部变量，DEV 接口（模块级）拿不到，
+// 所以按 kills 同样的做法在帧内记一份。
+let lastExtract = null;
+// M4-7：本局唯一标识（快照与幂等结算都靠它）。开局时生成。
+let raidId = null;
+let checkpointLastWrite = 0;
+// M4-3：最近一局的结算结果。结算是纯函数产物，保存它只是为了重放与 DEV 断言，
+// 不参与任何计算 —— 重算一次仍然得到同一个对象。
+let lastRaidResult = null;
 
 // 暂停
 let pausedTotalMs = 0;
@@ -209,9 +278,19 @@ function raidView(nowMs) {
     reserve: w.reserve,
     weaponStatus: weaponSys.state_text ? weaponSys.state_text() : weaponStatusText(w),
     remainingMs: t.remainingMs,
+    // M4-5：超时告警由这里判定，阈值来自配置表（tunables.raid.warningThresholdMs）。
+    // hud 只负责把这个布尔值画出来 —— 它不该知道"多少秒算危险"这种策划数值。
+    timeWarning: t.remainingMs <= cfg.raid.warningThresholdMs,
     aiAlive: aiManager.aliveCount(),
-    lootCount: loot.inventory.length,
-    lootValue: loot.totalValue(),
+    // M3-5：背包是二维网格 + 负重，HUD 要显示的是"还能装多少"而不是"捡了几件"
+    lootCount: inventory.count,
+    lootValue: inventory.value(),
+    bagText: `背包 ${inventory.usedSlots()}/${inventory.totalSlots()} 格 · ${inventory.weightKg().toFixed(1)}/${inventory.weightLimitKg}kg`,
+    // [M4-TEMP-4] 任务追踪：任务线属 M5-6，M4 阶段没有真实数据。
+    // 制作人裁定先显示占位（与结算里"任务进度 0/0"同一口径），
+    // 因此这里给出的是 0 而不是真实进度 —— 见 docs/M4-TEMP-REGISTRY.md。
+    questText: '任务 0 / 0',
+    safeText: `保险 ${inventory.safeValue()}（${inventory.safeTier.label}）`,
     extractInZone: false,
     extractProgress: 0,
     prompt: '',
@@ -230,9 +309,14 @@ function weaponStatusText(w) {
 // ---------------- 主循环 ----------------
 let lastFrameAt = 0;
 
+// M3-3：搜索的"受击打断"需要一个本帧事实，不能让 loot 自己去查战斗系统。
+// 它是帧级信号，每帧开头清零，只有真的挨了打才置位。
+let damagedThisFrame = false;
+
 function frame(nowMs) {
   requestAnimationFrame(frame);
   const dt = lastFrameAt ? Math.min((nowMs - lastFrameAt) / 1000, 0.05) : 0;
+  damagedThisFrame = false;
   lastFrameAt = nowMs;
   lastNowMs = nowMs;
 
@@ -285,6 +369,7 @@ function frame(nowMs) {
         const r = player.applyIncomingHit(info);
         combatStats.hitsTaken++;
         combatStats.damageTaken += r.damage;
+        damagedThisFrame = true;
         hud.damage();
         audio.hurt();
         // 受击方向指示：由来向与玩家朝向算出相对角
@@ -296,19 +381,55 @@ function frame(nowMs) {
     kills = combatStats.kills;
 
     // ---- 搜刮 ----
-    const lootRes = loot.update(dt, player.state.pos, input.interact());
-    if (lootRes.justOpened) {
-      const names = lootRes.justOpened.items.map((i) => i.label).join('、') || '空容器';
-      hud.toast(`搜到：${names}`);
+    // 打断信号来自三个独立来源：受击（本帧是否挨了打）、开火、走开（loot 内部按位移判）。
+    // 规则本体在 loot.json 的 interruptRules —— 这里只负责把事实传进去。
+    const lootRes = loot.update(dt, player.state.pos, {
+      interact: input.interact(),
+      firing: input.firing(),
+      damaged: damagedThisFrame,
+    });
+    if (lootRes.interrupted) {
+      const ir = lootRes.interrupted;
+      const kept = ir.rule === 'keep_partial' ? `，保留 ${Math.round((ir.keptProgress / ir.container.def.searchMs) * 100)}% 进度` : '，进度清零';
+      const why = ir.cause === 'damage' ? '受击' : ir.cause === 'fire' ? '开火' : '移动';
+      hud.toast(`搜索被${why}打断${kept}`);
+    }
+    if (lootRes.blockedByKey) {
+      hud.toast(`需要「${lootRes.blockedByKey.key}」才能开启`);
     }
 
     // ---- 撤离 ----
-    const ex = extract.update(dt, player.state.pos);
+    // M4-1：把局内时间传给撤离点，开放规则（时间门槛 / 时间窗）要靠它求值。
+    // 时间来自 flow 的单一计时源，而不是另算一份 elapsed —— 否则规则与结束判定会用两个时钟。
+    const tm = flow.timing(t);
+    const ex = extract.update(dt, player.state.pos, {
+      elapsedMs: tm.elapsedMs,
+      timeLimitMs: cfg.raid.timeLimitMs,
+      // M4-1：击杀类撤离点规则（killsAfter）用同一个 kills 计数，
+      // 与 HUD、结算共用 combatStats 这一份，不另设计数器。
+      kills,
+    });
+
+    lastExtract = ex;
+
+    // M4-2：中断是一次性事件，用 toast 报出来；否则玩家只会看到进度条莫名归零。
+    // 必须放在 ex 求值之后 —— 曾因放在搜刮段之前而命中 TDZ（Cannot access 'ex' before
+    // initialization），单测抓不到（它不加载 main.js），是端到端跑出来的。
+    if (ex.interrupted) {
+      const why = ex.interrupted.cause === 'left' ? '离开了撤离区'
+        : ex.interrupted.cause === 'switched' ? '换到了另一个撤离区'
+        : '撤离点已关闭';
+      hud.toast(`${why}，撤离倒计时已重置`);
+    }
 
     // ---- 结束条件 ----
+    // M4-5「强制结束」的语义（制作人裁定）：**不宽限** ——
+    // 时间归零即判超时失败，不会因为玩家正在撤离倒计时中途而多给时间。
+    // 唯一例外是同一帧里撤离倒计时**已经走完**的情况：那是既成事实，
+    // 所以 completed 排在 expired 之前。这不是宽限，是"完成了就算完成"。
     if (!player.state.alive) endRaid(END_REASON.DEAD, t);
     else if (ex.completed) endRaid(END_REASON.EXTRACTED, t);
-    else if (flow.timing(t).expired) endRaid(END_REASON.TIMEOUT, t);
+    else if (tm.expired) endRaid(END_REASON.TIMEOUT, t);
 
     // ---- HUD ----
     const view = raidView(nowMs);
@@ -316,13 +437,70 @@ function frame(nowMs) {
     view.extractProgress = ex.progress;
     if (ex.inZone) {
       view.prompt = `保持在撤离区内 ${Math.ceil((extract.countdownMs * (1 - ex.progress)) / 1000)} 秒`;
+    } else if (ex.blocked) {
+      // M4-1：站在未开放的撤离点上时必须说清楚为什么不能用、还要等多久。
+      // 不说的话，玩家会把"规则未满足"当成"撤离功能坏了"。
+      const b = ex.blocked;
+      if (b.reason === 'windowClosed') view.prompt = '这个撤离点的时间窗已关闭';
+      else if (b.remainingKills != null) view.prompt = `撤离点未开放：还需淘汰 ${b.remainingKills} 名敌人`;
+      else if (b.opensInMs != null) view.prompt = `撤离点未开放，还需 ${Math.ceil(b.opensInMs / 1000)} 秒`;
+      else view.prompt = '这个撤离点当前不可使用';
+    } else if (ex.leaveMs > 0) {
+      // M4-2：宽限期内明确告诉玩家"还能救回来"，否则他会以为已经重置了而干脆走掉。
+      const back = Math.max(0, cfg.extract.interrupt.leaveGraceMs - ex.leaveMs);
+      view.prompt = `已离开撤离区，${(back / 1000).toFixed(1)} 秒内回去可继续`;
     } else if (lootRes.activeContainer) {
       const c = lootRes.activeContainer;
-      const pct = Math.round((c.progress / cfg.loot.searchMs) * 100);
-      view.prompt = `搜索中… ${pct}%（松开 F 会中断）`;
+      const pct = Math.round((c.progress / c.def.searchMs) * 100);
+      view.prompt = `搜索中… ${pct}%（松开 F、走开或挨打都会中断）`;
+    } else if (lootRes.nearest && lootRes.nearest.opened) {
+      view.prompt = '按 <b>F</b> 取走剩下的战利品（背包放不下才会剩下）';
     } else if (lootRes.nearest) {
-      view.prompt = '按住 <b>F</b> 搜索容器';
+      view.prompt = `按住 <b>F</b> 搜索${lootRes.nearest.def.label || '容器'}`;
     }
+    // ---- 小地图（M4-6）----
+    // 按配置间隔重绘：位置信息 100ms 刷新一次对人眼足够（玩家不会靠地图做厘米级走位），
+    // 却能省掉绝大部分绘制开销。地形本身是缓存的，这里只是叠加动态点。
+    if (nowMs - minimapLastDraw >= cfg.minimap.updateIntervalMs) {
+      minimapLastDraw = nowMs;
+      const MM = cfg.minimap;
+      const pf = level.floorOfY(player.state.pos.y);
+      // 用**浮点**格坐标而不是取整：取整会让角色和敌人在地图上"一跳一格"，
+      // 连续移动看起来像卡顿。格中心是 (i+0.5)，与地形的绘制口径一致。
+      const g = (w) => w / level.cell;
+      minimap.draw({
+        level: {
+          W: level.W, H: level.H, cell: level.cell,
+          blocked: level.nav.blocked, floorCount: level.nav.floorCount,
+        },
+        floor: pf,
+        // 三个叠加层默认关闭（只画地形），关闭时**连数组都不组装** ——
+        // 每帧给 89 个容器 + N 个 AI 建临时对象，本身就是一笔不必要的开销。
+        containers: MM.showContainers
+          ? loot.containers.map((c) => ({ x: g(c.x), z: g(c.z), floor: c.floor, opened: c.opened }))
+          : [],
+        extracts: MM.showExtracts
+          ? extract.zones.map((z) => ({ x: g(z.x), z: g(z.z), floor: z.floor, open: z.open.open }))
+          : [],
+        ais: MM.showAis
+          ? aiManager.ais.map((a) => ({
+              x: g(a.position.x), z: g(a.position.z),
+              floor: level.floorOfY(a.position.y), alive: !a.isDead,
+            }))
+          : [],
+        player: { x: g(player.state.pos.x), z: g(player.state.pos.z), floor: pf, yaw: player.state.yaw },
+      });
+      if (hud.el.minimapLabel) hud.el.minimapLabel.textContent = `第 ${pf + 1} 层`;
+    }
+
+    // ---- M4-7：定期快照（兑底）----
+    // 关闭瞬间还会再写一份最新的（见 pagehide），两者构成"本地双写"：
+    // 正常关闭用最新的，进程被强杀时退回到这一份（最多落后一个间隔）。
+    if (nowMs - checkpointLastWrite >= cfg.raid.checkpointIntervalMs) {
+      checkpointLastWrite = nowMs;
+      writeCheckpoint(tm.elapsedMs);
+    }
+
     hud.update(view);
   } else {
     hud.update(raidView(nowMs));
@@ -350,10 +528,57 @@ function frame(nowMs) {
 // ---------------- 流程控制 ----------------
 let raidStartAtMs = 0;
 
+/**
+ * M4-7：把当前局的状态写成快照。
+ * 只在**局内**调用；结束后的清理由 endRaid 负责。
+ */
+function writeCheckpoint(elapsedMs) {
+  if (!raidId) return;
+  saveCheckpoint(
+    buildCheckpoint({
+      raidId,
+      elapsedMs,
+      inventory: inventory.items,
+      combat: {
+        kills: combatStats.kills,
+        aiTotal: aiManager.totalCount,
+        containersOpened: loot.openedCount(),
+        containersTotal: loot.containers.length,
+        shotsFired: combatStats.shotsFired,
+        health: player.vitals.health,
+      },
+    })
+  );
+}
+
 function startRaid(nowMs) {
   flow.startRaid(nowMs);
   raidStartAtMs = nowMs;
   lockGraceUntilMs = nowMs + 600;
+
+  // ★ [M4-BUG-02] 开新局之前，先把"上局没走完"补成正式结算。
+  //
+  // 这是**写在这个函数里**而不是只写在 btnStart 里 —— 否则任何绕过按钮的入口
+  // （DEV 的 startRaid 接口、将来的"再来一局"）都会静默丢掉上局。
+  // `showIt=false`：新局立刻开始，结算页闪一下反而像 bug；数据仍记在 lastRaidResult。
+  // 正常玩家路径（btnStart）会先自己调一次并显示，因此这里是幂等的空操作。
+  settleInterruptedRaid(false);
+
+  // 新的一局开始，上局的残留快照到此为止（正常情况下上面那一步已经清掉了）。
+  raidId = `r${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+  clearCheckpoint();
+  hud.showInterruptedNotice(false);
+
+  // ★ M4-BUG-02（同一条缺陷的第二面）：开局的**第一份快照必须立刻写**。
+  //
+  // 此前只有"每 5 秒一次"与"关闭瞬间一次"这两笔，于是开局后 5 秒内崩溃/被强杀
+  // （进程被 kill 时 pagehide 不保证触发）**没有任何快照** —— 那一局等于从未存在过，
+  // 连"只保住安全箱"都做不到。
+  //
+  // `checkpointLastWrite` 必须一并重置：它是**跨局残留**的模块级变量，
+  // 第二局从 DEV 接口开始时若还留着上一局的时间戳，这份"立刻写"就会被跳过。
+  checkpointLastWrite = nowMs;
+  writeCheckpoint(0);
 
   // ---- 音频解锁门（M0-TECH-01 约束 C-8）----
   // 必须在**用户手势回调内**调用，因此放在"进入战区"的点击处理里。
@@ -370,11 +595,14 @@ function endRaid(reason, nowMs) {
   if (flow.state !== FLOW.RAID) return;
   flow.endRaid(reason, nowMs);
   const t = flow.timing(nowMs);
-  const carried = reason === END_REASON.EXTRACTED;
-  hud.showHud(false);
-  hud.showEnd(true);
-  hud.showResult({
+  // M3-6 死亡掉落规则：撤离成功 = 全部带出；阵亡 / 超时 / 未撤离 = 只保住安全箱里的。
+  // （规则与《核心循环数值框架案》§6 一致，口径见 inventory.settle）
+  const settle = inventory.settle(reason === END_REASON.EXTRACTED ? 'extract' : 'death');
+  // M4-3：结算数据由纯函数产出。同样的局内事实重算一次，得到的还是同一个结果，
+  // 这是"重复提交不会重复发放"的第一道防线；第二道是 flow 只允许迁移一次。
+  const result = buildRaidResult({
     reason,
+    outcome: reason === END_REASON.EXTRACTED ? 'extract' : 'death',
     elapsedMs: t.elapsedMs,
     kills: combatStats.kills,
     aiTotal: aiManager.totalCount,
@@ -382,14 +610,61 @@ function endRaid(reason, nowMs) {
     containersTotal: loot.containers.length,
     shotsFired: combatStats.shotsFired,
     health: player.vitals.health,
-    items: carried ? loot.inventory : [],
-    value: carried ? loot.totalValue() : 0,
-    combat: combatStats,
+    kept: settle.kept,
+    lost: settle.lost,
+    keptValue: settle.keptValue,
+    lostValue: settle.lostValue,
+    safeValue: inventory.safeValue(),
+    rarityTable: cfg.lootTable.rarity,
   });
+  lastRaidResult = result;
+  // M4-7：本局**已经**有了正式结算，快照到此为止。
+  // 这一句是幂等结算的关键：不清的话，下次启动会拿旧快照再结算一遍。
+  clearCheckpoint();
+  hud.showHud(false);
+  hud.showEnd(true);
+  hud.showResult(result);
   input.exitLock();
 }
 
+/**
+ * M4-7：把"上局没走完"补成一次正式结算（口径：未撤离 = 只保住安全箱）。
+ *
+ * [M4-BUG-02] 为什么必须有这个函数、且必须被 `startRaid` 调用：
+ *   在此之前，**清快照**这件事发生在 `startRaid()` 里（无条件），而补结算发生在
+ *   "点击开始页那条提示"的处理里。于是玩家只要**不点提示、直接开新局**，
+ *   上局的快照就会被 `startRaid` 抹掉，而提示处理器随后 `loadCheckpoint()` 读到 null，
+ *   什么都结算不出来 —— 上局（**含安全箱里本该保住的那些**）静默消失。
+ *   这直接违反 M4 DoD「所有结束路径均有明确结算且不丢档」与风险对策
+ *   「禁止在断线/刷新场景下静默丢弃玩家进度」。
+ *
+ * 现在的顺序是：**先结算、再清快照、最后才开新局**。
+ * 注意"清快照"必须发生在结算之后（而不是之前）—— 否则幂等的两道防线都会失效。
+ *
+ * @returns {object|null} 补出的结算结果；没有待结算的快照时返回 null
+ */
+function settleInterruptedRaid(showIt) {
+  const cp = loadCheckpoint();
+  if (!cp) return null;
+  const result = buildRaidResult(checkpointToFacts(cp, cfg.lootTable.rarity));
+  // 记一份是为了让端到端能核对"重进后看到的结算"与"刷新前的背包"是否一致，
+  // 否则"不丢档"这件事只能靠肉眼确认。
+  lastRaidResult = result;
+  clearCheckpoint();
+  hud.showInterruptedNotice(false);
+  // [M4-BUG-02] 是否把结算**显示出来**由调用方决定：
+  //   · 点提示 → 显示（玩家就是要看它）
+  //   · 直接开新局 → 不显示（新局立刻开始，闪一下反而像 bug）
+  // 但"结算 + 清快照"这两件事**无条件**发生。
+  if (showIt) hud.showResult(result);
+  return result;
+}
+
 hud.el.btnStart.addEventListener('click', () => {
+  // ★ 补结算上局（若有），再开新局。这一步不能省 —— 省了就是 M4-BUG-02。
+  //   这里显示出来是给玩家看的；结算本身在 startRaid 里还会再兜一次，
+  //   因此**任何**入口（含 DEV 接口、将来的"再来一局"）都不会绕过它。
+  settleInterruptedRaid(true);
   input.requestLock();
   startRaid(performance.now());
 });
@@ -417,6 +692,50 @@ hud.el.btnResume.addEventListener('click', () => {
   input.requestLock();
 });
 
+// ---- M4-7：关闭 / 刷新瞬间再写一份最新快照（双写的第二笔）----
+// 用 pagehide 而不是只用 beforeunload：前者在移动端与"页面进入后台被丢弃"时更可靠。
+// 只写一次快照，不做别的事 —— 这里不该有重活，否则会拖慢关闭。
+const flushCheckpoint = () => {
+  if (flow.state !== FLOW.RAID) return;
+  writeCheckpoint(flow.timing(raidClock(performance.now())).elapsedMs);
+};
+window.addEventListener('pagehide', flushCheckpoint);
+window.addEventListener('beforeunload', flushCheckpoint);
+
+// ---- M4-7：上局中断后的补结算 ----
+// 进来时若发现快照还在，说明上局没走到正式结算（刷新 / 关闭 / 崩溃）。
+// 按 §2.6 的口径（视为未撤离）补一次结算，并立刻清除快照 —— 只结算一次。
+//
+// ★ 提示只是"让玩家知道"的入口，**不是**结算的唯一触发点：
+//   `startRaid()` 自身在开新局前也会兜一次 settleInterruptedRaid(false)。
+//   否则"不点提示直接开新局"就成了静默丢档的路径（M4-BUG-02）。
+if (loadCheckpoint()) hud.showInterruptedNotice(true);
+hud.el.interruptedNotice.addEventListener('click', () => {
+  // showIt=true：玩家点提示就是来看结算的，必须显示出来。
+  const result = settleInterruptedRaid(true);
+  if (!result) {
+    hud.showInterruptedNotice(false);
+    return;
+  }
+  hud.showStart(false);
+  hud.showEnd(true);
+});
+// M4 DoD 五条结束路径里的"主动退出"一条：暂停菜单 → 放弃本局。
+//
+// 二次确认用**弹窗**而不是"按钮上膛"：上膛状态只是把按钮文字改一下，
+// 很容易被忽略 —— 玩家可能随手点了第一次，过一会儿再点一次就真的丢了整局。
+// 弹窗会强制他把后果读完再做选择。
+hud.el.btnAbandon.addEventListener('click', () => {
+  hud.showAbandonConfirm(true);
+});
+hud.el.btnAbandonCancel.addEventListener('click', () => {
+  hud.showAbandonConfirm(false);
+});
+hud.el.btnAbandonConfirm.addEventListener('click', () => {
+  hud.showAbandonConfirm(false);
+  endRaid(END_REASON.ABANDONED, raidClock(performance.now()));
+});
+
 renderer.domElement.addEventListener('click', () => {
   if (flow.state === FLOW.RAID && !input.state.pointerLocked && !settingsOpen) input.requestLock();
 });
@@ -442,6 +761,9 @@ requestAnimationFrame(frame);
 if (import.meta.env.DEV) {
   window.__m2 = {
     snapshot() {
+      // 击杀计数在快照时对齐一次：调试接口可能在两帧之间淘汰 AI（不在武器路径上），
+      // 不补这一步的话，端到端读到的 kills 会比事实小一个帧的量。
+      syncKills();
       return {
         flow: flow.state,
         endReason: flow.endReason,
@@ -472,10 +794,39 @@ if (import.meta.env.DEV) {
           leanTarget: player.state.leanTarget,
           leanCurrent: +player.state.leanCurrent.toFixed(3),
           leanLateral: +player.leanLateralOffset().toFixed(3),
+          // ★ M3-BUG-01：这个字段曾被当成"玩家穿墙"的判据用，但它是
+          //   **第 0 层的快照**（`level.isBlockedCell` 只查一层墙体）。
+          //   两层地图上"一层是墙、二层是楼面"是常态（楼板压墙）：tv_station_01 的
+          //   44 个二层容器里就有 6 个正落在这种格上 —— 站在那里的二层玩家会被
+          //   判成"在墙里"。它以 `player.cellBlocked` 的名义被 smoke.mjs 的
+          //   十局稳定性测试当作**致命**判据使用，于是 DoD 测试会报出并不存在的问题。
+          //
+          //   现在两者分开：
+          //     cellBlocked —— "这一格在本层是不是实心"，回答**站位是否合法**；
+          //     embedded    —— "玩家的身体是否插在实体内部"，回答**有没有穿模**。
+          //   真正的穿墙判据是后者（见 debug 区块的 embedded 字段）。
           cellBlocked: level.isBlockedCell(
             Math.floor(player.state.pos.x / level.cell),
             Math.floor(player.state.pos.z / level.cell)
           ),
+          embedded: (() => {
+            const cx = Math.floor(player.state.pos.x / level.cell);
+            const cz = Math.floor(player.state.pos.z / level.cell);
+            if (level.isRampCell(cx, cz)) return false; // 坡面不是盒子，交给表面插值
+            const spans = level.spans;
+            const r = level.spanRange(cx, cz);
+            if (!r) return true; // 越界按墙处理（与 level.tallestSolidTopAt 一致）
+            for (let s = r[0]; s < r[1]; s++) {
+              // 脚底在跨度内部、且该跨度还向上延伸 ≥0.2m → 人是插进去的，不是站上去的
+              if (
+                spans.y0[s] < player.state.pos.y - 1e-4 &&
+                spans.y1[s] > player.state.pos.y + 0.2
+              ) {
+                return true;
+              }
+            }
+            return false;
+          })(),
           armor: {
             head: { id: player.vitals.armor.head.id, durability: +player.vitals.armor.head.durability.toFixed(1) },
             body: { id: player.vitals.armor.body.id, durability: +player.vitals.armor.body.durability.toFixed(1) },
@@ -538,6 +889,10 @@ if (import.meta.env.DEV) {
           state: a.state.state,
           x: a.position.x,
           z: a.position.z,
+          // M3-1b-2 ③ 起 AI 有明确的层：不暴露 y 就无法断言"它真的上楼了"，
+          // 只能看水平距离 —— 而水平距离在一层正下方与真的在楼上是一样的。
+          y: a.position.y,
+          floor: level.floorOfY(a.position.y),
           pathLen: a.state.path.length,
           pathIdx: a.state.pathIdx,
           pendingGoal: a.state.pendingGoalCell,
@@ -548,14 +903,36 @@ if (import.meta.env.DEV) {
         aiAlive: aiManager.aliveCount(),
         kills: combatStats.kills,
         combat: { ...combatStats },
+        // M4-3：结算结果（纯函数产物）。暴露它是为了让端到端断言能验证
+        // "带出/损失/保险箱"与幂等重放，而不是只检查界面上有没有字。
+        raidResult: lastRaidResult,
         loot: {
           opened: loot.openedCount(),
           total: loot.containers.length,
-          inventory: loot.inventory.length,
-          value: loot.totalValue(),
+          // 字段名沿用（smoke.mjs 的"搜到物品并产生估值"断言依赖它），
+          // 数据源从 loot 内部数组换成 M3-5 的 inventory。
+          inventory: inventory.count,
+          value: inventory.value(),
+          bag: { used: inventory.usedSlots(), total: inventory.totalSlots(),
+                 weightKg: +inventory.weightKg().toFixed(2), limitKg: inventory.weightLimitKg },
+          safe: { value: inventory.safeValue(), tier: inventory.safeTier.id },
+          byType: loot.countByType(),
         },
         consumables: { ...consumables },
-        extract: extract.zones.map((z) => ({ x: z.x, z: z.z, r: z.radius, progress: z.progress })),
+        // M4-1：开放状态随撤离点一起暴露，端到端断言才能验证"条件点在该开的时候开"。
+        extract: extract.zones.map((z) => ({
+          x: z.x, z: z.z, r: z.radius, progress: z.progress, floor: z.floor,
+          rule: z.openRule ? z.openRule.type : 'always',
+          open: z.open.open, reason: z.open.reason, opensInMs: z.open.opensInMs,
+          remainingKills: z.open.remainingKills,
+        })),
+        // M4-2：中断状态暴露给端到端断言。
+        // 注意 `ex` 是帧内局部变量（每帧重建），DEV 接口在模块级拿不到它，
+        // 所以沿用 kills 那样的做法：帧内把最近一次结果记到模块级变量。
+        extractInterrupt: {
+          leaveMs: lastExtract ? lastExtract.leaveMs : 0,
+          cause: lastExtract && lastExtract.interrupted ? lastExtract.interrupted.cause : null,
+        },
         scheduler: {
           processedLastFrame: scheduler.stats.processedThisFrame,
           peakQueriesPerFrame: scheduler.stats.peakQueriesPerFrame,
@@ -570,17 +947,27 @@ if (import.meta.env.DEV) {
       };
     },
 
-    teleport(x, z) {
+    /**
+     * @param {number} x
+     * @param {number} z
+     * @param {number} [floor] 目标层（缺省 0）。
+     *   两层地图落地后这一参数是必需的：写死 y=0 会把玩家放到**一层地面**，
+     *   而二层的容器/撤离点都在 3.6m 上 —— 那样任何"传送到二层对象"的测试
+     *   实际测的都是一层，二层的内容永远不会被端到端覆盖到。
+     */
+    teleport(x, z, floor = 0) {
+      const baseY = level.floorBaseY(floor);
       player.state.pos.x = x;
       player.state.pos.z = z;
-      player.state.pos.y = 0;
+      player.state.pos.y = baseY;
       player.state.vel.x = 0;
       player.state.vel.z = 0;
       player.state.vel.y = 0;
       // 传 stepHeight：低掩体不该把人挡在外面，传 0 会把玩家推离掩体格
-      level.resolveCircle(player.state.pos, cfg.player.radius, 0, cfg.player.bodyHeight, cfg.player.stepHeight);
-      // 若落点正好在掩体顶上，直接站上去（否则会先"陷进去"再由台阶吸附弹出）
-      player.state.pos.y = level.surfaceAt(player.state.pos.x, player.state.pos.z, 0, cfg.player.stepHeight);
+      level.resolveCircle(player.state.pos, cfg.player.radius, baseY, cfg.player.bodyHeight, cfg.player.stepHeight);
+      // 若落点正好在掩体顶上，直接站上去（否则会先"陷进去"再由台阶吸附弹出）。
+      // feetY 用 baseY：从一层地面问的话，二层的楼板会被当成"迈不上去的实体"而算错。
+      player.state.pos.y = level.surfaceAt(player.state.pos.x, player.state.pos.z, baseY, cfg.player.stepHeight);
       player.state.onGround = true;
     },
     aimAt(x, y, z) {
@@ -888,11 +1275,37 @@ if (import.meta.env.DEV) {
       );
       return true;
     },
+    /**
+     * 立刻淘汰一名 AI（不造成其它副作用），供测试制造"击杀计数"。
+     *
+     * ★ [M4-BUG-01] 这里曾经**一调就抛异常**，而且从 M0~M2 那次提交起就是这样：
+     *   `damage` 写的是一个标量（`maxHealth * 10`），而 `core/ballistics.js` 的
+     *   `rawZoneDamage()` 取的是**按部位的对象** `weapon.damage[zone]` ——
+     *   于是每次都抛 `[ballistics] 武器 debug 未定义部位 chest 的伤害`。
+     *
+     *   为什么一直没人发现：`verify-prod-bundle.mjs` 只校验"这个名字有没有被打进
+     *   生产包"，**从不调用它**。于是它长期处于"已注册、已列入校验名单、一调就炸"
+     *   的状态，直到 M4-1 给地图加了 `killsAfter` 撤离点（e4_archive）——
+     *   那条规则需要"累计 3 杀"，而这是自动化里唯一能可靠制造击杀的手段，
+     *   缺陷这才暴露（详见 docs/M4-TEMP-REGISTRY.md）。
+     *
+     * 修法：形状对齐真实武器（`weapons.json` 的 `damage` 就是 `{head, chest, stomach, limb}`），
+     * 伤害取"远超最大生命"以保证一次命中必定淘汰 —— 它是夹具，不该被护甲/衰减影响。
+     * 部位 ×10 而没有写死 10000：这样任何写入部位表的单位（点/百分比）都不会让它失效。
+     */
     killOneAi() {
       const a = aiManager.ais.find((x) => !x.isDead);
       if (!a) return false;
+      const lethal = a.vitals.maxHealth * 10;
       a.applyHitFrom(
-        { id: 'debug', class: 'rifle', damage: a.vitals.maxHealth * 10, falloff: { startM: 1, endM: 2, minScale: 1 }, pellets: 1, fireIntervalMs: 100 },
+        {
+          id: 'debug',
+          class: 'rifle',
+          damage: { head: lethal, chest: lethal, stomach: lethal, limb: lethal },
+          falloff: { startM: 1, endM: 2, minScale: 1 },
+          pellets: 1,
+          fireIntervalMs: 100,
+        },
         { id: 'debug', damageScale: 1, armorPenetration: 9 },
         'chest',
         1,
@@ -900,6 +1313,12 @@ if (import.meta.env.DEV) {
         player.state.pos.z,
         player.state.pos.y
       );
+      // ★ 击杀计数必须显式补上（[M4-BUG-01] 的第二层）：
+      //   `combatStats.kills` 原先只由武器的 hit 事件自增，而这个接口绕过了武器 ——
+      //   于是 AI 确实死了，但"累计击杀数"仍是 0，依赖它的 killsAfter 撤离点开不了。
+      //   这里一次补两处，与武器那条路径（main.js 的 hit 事件）做的事完全一致。
+      aiManager.noteKill();
+      syncKills();
       return true;
     },
     setSetting(key, value) {
@@ -917,6 +1336,14 @@ if (import.meta.env.DEV) {
     },
     killPlayer() {
       player.takeDamage(9999);
+    },
+    /**
+     * 主动放弃本局（跳过 UI，直接结束）。
+     * 端到端走的是**真实 UI 流程**（点按钮 → 弹确认 → 确认），
+     * 这个接口留作手动调试用：在控制台里一步触发"主动退出"这条结束路径。
+     */
+    abandonRaid() {
+      endRaid(END_REASON.ABANDONED, raidClock(performance.now()));
     },
     /** 复活式回血，用于让长时稳定性测试能继续跑 */
     healPlayer(amount = 9999) {
@@ -950,23 +1377,45 @@ if (import.meta.env.DEV) {
       this.teleport(best.x, best.z);
       return { x: best.x, z: best.z, minAiDistance: +bestScore.toFixed(1) };
     },
-    teleportToContainer() {
-      const c = loot.containers.find((x) => !x.opened);
+    /**
+     * 传送到一个未开启容器的旁边。
+     * @param {number} [floor] 只找该层的容器（缺省不限）。
+     *   `floor` 必须一并传给 teleport —— 否则二层容器会被"传送到它的一层正下方"，
+     *   而 loot 按层判定，于是这条夹具**永远搜不到**二层那 44 个容器。
+     * @returns {false|{floor:number}} 找不到容器返回 false
+     */
+    teleportToContainer(floor = null) {
+      const c = loot.containers.find(
+        (x) => !x.opened && (floor === null || x.floor === floor)
+      );
       if (!c) return false;
       const ang = Math.random() * Math.PI * 2;
-      this.teleport(c.x + Math.cos(ang) * 1.2, c.z + Math.sin(ang) * 1.2);
-      return true;
+      this.teleport(c.x + Math.cos(ang) * 1.2, c.z + Math.sin(ang) * 1.2, c.floor);
+      return { floor: c.floor, type: c.type };
     },
-    teleportToExtract() {
-      const z = extract.zones[0];
-      this.teleport(z.x, z.z);
-      return true;
+    /**
+     * 传送到一个撤离点。
+     * @param {number} [floor] 只找该层的撤离点（缺省取第一个）。
+     *   两层地图的 e2_roof 在二层，缺省写法永远测不到它 —— 于是"二层能不能撤离"
+     *   这条 M3 的必答项在端到端测试里从未被走过。
+     */
+    teleportToExtract(floor = null) {
+      const z = extract.zones.find((x) => floor === null || x.floor === floor);
+      if (!z) return false;
+      this.teleport(z.x, z.z, z.floor);
+      return { floor: z.floor, id: z.id };
     },
     setTimeLimitMs(ms) {
       cfg.raid.timeLimitMs = ms;
     },
     levelInfo() {
       return { W: level.W, cell: level.cell, free: level.free, walls: level.wallCount };
+    },
+    /** 容器清单（含**层号**）。给测试用：按层选夹具，避免"只测得到一层"。 */
+    debugContainerList() {
+      return loot.containers.map((c) => ({
+        id: c.id, x: c.x, y: c.y, z: c.z, floor: c.floor, type: c.type, opened: c.opened,
+      }));
     },
   };
 }

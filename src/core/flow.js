@@ -14,6 +14,13 @@ export const END_REASON = Object.freeze({
   EXTRACTED: 'extracted',
   DEAD: 'dead',
   TIMEOUT: 'timeout',
+  /**
+   * 主动放弃（暂停菜单里的"放弃本局"）。
+   * 它是 M4 DoD 五条结束路径里的"主动退出"一条 —— 此前这条路径不存在，
+   * 玩家想中途退出只能刷新页面，而刷新会让整局静默消失、连结算都没有。
+   * 结算口径与阵亡相同（未撤离 = 只保安全箱），见 inventory.settle。
+   */
+  ABANDONED: 'abandoned',
 });
 
 // M1 中 ENDED 是终态：M1 的"再进一局"走整页刷新（见 main.js [M1-TEMP-14]），

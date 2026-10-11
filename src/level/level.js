@@ -881,6 +881,10 @@ export function createLevel(cfg, scene) {
     resolveCircle, canStandAt,
     // M3-1b-2 ③：AI 竖直跟随需要的两个查询
     floorOfY, isRampCell,
+    // 层号 → 该层地面标高。容器/撤离点这类"放在某一层地面上的实体"需要它来算 y ——
+    // 修 M3-1b-2 ④ 遗留缺陷时补的：此前 loot.js / extract.js 把 y 写死成一层的值，
+    // 于是二层的 44 个容器与 e2_roof 撤离点全部摆在了一层高度上。
+    floorBaseY,
     raycastWall, raycastGround, raycastGroundFull, hasLineOfSight,
     // 几何版本 2 的查询接口。旧名 groundHeightAt / effectiveHeightAt 已被**删除**而不是保留别名：
     // 它们不接收 y，在两层的世界里必然取错层；留一个"看起来还能用"的旧名字，
@@ -890,6 +894,10 @@ export function createLevel(cfg, scene) {
     coverCm, coverList, coverMeshes, stepHeight: pathStepHeight, pathBlocked,
     // 跨度表（供调试与 M3-1b-2 使用）
     spans: { start: spanStart, y0: spanY0f, y1: spanY1f, kind: spanKindU, count: spanY0f.length },
+    /** 某格在跨度表里的区间 [begin, end)。越界返回 null（与 tallestSolidTopAt 口径一致）。
+     *  暴露它是因为"玩家是否插在实体里"这类判定必须看到**全部**跨度：
+     *  单层快照 blocked[] 只回答"这格一层有没有墙"，两层地图上会给出错误结论（M3-BUG-01）。 */
+    spanRange: (cx, cz) => spanRange(cx, cz),
     // 分层寻路网格（M3-1b-2 ②）。节点 = floor*W*H + cell。
     // 单层地图下 floorCount=1、节点索引恒等于 cell，因此与旧的单层网格逐格等价。
     nav: {

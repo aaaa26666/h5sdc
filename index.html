@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
-    <title>H5 搜打撤 PVE · M3 灰盒关卡</title>
+    <title>H5 搜打撤 PVE · M4 撤离与局内流程闭环</title>
     <style>
       :root { --ink: #cfe3ea; --dim: #7c8f98; --warn: #ffcc66; --bad: #ff6b5a; --ok: #7fe0a0; }
       * { box-sizing: border-box; }
@@ -23,6 +23,12 @@
       #hud .tl { left: 14px; top: 14px; min-width: 210px; }
       #hud .tr { right: 14px; top: 14px; text-align: right; min-width: 170px; }
       #hud .bl { left: 14px; bottom: 14px; min-width: 210px; }
+      #hud .br { right: 14px; bottom: 14px; min-width: 210px; }
+      /* 左上改成放小地图：圆形地图外面不需要再套一个方底 */
+      #hud .map-panel { padding: 0; background: transparent; border: none; text-align: center; }
+      #hud .map-panel #minimap { display: block; border-radius: 50%;
+        border: 1px solid rgba(120,160,180,.35); background: rgba(8,12,16,.55); }
+      #hud .map-panel .muted { font-size: 11px; margin-top: 3px; }
       .k { color: var(--dim); }
       .v { color: var(--ink); }
       .bar { height: 6px; background: rgba(255,255,255,.10); border-radius: 3px; overflow: hidden; margin: 3px 0 6px; }
@@ -78,6 +84,8 @@
       .screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
         background: rgba(6,9,12,.9); z-index: 20; }
       .screen.on { display: flex; }
+      /* 二次确认弹窗要盖在暂停菜单之上（暂停菜单也是 .screen，同级 z-index 20） */
+      #screenAbandon { z-index: 30; }
       .card { width: min(620px, 90vw); background: #10161c; border: 1px solid rgba(120,160,180,.25);
         border-radius: 10px; padding: 26px 30px; }
       .card h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .06em; }
@@ -89,6 +97,10 @@
         border: 1px solid rgba(140,200,225,.5); border-radius: 6px; color: var(--ink);
         background: rgba(80,150,190,.14); pointer-events: auto; user-select: none; }
       .btn:hover { background: rgba(80,150,190,.26); }
+      /* 放弃本局是**不可逆**操作，视觉上必须区别于普通按钮 ——
+         玩家点错一次的代价是丢掉整局物资。 */
+      .btn.danger { color: var(--bad); border-color: rgba(255,107,90,.45); }
+      .btn.danger:hover { background: rgba(255,107,90,.18); }
       .muted { color: var(--dim); font-size: 12px; }
       .warn { color: var(--warn); }
       .bad { color: var(--bad); }
@@ -113,7 +125,28 @@
 
     <div id="hud" class="overlay">
       <div id="damageFlash"></div>
-      <div class="panel tl">
+      <!-- 左上：小地图（圆形、局部、随角色朝向旋转）。面板背景透明，只露出圆。 -->
+      <div class="panel tl map-panel">
+        <canvas id="minimap" width="168" height="168"></canvas>
+        <div class="muted" id="minimapLabel">—</div>
+        <div class="muted" id="questText">任务 —</div>
+      </div>
+      <div class="panel tr">
+        <div><span class="k">剩余时间</span> <span class="v" id="timeText">04:00</span></div>
+        <div><span class="k">敌人剩余</span> <span class="v" id="aiText">6</span></div>
+        <div><span class="k">已搜刮</span> <span class="v" id="lootText">0 件</span></div>
+        <div><span class="k">估值</span> <span class="v" id="valueText">0</span></div>
+        <div><span class="k">背包</span> <span class="v" id="bagText">—</span></div>
+        <div><span class="k">保险箱</span> <span class="v" id="safeText">—</span></div>
+      </div>
+      <div class="panel bl">
+        <div class="k">撤离点</div>
+        <div class="muted" id="extractText">未在撤离区内</div>
+        <div class="k" style="margin-top:8px">消耗品</div>
+        <div class="muted" id="consumableText">3 绷带 · 4 急救包</div>
+      </div>
+      <!-- 右下：战斗信息（原在左上，与小地图换位）。 -->
+      <div class="panel br">
         <div><span class="k">生命</span> <span class="v" id="hpText">100 / 100</span></div>
         <div class="bar hp"><i id="hpBar" style="width:100%"></i></div>
         <div><span class="k">护甲</span> <span class="v" id="armorText">胸 -- / 头 --</span></div>
@@ -121,18 +154,6 @@
         <div><span class="k">武器</span> <span class="v" id="weaponText">--</span></div>
         <div><span class="k">弹药</span> <span class="v" id="ammoText">30 / 120</span></div>
         <div class="muted" id="reloadText">&nbsp;</div>
-      </div>
-      <div class="panel tr">
-        <div><span class="k">剩余时间</span> <span class="v" id="timeText">04:00</span></div>
-        <div><span class="k">敌人剩余</span> <span class="v" id="aiText">6</span></div>
-        <div><span class="k">已搜刮</span> <span class="v" id="lootText">0 件</span></div>
-        <div><span class="k">估值</span> <span class="v" id="valueText">0</span></div>
-      </div>
-      <div class="panel bl">
-        <div class="k">撤离点</div>
-        <div class="muted" id="extractText">未在撤离区内</div>
-        <div class="k" style="margin-top:8px">消耗品</div>
-        <div class="muted" id="consumableText">3 绷带 · 4 急救包</div>
       </div>
       <div id="killfeed"></div>
       <div id="dmgDir"></div>
@@ -146,8 +167,14 @@
     <div class="screen on" id="screenStart">
       <div class="card">
         <h1>H5 搜打撤 · PVE</h1>
-        <h2>M3 灰盒关卡 —— 电视台两层图 · 上下楼 · 多武器 · AI 状态机</h2>
+        <h2>M4 撤离与局内流程闭环 —— 电视台两层图 · 撤离点规则 · 结算 · 小地图</h2>
         <p class="muted">目标：进入战区搜刮物资，与 AI 交战，带着战利品撤离</p>
+        <!-- §2.6 要求"断线惩罚规则需在首次进入时告知玩家" -->
+        <p class="muted">⚠ 断线或关闭页面视为<b>未撤离</b>：除保险箱内的物品外，本局携带物全部损失。</p>
+        <!-- M4-7：上局中断后，这里出现一条可点击的提示（默认隐藏） -->
+        <div class="row" id="interruptedNotice" hidden style="cursor:pointer">
+          <span class="k warn">上局未正常结束（刷新 / 关闭页面）</span><span class="v">点击查看结算 ›</span>
+        </div>
         <div class="row"><span class="k">移动 / 视角</span><span>W A S D · 鼠标</span></div>
         <div class="row"><span class="k">射击 / 开镜</span><span>鼠标左键 · 鼠标右键（按住）</span></div>
         <div class="row"><span class="k">切枪 / 换弹</span><span>1 主武器 · 2 副武器 · 滚轮 · R</span></div>
@@ -157,7 +184,7 @@
         <div class="row"><span class="k">搜索容器</span><span>靠近后按住 F</span></div>
         <div class="row"><span class="k">医疗</span><span>3 绷带 · 4 急救包（受击会打断）</span></div>
         <div class="row"><span class="warn">注意</span><span class="warn">请勿使用 Ctrl 组合键（浏览器保留，无法拦截）</span></div>
-        <div class="row"><span class="k">撤离</span><span>走进撤离区并停留</span></div>
+        <div class="row"><span class="k">撤离</span><span>走进撤离区（绿=可用，灰=未开放）并停留 10 秒</span></div>
         <div class="row"><span class="k">暂停 / 设置</span><span>Esc 解锁指针后可打开设置</span></div>
         <div class="btns">
           <div class="btn" id="btnStart">进入战区</div>
@@ -177,6 +204,21 @@
         <div class="btns">
           <div class="btn" id="btnResume">继续游戏</div>
           <div class="btn" id="btnSettingsFromPause">设置</div>
+          <div class="btn danger" id="btnAbandon">放弃本局</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 放弃本局的二次确认。用弹窗而不是"按钮上膛"，是因为上膛状态很容易被忽略：
+         玩家可能只是随手点了一下，回头再点一次就真的丢了整局。弹窗强制他看清后果。 -->
+    <div class="screen" id="screenAbandon">
+      <div class="card">
+        <h1>放弃本局？</h1>
+        <h2>除保险箱内的物品外，本局携带物将全部损失</h2>
+        <p class="muted">这一步不可撤销。放弃后按「未撤离」结算。</p>
+        <div class="btns">
+          <div class="btn danger" id="btnAbandonConfirm">确认放弃</div>
+          <div class="btn" id="btnAbandonCancel">取消</div>
         </div>
       </div>
     </div>

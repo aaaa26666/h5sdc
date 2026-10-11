@@ -542,7 +542,10 @@
       "x": 3,
       "z": 36,
       "radiusCells": 1.4,
-      "conditional": false
+      "conditional": false,
+      "openRule": {
+        "type": "always"
+      }
     },
     {
       "id": "e2_ne",
@@ -550,7 +553,10 @@
       "x": 36,
       "z": 3,
       "radiusCells": 1.4,
-      "conditional": false
+      "conditional": false,
+      "openRule": {
+        "type": "always"
+      }
     },
     {
       "id": "e3_hall",
@@ -559,7 +565,12 @@
       "z": 13,
       "radiusCells": 1.2,
       "conditional": true,
-      "conditionNote": "需在局内时间过半后开放（时间条件点）。条件判定属 M4，本表只登记。"
+      "conditionNote": "[已由 M4-1 落地为 openRule] 需在局内时间过半后开放（时间条件点）。条件判定属 M4，本表只登记。",
+      "openRule": {
+        "type": "timeAfter",
+        "afterFraction": 0.5,
+        "_note": "局内时间过半后开放。M4-1 之前本表只有 conditionNote 一句描述、判定未实现（M1-TEMP-12）；现在规则是结构化字段，由 src/core/extractRules.js 求值。"
+      }
     }
   ],
   "_containersComment": "容器落位。数量必须与掉落权重表的 containerBudget 一致（民用14/军用5/保险箱2/钥匙房1=22）。M3-3/M3-4 会接入类型与掉落；本阶段只作为静态灰盒物件显示分布。",

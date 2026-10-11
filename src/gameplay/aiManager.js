@@ -32,6 +32,10 @@ export function createAiManager({ cfg, level, scene, scheduler, player }) {
   // 分区查找。M3-1b-2 ④ 加了层判据：两层地图里不同层可能覆盖同样的 (x,z)，
   // 而 AI 出生格是**单层**的格坐标（没有层号）—— 它们一律落在第 0 层，
   // 所以这里只匹配第 0 层的分区。不加这一条会把二层的分区也匹配进来。
+  //
+  // [M3-TEMP-7] 后果是**二层开局没有 AI**：二层只靠 ③ 的跨层追击覆盖，
+  // 玩家上楼后那边是空的。要让部分 AI 开局就在二层，需要让 spawnCell 带层号，
+  // 再让本函数按层匹配。改动不大，但会牵动出生点校验与 AI 配额的口径。
   const zoneOfCell = (cx, cz) =>
     (cfg.map.zones || []).find(
       (zn) =>

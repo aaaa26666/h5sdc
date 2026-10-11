@@ -1601,6 +1601,809 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
   }
 }
 
+// ============ 容器与撤离点的分层（M3-1b-2 ④ 遗留缺陷的回归防线）============
+//
+// 存在原因：地图表的容器与撤离点**都带 floor**，但 config 派生时只映射了 [x, z]，
+// 层号与容器分级（type）被静默丢弃。后果是三个**运行时**缺陷：
+//   loot.js    容器 y 写死 0.45  → 二层 44 个容器浮在一层高度（二层地面是 3.6m）
+//   loot.js    判定只有水平距离 → 站在一层能隔层搜到二层正上方的箱子
+//   extract.js 判定只有水平距离 → 站在一层就能触发二层的 e2_roof，不用爬楼梯即可撤离
+//
+// 为什么此前 183/183 全绿却全漏：已有断言校验的是**地图表内部**（容器可达、不在墙里、
+// 在分区内），校验对象与被破坏的对象不是同一个。这一组补的是后者 ——
+// 从「派生后的运行时配置」一路验到「判定函数的实际返回值」。
+{
+  const { createLevel } = await import('../src/level/level.js');
+  const { createLoot } = await import('../src/gameplay/loot.js');
+  const { createExtract } = await import('../src/gameplay/extract.js');
+  const sceneL = { add() {}, remove() {} };
+  const lvlL = createLevel({ ...config, map: config.maps.tv_station_01 }, sceneL);
+
+  // ---- 1. 派生没有丢数据 ----
+  check('容器全部贯通到运行时配置（数量与地图表一致，不丢不增）',
+    config.loot.containers.length === config.map.containers.length,
+    `派生 ${config.loot.containers.length} / 地图表 ${config.map.containers.length}`);
+
+  const floorsSeen = [...new Set(config.loot.containers.map((c) => c.floor))].sort();
+  check('容器的 floor 贯通到了运行时配置（两层图上不止一层有容器）',
+    floorsSeen.length > 1, `出现的层：${floorsSeen.join(', ')}`);
+
+  const typesSeen = [...new Set(config.loot.containers.map((c) => c.type))];
+  check('容器的 type（民用/军用/保险箱/钥匙房）贯通到了运行时配置',
+    typesSeen.length > 1 && typesSeen.every((t) => typeof t === 'string'),
+    `${typesSeen.length} 种：${typesSeen.join(', ')}`);
+
+  check('每个容器的 floor 都是合法层号（`|| 0` 兜底没有引入越界层）',
+    config.loot.containers.every((c) => c.floor >= 0 && c.floor <= lvlL.nav.floorCount - 1),
+    `floorCount=${lvlL.nav.floorCount}`);
+
+  // ---- 2. 容器摆在它所在那一层的地面上 ----
+  const lootL = createLoot(config, lvlL, sceneL);
+  // 判据是"坐在所在层的地面上"，具体抬高多少由容器类型的高度决定（分级后各类箱子尺寸不同），
+  // 所以不能用 0.45 这个单一常数 —— 那正是旧实现的错误来源。
+  const wrongY = lootL.containers.filter(
+    (c) => Math.abs(c.y - (lvlL.floorBaseY(c.floor) + c.style.h / 2)) > 1e-6);
+  check('★ 每个容器的 y 都等于「所在层地面标高 + 自身高度的一半」（不是写死的常数）',
+    wrongY.length === 0,
+    wrongY.length
+      ? `${wrongY.length} 个错位，例：floor=${wrongY[0].floor} y=${wrongY[0].y.toFixed(3)}`
+      : '全部对齐');
+
+  const upBoxes = lootL.containers.filter((c) => c.floor === 1);
+  check('★ 二层容器确实坐在二层地面上（此前全部落在 0.45m 的一层高度）',
+    upBoxes.length > 0 && upBoxes.every((c) => c.y > 3.6),
+    `${upBoxes.length} 个二层容器，y 最小 ${Math.min(...upBoxes.map((c) => c.y)).toFixed(2)}m`);
+
+  // ---- 3. 搜索判定分层 ----
+  const upBox = lootL.containers.find((c) => c.floor === 1);
+  if (upBox) {
+    const onL0 = lootL.update(0.016, { x: upBox.x, y: 0, z: upBox.z }, false).nearest;
+    check('★ 站在**一层**同一 xz 上，搜不到**二层**的容器（此前会隔层搜到）',
+      !onL0 || onL0.floor === 0,
+      onL0 ? `最近的是 floor=${onL0.floor} 的容器` : '一层该处没有别的容器');
+
+    const onL1 = lootL.update(0.016, { x: upBox.x, y: lvlL.floorBaseY(1), z: upBox.z }, false).nearest;
+    check('站在**二层**同一 xz 上，能搜到那个二层容器（分层没把正常路径挡掉）',
+      onL1 === upBox,
+      onL1 ? `命中 id=${onL1.id} floor=${onL1.floor}` : '什么都没搜到');
+  }
+
+  // ---- 4. 撤离点分层 ----
+  const exL = createExtract(config, lvlL, sceneL);
+  // M4-1 之后 extract.update 必须拿到局内时间才能求开放规则。
+  // 这里取"条件点也已开放"的时刻（时间过半之后），
+  // 否则本组要验的是**分层**，却会被"规则未满足"干扰成假失败。
+  const EX_CTX = { elapsedMs: config.raid.timeLimitMs * 0.6, timeLimitMs: config.raid.timeLimitMs };
+  const topZone = exL.zones.find((z) => z.floor === 1);
+  check('撤离点保留了 floor（两层图上至少有一个不在一层）', !!topZone,
+    topZone ? `zone#${topZone.id} 在第 ${topZone.floor} 层` : '所有撤离点都在第 0 层');
+
+  if (topZone) {
+    const r0 = exL.update(0.016, { x: topZone.x, y: 0, z: topZone.z }, EX_CTX);
+    check('★ 站在**一层**不得触发**二层**的撤离点（此前不用爬楼就能从天台撤离）',
+      r0.inZone === false, `inZone=${r0.inZone}`);
+
+    const r1 = exL.update(0.016, { x: topZone.x, y: lvlL.floorBaseY(1), z: topZone.z }, EX_CTX);
+    check('站在**二层**能触发那个撤离点（分层没把正常撤离挡掉）',
+      r1.inZone === true, `inZone=${r1.inZone}`);
+
+    check('撤离环画在它所在那一层的地面上（此前一律画在 y=0.03）',
+      Math.abs(topZone.ring.position.y - (lvlL.floorBaseY(1) + 0.03)) < 1e-6,
+      `ring.y=${topZone.ring.position.y.toFixed(3)}，二层地面 ${lvlL.floorBaseY(1).toFixed(2)}`);
+  }
+
+  // ---- 5. 单层图不受影响 ----
+  // industrial_01 的容器与撤离点都没有 floor 字段，走的正是 `|| 0` 兜底路径。
+  check('单层地图表的容器确实没有 floor（缺省 0 的兜底路径被真实用到）',
+    config.maps.industrial_01.containers.every((c) => c.floor === undefined),
+    `${config.maps.industrial_01.containers.length} 个容器均无 floor`);
+  check('单层地图表的撤离点确实没有 floor（同上）',
+    (config.maps.industrial_01.extracts || []).every((e) => e.floor === undefined));
+}
+
+// ============ M3-3/4/5/6：容器分级、掉落权重、背包、安全箱 ============
+//
+// 这一组守的是 M3 的两条 DoD：
+//   ① 掉落分布符合策划权重表
+//   ② 单局物资收益区间符合数值预期（区间由 validate-loot-tables.mjs 统计，
+//      这里守的是让区间成立的**机制**：容量与负重是真约束）
+//
+// ① 的实现方式值得说明：此前"理论分布"（工具算的）与"运行时掉落"（代码写的）
+// 是两套东西，谁也说不清对不对得上。现在两边共用 src/core/lootTable.js 的算法，
+// 于是这条断言能直接把运行时抽样和表里的权重放在一起比。
+{
+  const { createLevel } = await import('../src/level/level.js');
+  const { createLoot } = await import('../src/gameplay/loot.js');
+  const { createInventory } = await import('../src/gameplay/inventory.js');
+  const { mulberry32 } = await import('../src/core/rng.js');
+  const { rollItems, containerById, normalizedWeights } = await import('../src/core/lootTable.js');
+  const { findSlot, createGrid } = await import('../src/core/packing.js');
+
+  const sceneM = { add() {}, remove() {} };
+  const lvlM = createLevel({ ...config, map: config.maps.tv_station_01 }, sceneM);
+  const table = config.lootTable;
+
+  // ---- 1. 容器分级：数量与参数都来自表，不是硬编码 ----
+  const lootM = createLoot(config, lvlM, sceneM);
+  const byType = lootM.countByType();
+  const budgetKeys = Object.keys(table.containerBudget).filter((k) => !k.startsWith('_'));
+  check('运行时容器分级与掉落表的容器预算一致（每类数量都对得上）',
+    budgetKeys.every((k) => byType[k] === table.containerBudget[k]),
+    budgetKeys.map((k) => `${k}:${byType[k]}/${table.containerBudget[k]}`).join(' '));
+
+  check('容器分级参数来自表：民用箱 2500ms、钥匙房 8000ms（不是同一个常数）',
+    containerById(table, 'crate_civil').searchMs === 2500
+    && containerById(table, 'key_room').searchMs === 8000,
+    `民用 ${containerById(table, 'crate_civil').searchMs}ms / 钥匙房 ${containerById(table, 'key_room').searchMs}ms`);
+
+  check('打断规则写在配置里（lose_all 清零 / keep_partial 保留一半）',
+    table.interruptRules.lose_all.keepFraction === 0
+    && table.interruptRules.keep_partial.keepFraction === 0.5);
+
+  check('运行时每个容器都能查到自己的分级定义（type 全部有效）',
+    lootM.containers.every((c) => c.def && c.def.searchMs > 0 && c.def.interruptRule),
+    `${lootM.containers.length} 个容器`);
+
+  // ---- 2. ★ DoD ①：运行时掉落分布符合权重表 ----
+  for (const c of table.containers) {
+    const rnd = mulberry32(20260301); // 固定种子：同样本量下结论可复算
+    const N = 20000;
+    const cnt = {};
+    let total = 0;
+    for (let i = 0; i < N; i++) {
+      for (const it of rollItems(table, c.id, rnd)) {
+        cnt[it.rarity] = (cnt[it.rarity] || 0) + 1;
+        total++;
+      }
+    }
+    const expect = normalizedWeights(c);
+    let worst = 0;
+    let worstR = null;
+    for (const r of Object.keys(expect)) {
+      const got = (cnt[r] || 0) / total;
+      const d = Math.abs(got - expect[r]);
+      if (d > worst) { worst = d; worstR = r; }
+    }
+    // 2 个百分点：抽样误差在 5 万样本下约 0.2~0.5pp，留足余量；
+    // 但它足以抓住"整档权重没生效"或"池子取错"这类实现错误。
+    check(`★ DoD① ${c.id} 的运行时掉落分布符合权重表`, worst < 0.02,
+      `最大偏差 ${(worst * 100).toFixed(2)}pp（${worstR}），样本 ${total} 件`);
+  }
+
+  // ---- 3. M3-5 背包：二维网格 + 负重 ----
+  const inv = createInventory(config);
+  check('背包容量与负重来自掉落表（6×5=30 格 / 22kg）',
+    inv.totalSlots() === 30 && inv.weightLimitKg === 22,
+    `${inv.totalSlots()} 格 / ${inv.weightLimitKg}kg`);
+
+  const rifle = table.items.find((i) => i.id === 'rifle_sr25');   // 2×4，4.6kg，weapon
+  const vest4 = table.items.find((i) => i.id === 'vest4');        // 2×3，5.2kg，armor
+  const bandage = table.items.find((i) => i.id === 'bandage');    // 1×1，0.2kg
+  const medkit = table.items.find((i) => i.id === 'medkit');      // 2×1，0.6kg
+
+  check('2×4 的步枪放得进 6×5 背包，且按**格数**而不是件数记账',
+    inv.tryAdd(rifle).ok && inv.usedSlots() === 8,
+    `已用 ${inv.usedSlots()} 格`);
+
+  check('负重随入包累加（4.6kg）', Math.abs(inv.weightKg() - rifle.weightKg) < 1e-6);
+
+  // 超重：4 件四级护甲 = 20.8kg，第 5 件会超 22kg
+  const invW = createInventory(config);
+  let rejected = null;
+  for (let i = 0; i < 5; i++) {
+    const r = invW.tryAdd(vest4);
+    if (!r.ok) { rejected = r; break; }
+  }
+  check('超过 22kg 负重上限时拒绝入包，并说明是超重而不是没地方',
+    rejected && rejected.reason === 'weight',
+    rejected ? `第 5 件被拒，原因 ${rejected.reason}，当前 ${invW.weightKg().toFixed(1)}kg` : '没被拒绝');
+
+  // 装满：30 件 1×1 正好填满 30 格（且远未超重），第 31 件只能是"没地方"
+  const invS = createInventory(config);
+  let full = null;
+  for (let i = 0; i < 31; i++) {
+    const r = invS.tryAdd(bandage);
+    if (!r.ok) { full = r; break; }
+  }
+  check('格子装满时拒绝入包，并说明是没地方而不是超重',
+    full && full.reason === 'space',
+    full ? `第 31 件被拒，原因 ${full.reason}，已用 ${invS.usedSlots()} 格` : '没被拒绝');
+
+  // 形状：2×1 的急救包放不进 1×2 的格子，除非旋转 —— 这就是"排放"与"计数"的区别
+  const g = createGrid(1, 2);
+  const slotNoRotate = findSlot(g, medkit, false);
+  const slotRotate = findSlot(g, medkit, true);
+  check('★ 2×1 的急救包放不进 1×2 的格子（不旋转时）', slotNoRotate === null);
+  check('旋转后可以放进 1×2（真人一定会转一下再塞）',
+    !!slotRotate && slotRotate.w === 1 && slotRotate.h === 2,
+    slotRotate ? `${slotRotate.w}×${slotRotate.h} rotated=${slotRotate.rotated}` : '放不下');
+
+  // ---- 4. M3-6 安全箱与死亡掉落 ----
+  const invK = createInventory(config);
+  check('新账号安全箱是 1×2（档位顺序来自表）',
+    invK.safeTier.id === 'safe_t1' && invK.safeTier.w === 1 && invK.safeTier.h === 2,
+    `${invK.safeTier.id} ${invK.safeTier.w}×${invK.safeTier.h}`);
+  check('安全箱装不下武器与护甲（防"零风险刷保险"）',
+    !invK.safeAccepts(rifle) && !invK.safeAccepts(vest4),
+    `rifle=${invK.safeAccepts(rifle)} vest4=${invK.safeAccepts(vest4)}`);
+
+  const bitcoin = table.items.find((i) => i.id === 'bitcoin');    // 1×1，11000，valuable
+  invK.tryAdd(rifle);
+  invK.tryAdd(bitcoin);
+  const safeIn = invK.items.filter((e) => e.inSafe).map((e) => e.item.id);
+  check('入包后安全箱自动装填最值钱且类别允许的物品',
+    safeIn.length === 1 && safeIn[0] === 'bitcoin',
+    `安全箱内：${safeIn.join(',') || '空'}`);
+
+  const death = invK.settle('death');
+  const escaped = invK.settle('extract');
+  check('★ 阵亡只保住安全箱里的（步枪作为武器不在安全箱内，会掉）',
+    death.kept.every((e) => e.inSafe) && death.keptValue === bitcoin.value,
+    `保住 ${death.keptValue} / 损失 ${death.lostValue}`);
+  check('撤离成功则全部带出（安全箱不是唯一出路）',
+    escaped.kept.length === 2 && escaped.keptValue === rifle.value + bitcoin.value,
+    `带出 ${escaped.keptValue}`);
+  check('死亡掉落严格劣于撤离（保险不能反超撤离）',
+    death.keptValue < escaped.keptValue,
+    `${death.keptValue} < ${escaped.keptValue}`);
+}
+
+// ============ M4-1 撤离点开放规则（常驻 / 条件 / 时间窗）============
+//
+// 这一组守的是流程文档 §2.4「撤离点分为常驻点与条件点（如需要特定钥匙、特定时间后开放）」
+// 与 M4-1 任务名里的三类规则。
+//
+// 规则求值放在 src/core/extractRules.js（纯函数）就是为了能被这里逐毫秒验证 ——
+// 若它写在建 THREE 环与光柱的 extract.js 里，就只能在浏览器里"看着像对了"。
+{
+  const { createLevel } = await import('../src/level/level.js');
+  const { createExtract } = await import('../src/gameplay/extract.js');
+  const { evaluateOpenRule, OPEN_RULE } = await import('../src/core/extractRules.js');
+
+  const T = config.raid.timeLimitMs; // 不硬编码：规则里的 fraction 都是相对它解析的
+
+  // ---- 1. 纯函数层 ----
+  const always = evaluateOpenRule({ type: OPEN_RULE.ALWAYS }, { elapsedMs: 0, timeLimitMs: T });
+  check('常驻点在局内任何时刻都开放', always.open && always.reason === 'always');
+  check('没有 openRule 字段的撤离点按常驻处理（旧地图表行为不变）',
+    evaluateOpenRule(null, { elapsedMs: T * 0.9, timeLimitMs: T }).open);
+
+  const gate = { type: OPEN_RULE.TIME_AFTER, afterFraction: 0.5 };
+  const gBefore = evaluateOpenRule(gate, { elapsedMs: T * 0.5 - 1, timeLimitMs: T });
+  const gAt = evaluateOpenRule(gate, { elapsedMs: T * 0.5, timeLimitMs: T });
+  const gAfter = evaluateOpenRule(gate, { elapsedMs: T * 0.9, timeLimitMs: T });
+  check('★ 条件点在时间门槛到达之前不开放', !gBefore.open && gBefore.reason === 'gatePending');
+  check('条件点在门槛到达的那一刻开放', gAt.open && gAt.reason === 'gatePassed');
+  check('条件点开放后不再关闭（是一次性门槛，不是周期性的）', gAfter.open);
+  check('条件点会报出"还要多久开放"（HUD 与断言都依赖它）',
+    gBefore.opensInMs === 1, `opensInMs=${gBefore.opensInMs}`);
+
+  const win = { type: OPEN_RULE.TIME_WINDOW, fromMs: 60000, toMs: 180000 };
+  check('★ 时间窗开启之前不开放', !evaluateOpenRule(win, { elapsedMs: 59999, timeLimitMs: T }).open);
+  check('时间窗内开放', evaluateOpenRule(win, { elapsedMs: 60000, timeLimitMs: T }).open);
+  check('★ 时间窗关闭之后不再开放',
+    !evaluateOpenRule(win, { elapsedMs: 180000, timeLimitMs: T }).open, '关闭后 open=false');
+  const inWin = evaluateOpenRule(win, { elapsedMs: 120000, timeLimitMs: T });
+  check('窗口内会报出"还有多久关闭"', inWin.closesInMs === 60000, `closesInMs=${inWin.closesInMs}`);
+  const winFrac = { type: OPEN_RULE.TIME_WINDOW, fromFraction: 0.2, toFraction: 0.6 };
+  check('时间窗支持按单局时限的比例配置（与绝对毫秒等价）',
+    evaluateOpenRule(winFrac, { elapsedMs: T * 0.4, timeLimitMs: T }).open
+    && !evaluateOpenRule(winFrac, { elapsedMs: T * 0.7, timeLimitMs: T }).open);
+
+  // ---- 1b. killsAfter：局内累计淘汰达标后开放 ----
+  const killRule = { type: OPEN_RULE.KILLS_AFTER, kills: 3 };
+  const k0 = evaluateOpenRule(killRule, { elapsedMs: 0, timeLimitMs: T, kills: 0 });
+  const k2 = evaluateOpenRule(killRule, { elapsedMs: 0, timeLimitMs: T, kills: 2 });
+  const k3 = evaluateOpenRule(killRule, { elapsedMs: 0, timeLimitMs: T, kills: 3 });
+  const k5 = evaluateOpenRule(killRule, { elapsedMs: 0, timeLimitMs: T, kills: 5 });
+  check('★ 淘汰数未达标时不开放', !k0.open && !k2.open && k2.reason === 'killsPending');
+  check('★ 淘汰数达标的那一刻开放（阈值 = 3）', k3.open && k3.reason === 'killsReached');
+  check('超过阈值后仍然开放（一次性门槛，不是"恰好等于"）', k5.open);
+  check('未达标时报出"还需淘汰几名"', k2.remainingKills === 1 && k0.remainingKills === 3,
+    `kills=0 时 ${k0.remainingKills}，kills=2 时 ${k2.remainingKills}`);
+  check('★ 淘汰数规则与局内时间无关（时间过了也不开）',
+    !evaluateOpenRule(killRule, { elapsedMs: T * 0.99, timeLimitMs: T, kills: 0 }).open);
+
+  // ---- 2. 集成层：未开放的点不能进、不能开始倒计时 ----
+  const sceneE = { add() {}, remove() {} };
+  const lvlE = createLevel({ ...config, map: config.maps.tv_station_01 }, sceneE);
+  const exE = createExtract(config, lvlE, sceneE);
+
+  const conditional = exE.zones.filter((z) => z.openRule && z.openRule.type !== OPEN_RULE.ALWAYS);
+  check('生效地图至少有一个非"常驻"的撤离点（§2.4 要求区分常驻点与条件点）',
+    conditional.length >= 1,
+    conditional.map((z) => `${z.id}:${z.openRule.type}`).join(', ') || '全是常驻点');
+
+  const dock = conditional[0];
+  if (dock) {
+    const pos = { x: dock.x, y: lvlE.floorBaseY(dock.floor), z: dock.z };
+    const early = exE.update(0.016, pos, { elapsedMs: T * 0.4, timeLimitMs: T });
+    check('★ 时间未到时站在条件点上，不会进入撤离区、也不会开始倒计时',
+      !early.inZone && early.blocked && early.blocked.zone === dock,
+      `inZone=${early.inZone}, blocked=${!!early.blocked}`);
+    check('未开放时会给出"还需多久"而不是静默无反应',
+      early.blocked && typeof early.blocked.opensInMs === 'number',
+      early.blocked ? `opensInMs=${early.blocked.opensInMs}` : '无 blocked');
+
+    const late = exE.update(0.016, pos, { elapsedMs: T * 0.6, timeLimitMs: T });
+    check('时间到了之后，同一个点可以正常进入（规则没有把合法路径挡掉）',
+      late.inZone && !late.blocked, `inZone=${late.inZone}`);
+  }
+
+  // ---- 2b. 击杀类条件撤离点（淘汰达标才开）----
+  const killZone = exE.zones.find((z) => z.openRule && z.openRule.type === OPEN_RULE.KILLS_AFTER);
+  check('生效地图带有"淘汰达标才开"的条件撤离点', !!killZone,
+    killZone ? `${killZone.id} 需 ${killZone.openRule.kills} 名` : '没有该类撤离点');
+
+  if (killZone) {
+    const kpos = { x: killZone.x, y: lvlE.floorBaseY(killZone.floor), z: killZone.z };
+    const base = { elapsedMs: T * 0.6, timeLimitMs: T };
+    // 先让上一组断言锁定的撤离区彻底失效（离开超过宽限），
+    // 否则 M4-2 的宽限逻辑会把 activeZone 留着，把状态串进本组断言。
+    exE.update(1.0, { x: -100, y: 0, z: -100 }, { ...base, kills: 0 });
+    const noKills = exE.update(0.016, kpos, { ...base, kills: 0 });
+    check('★ 淘汰数不够时，该撤离点不开放、也不开始倒计时',
+      !noKills.inZone && noKills.blocked && noKills.blocked.zone === killZone,
+      `inZone=${noKills.inZone}`);
+    check('未达标时报出"还需淘汰几名"（不是静默无反应）',
+      noKills.blocked && noKills.blocked.remainingKills === killZone.openRule.kills,
+      noKills.blocked ? `remainingKills=${noKills.blocked.remainingKills}` : '无 blocked');
+
+    const under = exE.update(0.016, kpos, { ...base, kills: killZone.openRule.kills - 1 });
+    check('差一个也不开（阈值是 >=，不是 >）', !under.inZone, `kills=${killZone.openRule.kills - 1}`);
+
+    const enough = exE.update(0.016, kpos, { ...base, kills: killZone.openRule.kills });
+    check('★ 淘汰数达标后可以正常进入（规则没有把合法路径挡掉）',
+      enough.inZone && !enough.blocked, `inZone=${enough.inZone}`);
+  }
+
+  // ---- 3. 时间窗中途关闭：已累积的倒计时必须作废 ----
+  // 用合成的撤离点，因为当前两张地图都没有配时间窗（配不配是设计决策，见报告的决策项）。
+  const cell = lvlE.cellToWorld(19, 19);
+  const winCfg = {
+    ...config,
+    extract: {
+      ...config.extract,
+      zones: [{
+        id: 'w1', label: '合成时间窗点', cell: [19, 19], floor: 0,
+        radius: 5, conditional: true,
+        openRule: { type: OPEN_RULE.TIME_WINDOW, fromMs: 0, toMs: 5000 },
+      }],
+    },
+  };
+  const exW = createExtract(winCfg, lvlE, { add() {}, remove() {} });
+  const pos2 = { x: cell.x, y: lvlE.floorBaseY(0), z: cell.z };
+  const wStart = exW.update(1.0, pos2, { elapsedMs: 1000, timeLimitMs: T });
+  check('时间窗内可以正常进入并推进倒计时',
+    wStart.inZone && wStart.progress > 0, `progress=${wStart.progress.toFixed(3)}`);
+  const wClosed = exW.update(0.016, pos2, { elapsedMs: 6000, timeLimitMs: T });
+  check('★ 窗口关闭后，已累积的倒计时被作废（不完成、进度归零）',
+    !wClosed.inZone && !wClosed.completed && exW.zones[0].progress === 0,
+    `inZone=${wClosed.inZone} completed=${wClosed.completed} progress=${exW.zones[0].progress}`);
+}
+
+// ============ M4-2 撤离倒计时与中断逻辑 ============
+//
+// 流程文档 §2.4 只明文规定了中断的一种情形：「期间不可离开区域否则重置」。
+// 其余（受击 / 开火 / 使用道具）**不中断**是制作人的明确裁定，
+// 所以这里有一条断言专门钉住它 —— 免得日后被人当成"遗漏"顺手补上。
+{
+  const { createLevel } = await import('../src/level/level.js');
+  const { createExtract } = await import('../src/gameplay/extract.js');
+
+  const T2 = config.raid.timeLimitMs;
+  const INT = config.extract.interrupt;
+  check('撤离中断规则来自配置表（代码中不硬编码宽限与保留比例）',
+    !!INT && typeof INT.leaveGraceMs === 'number' && typeof INT.keepFraction === 'number',
+    INT ? `leaveGraceMs=${INT.leaveGraceMs}, keepFraction=${INT.keepFraction}` : '缺失');
+
+  const sceneY = { add() {}, remove() {} };
+  const lvlY = createLevel({ ...config, map: config.maps.tv_station_01 }, sceneY);
+  const mk = (zones) => ({ ...config, extract: { ...config.extract, zones } });
+  const always = (id, cx, cz) => ({
+    id, label: id, cell: [cx, cz], floor: 0, radius: 5,
+    conditional: false, openRule: { type: 'always' },
+  });
+  const ctx2 = { elapsedMs: T2 * 0.6, timeLimitMs: T2, kills: 0 };
+
+  // ---- 1. 宽限：短暂离开不算中断 ----
+  const exA = createExtract(mk([always('a', 19, 19)]), lvlY, sceneY);
+  const pa = lvlY.cellToWorld(19, 19);
+  const posIn = { x: pa.x, y: lvlY.floorBaseY(0), z: pa.z };
+  const posOut = { x: pa.x + 40, y: lvlY.floorBaseY(0), z: pa.z };
+
+  exA.update(3.0, posIn, ctx2);
+  const acc = exA.zones[0].progress;
+  check('站在撤离区内时倒计时正常累积', acc >= 3000 - 1, `progress=${acc.toFixed(0)}ms`);
+
+  // 离开 300ms（宽限 500ms 内）
+  const shortLeave = exA.update(0.3, posOut, ctx2);
+  check('★ 离开未超过宽限时**不算**中断（进度保留）',
+    !shortLeave.interrupted && exA.zones[0].progress >= acc - 1,
+    `leaveMs=${shortLeave.leaveMs.toFixed(0)}, progress=${exA.zones[0].progress.toFixed(0)}`);
+
+  const backIn = exA.update(0.016, posIn, ctx2);
+  check('宽限内回到同一个区，进度继续累积而不是从头开始',
+    !backIn.interrupted && exA.zones[0].progress > acc,
+    `${acc.toFixed(0)} -> ${exA.zones[0].progress.toFixed(0)}`);
+
+  // ---- 2. 超过宽限：中断并清零 ----
+  const beforeBreak = exA.zones[0].progress;
+  const longLeave = exA.update(0.6, posOut, ctx2);
+  check('★ 离开超过宽限则中断，进度按 keepFraction 处理（当前配置为 0 = 清零）',
+    longLeave.interrupted && longLeave.interrupted.cause === 'left'
+    && exA.zones[0].progress === 0,
+    `中断前 ${beforeBreak.toFixed(0)}ms → 中断后 ${exA.zones[0].progress.toFixed(0)}ms, cause=${longLeave.interrupted && longLeave.interrupted.cause}`);
+
+  // ---- 3. 受击 / 开火不中断（钉住裁定）----
+  exA.update(1.0, posIn, ctx2);
+  const beforeCombat = exA.zones[0].progress;
+  const underFire = exA.update(1.0, posIn, { ...ctx2, damaged: true, firing: true });
+  check('★ 受击与开火**不会**中断撤离倒计时（M4-2 明确裁定，不是遗漏）',
+    !underFire.interrupted && exA.zones[0].progress > beforeCombat,
+    `${beforeCombat.toFixed(0)} -> ${exA.zones[0].progress.toFixed(0)}`);
+
+  // ---- 4. 直接跨进另一个撤离区：进度不带过去 ----
+  const exB = createExtract(mk([always('a', 19, 19), always('b', 5, 5)]), lvlY, sceneY);
+  const pb = lvlY.cellToWorld(5, 5);
+  exB.update(2.0, posIn, ctx2);
+  const switched = exB.update(0.016, { x: pb.x, y: lvlY.floorBaseY(0), z: pb.z }, ctx2);
+  check('直接跨进另一个撤离区：从零开始，不把旧进度带过去',
+    switched.interrupted && switched.interrupted.cause === 'switched'
+    && exB.zones[0].progress === 0,
+    `a=${exB.zones[0].progress}, cause=${switched.interrupted && switched.interrupted.cause}`);
+
+  // ---- 5. 完整的成功撤离仍然走得通（中断逻辑没有把正常路径挡掉）----
+  const exC = createExtract(mk([always('a', 19, 19)]), lvlY, sceneY);
+  const done = exC.update(config.extract.countdownMs / 1000 + 0.05, posIn, ctx2);
+  check('在区内待满倒计时可以成功撤离（中断逻辑没挡住正常路径）',
+    done.completed && done.inZone, `completed=${done.completed}`);
+}
+
+// ============ M4-3 单局结算（独立于 UI 层、幂等）============
+//
+// M4 阶段约束词硬性要求「结算必须独立于表现层，便于幂等与重放」。
+// 所以结算被抽成 src/core/raidResult.js 的纯函数 —— 它能在没有浏览器的情况下
+// 被完整验证，而不是只能靠"跑一局看看界面上数字对不对"。
+{
+  const { buildRaidResult } = await import('../src/core/raidResult.js');
+  const { createInventory } = await import('../src/gameplay/inventory.js');
+
+  const table = config.lootTable;
+  const rifle = table.items.find((i) => i.id === 'rifle_sr25');   // 紫，weapon
+  const bitcoin = table.items.find((i) => i.id === 'bitcoin');    // 金，valuable
+  const bandage = table.items.find((i) => i.id === 'bandage');    // 白
+
+  const mkFacts = (inv, outcome, reason) => {
+    const s = inv.settle(outcome);
+    return {
+      reason,
+      outcome,
+      elapsedMs: 123000,
+      kills: 3, aiTotal: 7, containersOpened: 5, containersTotal: 89,
+      shotsFired: 42, health: 61.5,
+      kept: s.kept, lost: s.lost,
+      keptValue: s.keptValue, lostValue: s.lostValue,
+      safeValue: inv.safeValue(),
+      rarityTable: table.rarity,
+    };
+  };
+
+  // ---- 1. 撤离成功：全部带出，损失为 0 ----
+  const invOk = createInventory(config);
+  invOk.tryAdd(rifle);
+  invOk.tryAdd(bitcoin);
+  invOk.tryAdd(bandage);
+  const factsOk = mkFacts(invOk, 'extract', 'extracted');
+  const resOk = buildRaidResult(factsOk);
+
+  check('撤离成功：全部带出，损失为 0',
+    resOk.carried && resOk.loot.lostCount === 0 && resOk.loot.keptCount === 3,
+    `带出 ${resOk.loot.keptCount} / 损失 ${resOk.loot.lostCount}`);
+  check('带出估值 = 三件物品之和',
+    resOk.loot.keptValue === rifle.value + bitcoin.value + bandage.value,
+    `${resOk.loot.keptValue} vs ${rifle.value + bitcoin.value + bandage.value}`);
+  check('撤离成功时物资保住比例为 100%',
+    Math.abs(resOk.loot.survivedRatio - 1) < 1e-9, `survivedRatio=${resOk.loot.survivedRatio}`);
+
+  // ---- 2. 阵亡：只保住安全箱（武器不进安全箱）----
+  const invDead = createInventory(config);
+  invDead.tryAdd(rifle);
+  invDead.tryAdd(bitcoin);
+  invDead.tryAdd(bandage);
+  const resDead = buildRaidResult(mkFacts(invDead, 'death', 'dead'));
+
+  check('★ 阵亡：带出的只有安全箱里的，步枪作为武器必然损失',
+    !resDead.carried && resDead.loot.keptValue === invDead.safeValue()
+    && resDead.items.every((it) => it.id !== rifle.id),
+    `带出 ${resDead.loot.keptValue}，物品 ${resDead.items.map((i) => i.id).join(',') || '无'}`);
+  check('阵亡时"损失估值"是被丢下的那部分（不是 0）',
+    resDead.loot.lostValue > 0, `损失 ${resDead.loot.lostValue}`);
+  check('保住比例介于 0 与 1 之间（阵亡时不是 100%）',
+    resDead.loot.survivedRatio > 0 && resDead.loot.survivedRatio < 1,
+    `survivedRatio=${resDead.loot.survivedRatio.toFixed(3)}`);
+
+  // ---- 3. 幂等：同样的输入重算，结果完全一致 ----
+  const again = buildRaidResult(mkFacts(invOk, 'extract', 'extracted'));
+  check('★ 幂等：同样的局内事实重算一次，结果逐字段一致',
+    JSON.stringify(again) === JSON.stringify(resOk),
+    JSON.stringify(again) === JSON.stringify(resOk) ? '完全一致' : '结果发生变化');
+
+  // 重放三次仍一致（"重复提交不会重复发放"的第一道防线）
+  const r1 = buildRaidResult(factsOk);
+  const r2 = buildRaidResult(factsOk);
+  const r3 = buildRaidResult(factsOk);
+  check('★ 连续重放三次，带出估值不会累加（不会重复发放）',
+    r1.loot.keptValue === r2.loot.keptValue && r2.loot.keptValue === r3.loot.keptValue,
+    `${r1.loot.keptValue} / ${r2.loot.keptValue} / ${r3.loot.keptValue}`);
+
+  // ---- 4. 不修改入参 ----
+  const before = JSON.stringify(factsOk);
+  buildRaidResult(factsOk);
+  check('结算是纯函数：不会修改传入的局内事实',
+    JSON.stringify(factsOk) === before);
+
+  // ---- 5. 稀有度分组与物品明细 ----
+  const byId = Object.fromEntries(resOk.rarityBreakdown.map((r) => [r.id, r]));
+  check('稀有度分组覆盖了全部五档（即使某档为 0 也保留，由 UI 决定渲染）',
+    resOk.rarityBreakdown.length === table.rarity.length,
+    `${resOk.rarityBreakdown.length} 档`);
+  check('白/紫/金三档的件数与本次放入的一致',
+    byId.common.count === 1 && byId.epic.count === 1 && byId.legendary.count === 1,
+    `白${byId.common.count} 紫${byId.epic.count} 金${byId.legendary.count}`);
+  check('物品明细按价值降序（玩家最关心带回了什么值钱的）',
+    resOk.items[0].value >= resOk.items[resOk.items.length - 1].value
+    && resOk.items[0].id === bitcoin.id,
+    resOk.items.map((i) => `${i.label}(${i.value})`).join(' > '));
+  check('物品明细带上了稀有度标签与颜色（供 UI 着色）',
+    resOk.items.every((it) => typeof it.rarityLabel === 'string' && typeof it.colorHex === 'string'),
+    resOk.items.map((i) => `${i.rarityLabel}${i.colorHex}`).join(' '));
+
+  // ---- 6. 经验/任务是占位（显式登记，不是假装已实现）----
+  check('[M4-TEMP-3] 经验与任务进度标记为占位（M5-5 / M5-6 才有系统）',
+    resOk.progression.exp === 0 && resOk.progression._placeholder === true,
+    `exp=${resOk.progression.exp}, _placeholder=${resOk.progression._placeholder}`);
+}
+
+// ============ M4-4 死亡结算与物品损失 ============
+//
+// M4 约束词要求「每条路径都必须能明确回答玩家带回什么、失去什么」。
+// M3-6 已经算出了 kept/lost，M4-3 也已经显示估值与件数；
+// 本组补的是最后一块：**逐件列出损失了什么** ——
+// 只给"损失 8873"这个数字，玩家无法判断下一次该不该贪、该先往保险箱塞什么。
+{
+  const { buildRaidResult } = await import('../src/core/raidResult.js');
+  const { createInventory } = await import('../src/gameplay/inventory.js');
+
+  const table = config.lootTable;
+  const rifle = table.items.find((i) => i.id === 'rifle_sr25');   // 紫，weapon，进不了保险箱
+  const bitcoin = table.items.find((i) => i.id === 'bitcoin');    // 金，valuable
+  const bandage = table.items.find((i) => i.id === 'bandage');    // 白
+
+  // 撤离倒计时：制作人裁定值，钉住它防止被误改回去
+  check('撤离倒计时确定为 10 秒（制作人裁定；《流程文档》§2.4 举例同为 10 秒）',
+    config.extract.countdownMs === 10000, `${config.extract.countdownMs}ms`);
+
+  const inv = createInventory(config);
+  inv.tryAdd(rifle);
+  inv.tryAdd(bitcoin);
+  inv.tryAdd(bandage);
+  const dead = inv.settle('death');
+  const resDead = buildRaidResult({
+    reason: 'dead',
+    outcome: 'death',
+    elapsedMs: 200000,
+    kills: 1, aiTotal: 7, containersOpened: 4, containersTotal: 89,
+    shotsFired: 30, health: 0,
+    kept: dead.kept, lost: dead.lost,
+    keptValue: dead.keptValue, lostValue: dead.lostValue,
+    safeValue: inv.safeValue(),
+    rarityTable: table.rarity,
+  });
+
+  check('★ 阵亡结算逐件列出损失物品（不只是一个估值）',
+    resDead.lostItems.length === dead.lost.length && resDead.lostItems.length > 0,
+    `损失 ${resDead.lostItems.length} 件：${resDead.lostItems.map((i) => i.label).join('、')}`);
+
+  check('★ 步枪作为武器进不了保险箱，必然出现在损失清单里',
+    resDead.lostItems.some((i) => i.id === rifle.id),
+    `损失清单：${resDead.lostItems.map((i) => i.id).join(',')}`);
+
+  check('损失清单与"带出清单"不重叠（同一件物品不能既带出又损失）',
+    resDead.lostItems.every((l) => !resDead.items.some((k) => k.id === l.id)),
+    `带出 ${resDead.items.map((i) => i.id).join(',')} / 损失 ${resDead.lostItems.map((i) => i.id).join(',')}`);
+
+  check('阵亡时"保险箱保住的清单"就是"带出的清单"（那些是全部所得）',
+    resDead.safeItems.length === resDead.items.length
+    && resDead.safeItems.every((s) => resDead.items.some((k) => k.id === s.id)),
+    `保险箱 ${resDead.safeItems.map((i) => i.label).join('、') || '空'}`);
+
+  check('损失明细按价值降序排列（最贵丢的排在最前）',
+    resDead.lostItems.every((it, i) => i === 0 || resDead.lostItems[i - 1].value >= it.value),
+    resDead.lostItems.map((i) => `${i.label}(${i.value})`).join(' > '));
+
+  check('损失明细带稀有度标签与颜色（与带出清单同一套着色口径）',
+    resDead.lostItems.every((it) => typeof it.rarityLabel === 'string' && typeof it.colorHex === 'string'));
+
+  // 撤离成功时不应该有损失清单
+  const alive = createInventory(config);
+  alive.tryAdd(bitcoin);
+  alive.tryAdd(bandage);
+  const okS = alive.settle('extract');
+  const resOk = buildRaidResult({
+    reason: 'extracted',
+    outcome: 'extract',
+    elapsedMs: 100000,
+    kills: 2, aiTotal: 7, containersOpened: 3, containersTotal: 89,
+    shotsFired: 20, health: 80,
+    kept: okS.kept, lost: okS.lost,
+    keptValue: okS.keptValue, lostValue: okS.lostValue,
+    safeValue: alive.safeValue(),
+    rarityTable: table.rarity,
+  });
+  check('撤离成功时没有损失清单（全部带出）',
+    resOk.lostItems.length === 0, `lostItems=${resOk.lostItems.length}`);
+  check('撤离成功时保险箱清单是带出清单的子集',
+    resOk.safeItems.every((s) => resOk.items.some((k) => k.id === s.id)),
+    `保险箱 ${resOk.safeItems.map((i) => i.id).join(',')}`);
+}
+
+// ============ M4-5 超时判定与强制结束 ============
+{
+  const { createFlow, FLOW, END_REASON } = await import('../src/core/flow.js');
+
+  const LIMIT = config.raid.timeLimitMs;
+
+  check('超时告警阈值来自配置表（不再硬编码在 hud.js 里）',
+    config.raid.warningThresholdMs === 60000, `${config.raid.warningThresholdMs}ms`);
+
+  check('告警阈值不超过单局时限（否则告警永远不触发）',
+    config.raid.warningThresholdMs <= LIMIT,
+    `${config.raid.warningThresholdMs} <= ${LIMIT}`);
+
+  const flowT = createFlow(config);
+  flowT.startRaid(0);
+  const justBefore = flowT.timing(LIMIT - 1);
+  const atLimit = flowT.timing(LIMIT);
+  const pastLimit = flowT.timing(LIMIT + 5000);
+
+  check('★ 时限归零那一刻即判定超时（不是之后再判）',
+    !justBefore.expired && atLimit.expired && pastLimit.expired,
+    `剩 1ms:${justBefore.expired} / 归零:${atLimit.expired} / 超时后:${pastLimit.expired}`);
+
+  check('超时后剩余时间钳在 0（HUD 不会显示负时间）',
+    atLimit.remainingMs === 0 && pastLimit.remainingMs === 0,
+    `${atLimit.remainingMs} / ${pastLimit.remainingMs}`);
+
+  check('到达告警阈值内时剩余时间确实低于阈值（告警会真的触发）',
+    flowT.timing(LIMIT - 1000).remainingMs === 1000
+    && flowT.timing(LIMIT - 1000).remainingMs < config.raid.warningThresholdMs);
+
+  // 结束路径的枚举完整性：M4 DoD 要求所有结束路径都有明确结算
+  check('结束原因枚举包含撤离/阵亡/超时/放弃四条',
+    END_REASON.EXTRACTED === 'extracted'
+    && END_REASON.DEAD === 'dead'
+    && END_REASON.TIMEOUT === 'timeout'
+    && END_REASON.ABANDONED === 'abandoned',
+    Object.values(END_REASON).join('/'));
+
+  // 主动放弃（暂停菜单 → 放弃本局）：状态机必须接受它，否则这条路径走不通
+  const flowA = createFlow(config);
+  flowA.startRaid(0);
+  flowA.endRaid(END_REASON.ABANDONED, 1000);
+  check('★ 主动放弃是一条合法的结束路径（状态机接受 abandoned）',
+    flowA.state === FLOW.ENDED && flowA.endReason === END_REASON.ABANDONED,
+    `${flowA.state} / ${flowA.endReason}`);
+
+  // 状态机：ENDED 是终态，重复结束会被挡住（幂等的第二道防线）
+  flowT.endRaid(END_REASON.TIMEOUT, LIMIT);
+  check('★ 流程进入 ENDED 后是终态（重复结算会被状态机挡住）',
+    flowT.state === FLOW.ENDED && flowT.endReason === END_REASON.TIMEOUT);
+
+  // M4-5 裁定：超时不给宽限 —— 结束原因只能是 timeout，不会因为正在撤离而变成 extracted
+  check('[裁定] 超时的结束原因就是 timeout（不因"正在撤离"而改写）',
+    flowT.endReason === END_REASON.TIMEOUT);
+}
+
+// ============ M4-6 局内 HUD 完整化 ============
+{
+  // 小地图本身是 Canvas 绘制（src/ui/minimap.js），依赖 document，
+  // 纯逻辑单测覆盖不到它的渲染 —— 那部分由端到端验证（画布尺寸与层标注）。
+  // 这里只守住"数值来自配置表"这一条：尺寸与重绘间隔不该写死在代码或 HTML 里。
+  check('小地图尺寸与重绘间隔来自配置表',
+    config.minimap && config.minimap.sizePx === 168 && config.minimap.updateIntervalMs === 0,
+    config.minimap
+      ? `sizePx=${config.minimap.sizePx}, interval=${config.minimap.updateIntervalMs}ms(0=每帧)`
+      : '缺少 minimap 配置');
+
+  check('小地图每帧更新（0 = 每帧；此前 100ms 会明显卡）',
+    config.minimap.updateIntervalMs === 0, `${config.minimap.updateIntervalMs}ms`);
+
+  check('小地图只显示地形：容器 / 撤离点 / 敌人三个叠加层均为关',
+    config.minimap.showContainers === false
+    && config.minimap.showExtracts === false
+    && config.minimap.showAis === false,
+    `containers=${config.minimap.showContainers} extracts=${config.minimap.showExtracts} ais=${config.minimap.showAis}`);
+
+  // 改版：圆形 + 局部 + 随朝向旋转
+  check('小地图是**局部**视图：可见半径来自配置表（不是全图缩略）',
+    config.minimap.viewRadiusCells > 0 && config.minimap.viewRadiusCells < 40,
+    `${config.minimap.viewRadiusCells} 格（全图 40 格）`);
+  check('小地图随角色朝向旋转（配置开关为开）',
+    config.minimap.rotateWithPlayer === true,
+    `rotateWithPlayer=${config.minimap.rotateWithPlayer}`);
+  check('可见半径换算出的每格像素足够大（局部视图才看得清房间）',
+    config.minimap.sizePx / 2 / config.minimap.viewRadiusCells >= 4,
+    `${(config.minimap.sizePx / 2 / config.minimap.viewRadiusCells).toFixed(1)} px/格`);
+}
+
+// ============ M4-7 断线 / 刷新的快照与补结算 ============
+//
+// M4 约束词硬性要求「禁止在断线/刷新场景下静默丢弃玩家进度」。
+// 快照的构造与**校验**都是纯逻辑，所以能在这里被完整验证；
+// "真的刷新一次重进还对不对"由端到端实测（见 smoke.mjs 的 M4-7 组）。
+{
+  const { buildCheckpoint, sanitizeCheckpoint, checkpointToFacts, CHECKPOINT_VERSION } =
+    await import('../src/core/raidCheckpoint.js');
+  const { buildRaidResult } = await import('../src/core/raidResult.js');
+
+  const items = [
+    { item: { id: 'rifle_sr25', label: 'SR-25', value: 4200, rarity: 'epic' }, inSafe: false },
+    { item: { id: 'bitcoin', label: '比特币', value: 11000, rarity: 'legendary' }, inSafe: true },
+    { item: { id: 'bandage', label: '绷带', value: 120, rarity: 'common' }, inSafe: false },
+  ];
+  const combat = {
+    kills: 2, aiTotal: 7, containersOpened: 4, containersTotal: 89,
+    shotsFired: 21, health: 55.5,
+  };
+  const cp = buildCheckpoint({ raidId: 'r-1', elapsedMs: 123456, inventory: items, combat });
+
+  check('快照带版本号与局唯一标识（幂等结算的依据）',
+    cp.version === CHECKPOINT_VERSION && cp.raidId === 'r-1');
+  check('快照里的物品只保留结算需要的字段（不塞整个 item 定义）',
+    cp.items.every((i) => 'id' in i && 'value' in i && 'inSafe' in i && 'w' in i === false));
+  check('快照保留了 inSafe 标记（断线后判定"哪些能带走"全靠它）',
+    cp.items.filter((i) => i.inSafe).length === 1);
+
+  // ---- 校验：localStorage 是外部输入，坏数据必须整份丢弃 ----
+  check('★ 版本号不对的快照被拒（旧版本留下的残留）',
+    sanitizeCheckpoint({ ...cp, version: 999 }) === null);
+  check('★ 缺 raidId 的快照被拒',
+    sanitizeCheckpoint({ ...cp, raidId: '' }) === null);
+  check('★ items 不是数组时整份丢弃（不做宽松修复）',
+    sanitizeCheckpoint({ ...cp, items: {} }) === null);
+  check('★ 物品缺字段时整份丢弃',
+    sanitizeCheckpoint({ ...cp, items: [{ id: 'x' }] }) === null);
+  check('elapsedMs 为负或非数字时整份丢弃',
+    sanitizeCheckpoint({ ...cp, elapsedMs: -1 }) === null
+    && sanitizeCheckpoint({ ...cp, elapsedMs: 'x' }) === null);
+  check('合法快照能通过校验并被规范化',
+    !!sanitizeCheckpoint(cp) && sanitizeCheckpoint(cp).items.length === 3);
+
+  // ---- 补结算：断线 = 未撤离 = 只保住安全箱 ----
+  const facts = checkpointToFacts(cp, config.lootTable.rarity);
+  check('★ 断线的结算口径是"未撤离"（outcome=death, carried=false）',
+    facts.outcome === 'death' && facts.reason === 'disconnected');
+  check('★ 断线结算：带出的只有安全箱内那件，其余全部损失',
+    facts.keptValue === 11000 && facts.lostValue === 4200 + 120,
+    `带出 ${facts.keptValue} / 损失 ${facts.lostValue}`);
+  const res = buildRaidResult(facts);
+  check('断线结算同样给出逐件损失清单（与阵亡路径一致）',
+    res.lostItems.length === 2 && res.lostItems.some((i) => i.id === 'rifle_sr25'),
+    res.lostItems.map((i) => i.label).join('、'));
+  check('断线结算的耗时、击杀等数据来自快照（不是重开一局的 0）',
+    res.elapsedMs === 123456 && res.combat.kills === 2 && res.combat.health === 55.5);
+
+  // ---- 什么都没捡就断线：不应崩，且结算为全损 ----
+  const empty = buildCheckpoint({ raidId: 'r-2', elapsedMs: 1000, inventory: [], combat });
+  const emptyRes = buildRaidResult(checkpointToFacts(empty, config.lootTable.rarity));
+  check('空背包断线不会崩：带出 0、保住比例按 0 处理',
+    emptyRes.loot.keptValue === 0 && emptyRes.loot.survivedRatio === 0);
+
+  check('快照写入间隔来自配置表（定期兑底用）',
+    config.raid.checkpointIntervalMs > 0, `${config.raid.checkpointIntervalMs}ms`);
+}
+
 // ============================================================
 console.log('\n================ 纯逻辑单元测试 ================');
 console.log(`  通过 ${pass} / ${pass + failures.length}`);

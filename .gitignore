@@ -29,6 +29,10 @@ backup/
 # 调试过程中的中间日志统一归档到 results/archive/，本地保留但不入库：
 # 它们是可重新生成的，且数量会随迭代无限增长。
 results/archive/
+# 每次跑端到端都会写一份带时间戳的快照 —— 同上，属中间日志，不入库。
+# （结论性证据是 m2-ten-raids.json / ttk-report.json / loot-table-report.json /
+#   m3-map-render.txt / level-golden-*.json 这些）
+results/m2-smoke-*.json
 # *.log 是控制台重定向的临时文件（如 node tools/smoke.mjs > log）
 *.log
 
@@ -37,6 +41,10 @@ results/archive/
 # ============================================================================
 .friend-sim/
 *.tmp
+# 注入自检的临时表（tools/inject-*-tests.mjs 生成，跑完即弃）
+.loot-inject/
+# AI 会话的本地记忆（属本机私有数据，与游戏无关）
+.workbuddy/
 
 # ============================================================================
 #  操作系统 / 编辑器

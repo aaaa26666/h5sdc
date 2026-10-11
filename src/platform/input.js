@@ -330,6 +330,11 @@ export function createInput(domElement, cfg, settings) {
 
     // ---- M2 新增动作 ----
     ads: () => state.adsHeld,
+    /**
+     * 左键是否按住。M3-3 的搜索打断规则需要"开火即打断"这个信号
+     * （规则本体在 loot.json 的 interruptRules，这里只提供事实）。
+     */
+    firing: () => state.fireHeld,
     slotPrimary: () => anyDown(DEFAULT_BINDINGS.slotPrimary),
     slotSecondary: () => anyDown(DEFAULT_BINDINGS.slotSecondary),
     useConsumable1: () => anyDown(DEFAULT_BINDINGS.useConsumable1),

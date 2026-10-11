@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
-const SRC = path.join(ROOT, 'docs', '07-loot-tables.json');
+const SRC = path.join(ROOT, 'src', 'config', 'loot.json');
 const TMP = path.join(ROOT, '.loot-inject');
 
 const base = JSON.parse(fs.readFileSync(SRC, 'utf8'));
@@ -21,9 +21,21 @@ function runValidator(table) {
   fs.mkdirSync(TMP, { recursive: true });
   const p = path.join(TMP, 'table.json');
   fs.writeFileSync(p, JSON.stringify(table, null, 2), 'utf8');
-  const r = spawnSync('node', [path.join(HERE, 'validate-loot-tables.mjs'), '--table', p, '--runs', '2000'], {
+  // 用 process.execPath 而不是 'node'：后者依赖 PATH，换台机器可能指向别的版本，
+  // 而"校验器跑在哪个 node 上"不该是这个脚本的变量。
+  const r = spawnSync(process.execPath, [path.join(HERE, 'validate-loot-tables.mjs'), '--table', p, '--runs', '2000'], {
     encoding: 'utf8',
   });
+  // ★ 子进程起不来时必须显式炸掉。
+  //   它会表现为 status=null、stdout 为空，与"校验器跑了但一条都没拦下"完全一样 ——
+  //   把"根本没跑"当成"跑了却漏掉"，是比漏掉更糟的错误结论。
+  //   （真实发生过：某环境下 spawnSync 返回 EBUSY，13 条用例全被报成"未触发"。）
+  if (r.error || r.status === null) {
+    throw new Error(
+      `无法启动校验器子进程（${r.error ? r.error.code || r.error.message : 'status=null'}）。` +
+        '这不是"规则漏拦"，是校验器根本没跑起来。'
+    );
+  }
   const out = (r.stdout || '') + (r.stderr || '');
   const failed = [...out.matchAll(/\[FAIL\] (.+)/g)].map((m) => m[1].trim());
   return { code: r.status, failed, out };

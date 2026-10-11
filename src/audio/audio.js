@@ -166,6 +166,22 @@ export function createAudio() {
       schedule(() => noiseBurst({ freq: 3200, dur: 0.05, gain: 0.22, decay: 0.02, type: 'highpass' }));
     },
 
+    /**
+     * M3-4 稀有度掉落音效。tier 来自 loot.json 的 `rarity.dropSoundTier`（0~4）。
+     * 0（白装）**不发声** —— 与白装的 beamIntensity=0 同一条设计：白装不该有存在感。
+     * 档位越高音越亮、尾音越长，让"出好东西"在听觉上可分辨。
+     */
+    dropTier(tier = 0) {
+      if (tier <= 0) return;
+      schedule(() => {
+        const t = Math.max(0, Math.min(4, tier | 0));
+        const base = [0, 520, 700, 880, 1180][t];
+        tone({ freq: base, dur: 0.07, gain: 0.16, type: 'triangle' });
+        tone({ freq: base * 1.5, dur: 0.09 + t * 0.02, gain: 0.12, type: 'sine', sweepTo: base * 1.68 });
+        if (t >= 3) tone({ freq: base * 2, dur: 0.12, gain: 0.08, type: 'sine' });
+      });
+    },
+
     hitmark() {
       schedule(() => tone({ freq: 1400, sweepTo: 1900, dur: 0.05, gain: 0.18, type: 'triangle' }));
     },

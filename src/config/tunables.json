@@ -3,7 +3,26 @@
   "raid": {
     "_comment": "单局规则",
     "timeLimitMs": 780000,
-    "_timeLimitNote": "M3-1b-2 ④：240s → 780s（13 分钟）。依据不是手感，是搜刮预算：地图 87 个容器全部搜完需 296s，而 validate-loot-tables 有一条门禁『全部容器搜完 ≤ 单局时限的 40%』。240s 时该比例为 123%（门禁失败）；780s 时为 37.9%。注意这条预算会随地图**联动**：墙变少 → 可玩面积变大 → 容器按密度自动变多 → 所需时限变长，三者是一根链子，改任何一环都要重算。"
+    "_timeLimitNote": "M3-1b-2 ④：240s → 780s（13 分钟）。依据不是手感，是搜刮预算：地图 87 个容器全部搜完需 296s，而 validate-loot-tables 有一条门禁『全部容器搜完 ≤ 单局时限的 40%』。240s 时该比例为 123%（门禁失败）；780s 时为 37.9%。注意这条预算会随地图**联动**：墙变少 → 可玩面积变大 → 容器按密度自动变多 → 所需时限变长，三者是一根链子，改任何一环都要重算。",
+    "checkpointIntervalMs": 5000,
+    "_checkpointNote": "M4-7：局内快照的**定期**写入间隔（兑底用）。关闭瞬间还会再写一份最新的（双写）。5 秒的依据是：即使进程被强杀，丢失的也不过是最后 5 秒的拾取——再短就是无谓地频繁写 localStorage。",
+    "warningThresholdMs": 60000,
+    "_warningNote": "M4-5：剩余时间低于这个值时，HUD 把计时切成告警样式。此前这个阈值写死在 hud.js 里（30000），违反「数值必须表驱动」；制作人裁定改为 60 秒并搬到本表。"
+  },
+  "minimap": {
+    "_comment": "M4-6 局内小地图。尺寸是策划/UI 数值，放这里而不是写死在代码或 HTML 里。",
+    "sizePx": 168,
+    "updateIntervalMs": 0,
+    "_intervalNote": "小地图重绘间隔（毫秒）。**0 = 每帧更新**。此前设为 100 是为了省开销，但代价是角色在图上明显一卡一卡地跳 —— 定位类信息宁可多花一点绘制，也不能看着卡。",
+    "showContainers": false,
+    "showExtracts": false,
+    "showAis": false,
+    "_showNote": "M4-6 改版：只显示**地形**（可行走区 / 墙）与角色自身。制作人要求去掉容器（含保险箱）、撤离点与敌人标记，理由是信息过载且抢注意力。三个开关保留在表里，日后要恢复只需改值；当前全部关闭时主循环也不会再去组装这些数组（省掉每帧的对象分配）。",
+    "viewRadiusCells": 12,
+    "_radiusNote": "M4-6 改版：小地图改为**以角色为中心**的圆形局部视图，这个值是可见半径（格）。12 格 = 30 米。值**没有实测依据**，是按「能看到隔壁房间但看不到半个地图」选的，待试玩标定。",
+    "rotateWithPlayer": true,
+    "_rotateNote": "以角色朝向为北自动旋转（角色永远朝上、永远在圆心）。关掉则变成固定朝北的静态局部视图。",
+    "_oldShowNote": "（已废弃）早期版本画容器/撤离点/敌人，M4-6 改版后由 showContainers/showExtracts/showAis 控制，默认全关。"
   },
   "level": {
     "_comment": "关卡**共享**规格。M3-1 起地图改为表驱动：尺寸/出生点/墙体/掩体位置/容器/撤离点/AI 配额全部来自 src/config/maps/*.json，本段只保留『不随地图变』的项。",
@@ -94,41 +113,23 @@
     "patrolSpeedScale": 0.45
   },
   "loot": {
-    "_comment": "M1 只有一种容器，物品种类保持最小集。M3-1 删除了 containerCount 与 containerCells —— 前者是死配置，后者改由地图表派生（禁止硬编码容器位置）。容器分级/搜索进度/掉落属 M3-3/M3-4。",
+    "_comment": "M3-3/M3-4 之后：掉落、稀有度、搜索耗时、打断规则**全部**由 src/config/loot.json 驱动。本段只留与交互手感有关的参数。旧的 items / itemsPerContainerMin / itemsPerContainerMax / searchMs 已删除 —— 它们被掉落表取代，留着就是两份真值，迟早分叉。",
     "containerRadius": 0.7,
-    "searchMs": 2500,
     "interactRange": 2.4,
-    "items": [
-      {
-        "id": "bandage",
-        "label": "绷带",
-        "value": 120,
-        "weight": 40
-      },
-      {
-        "id": "ammo_box",
-        "label": "弹药盒",
-        "value": 260,
-        "weight": 35
-      },
-      {
-        "id": "optic",
-        "label": "瞄准镜",
-        "value": 780,
-        "weight": 20
-      },
-      {
-        "id": "gold_watch",
-        "label": "金表",
-        "value": 1450,
-        "weight": 5
-      }
-    ],
-    "itemsPerContainerMin": 1,
-    "itemsPerContainerMax": 3
+    "moveAbortRadius": 1.0,
+    "_moveAbortNote": "[M3-TEMP-3] 搜索期间走开超过这个距离（米）即打断。值没有实测依据，按「允许小幅走位但不允许跑开」选定，待评审裁定；也可改成更自然的判据（离开交互范围即打断）。打断保留多少进度不在这里 —— 那由 loot.json 的 interruptRules.keepFraction 决定。"
   },
   "extract": {
-    "_comment": "撤离倒计时规则。撤离点位置改由地图表派生（M3-1）。条件撤离点的开放条件属 M4。",
-    "countdownMs": 8000
+    "_comment": "撤离倒计时规则。撤离点位置与开放规则改由地图表派生（M3-1 / M4-1）。中断规则见下面的 interrupt。",
+    "countdownMs": 10000,
+    "_countdownNote": "M4-2 之后由制作人裁定为 10 秒（此前 8000）。《流程文档》§2.4 的举例即为「倒计时（如 10 秒）」，本次对齐。",
+    "interrupt": {
+      "_note": "M4-2 撤离倒计时的中断规则。中断源**只有一种：离开撤离区**。",
+      "_notInterruptNote": "受击、开火、使用道具、换弹**都不会**中断撤离倒计时 —— 这是明确裁定，不是遗漏。玩家在撤离点可以还击与治疗。若日后要加，须重新评审并同时更新 tools/unit-tests.mjs 里那条「受击/开火不中断」的断言。",
+      "leaveGraceMs": 500,
+      "_graceNote": "离开撤离区后累计超过这个毫秒数才算中断；宽限内回到**同一个**撤离区则继续计时（不会因在圈边缘抖动被反复重置）。值由制作人裁定，无实测依据，待试玩标定。",
+      "keepFraction": 0,
+      "_keepNote": "中断后保留的进度比例。0 = 清零（严格，与搜索的 lose_all 同性质）。若改成 0.5 即与搜索的 keep_partial 对齐。"
+    }
   }
 }

@@ -1,7 +1,7 @@
 // M3 前置：掉落权重表校验与统计报告
 //
 // 硬性要求：「掉落分布必须能被脚本统计并输出概率报告，用于验证是否符合策划权重表。」
-// 本脚本是这条要求的落地：它读 docs/07-loot-tables.json，做两件事 ——
+// 本脚本是这条要求的落地：它读 src/config/loot.json，做两件事 ——
 //   ① **校验**：结构、引用完整性、权重归一化、稀有度价值区间的一致性
 //   ② **统计**：输出每个容器的稀有度概率、单件期望价值、单容器期望价值，
 //      并用种子固定的蒙特卡洛跑出各档玩法的单局收益区间，与设计目标比对
@@ -15,6 +15,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// ★ 算法同源（M3-4）：装包与抽稀有度**从 src 导入**，不在这里另写一份。
+// 这个脚本统计的是"理论分布"，运行时掉落的是"实际分布"；
+// 若两边各有一套算法，DoD ① 的比对就毫无意义 —— 对不上时无法区分是数值问题还是算法分叉。
+import { mulberry32 } from '../src/core/rng.js';
+import { packGrid } from '../src/core/packing.js';
+import { pickRarity, normalizedWeights, dataKeys, indexByRarity } from '../src/core/lootTable.js';
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 
@@ -25,7 +32,7 @@ const JSON_OUT = argv.includes('--json') ? argv[argv.indexOf('--json') + 1] : nu
 // （一个从不失败的检查等于没有检查 —— 与 tools/audit-keybindings.mjs 的注入自检同一思路）
 const TABLE = argv.includes('--table')
   ? path.resolve(argv[argv.indexOf('--table') + 1])
-  : path.join(ROOT, 'docs', '07-loot-tables.json');
+  : path.join(ROOT, 'src', 'config', 'loot.json');
 
 // 单局时限从**配置表**读，不在这里硬编码。
 // M3-1b-2 ④ 把时限从 240s 上调到覆盖"容器密度提高后的搜刮预算"，
@@ -51,9 +58,6 @@ function warn(msg) {
   console.log(`  [警告] ${msg}`);
 }
 
-/** 以 _ 开头的键是注释而非数据（沿用项目既有约定） */
-const dataKeys = (o) => Object.keys(o).filter((k) => !k.startsWith('_'));
-
 if (!fs.existsSync(TABLE)) {
   console.error('找不到 ' + TABLE);
   process.exit(2);
@@ -61,7 +65,7 @@ if (!fs.existsSync(TABLE)) {
 const T = JSON.parse(fs.readFileSync(TABLE, 'utf8'));
 
 console.log('\n================ M3 掉落权重表校验与统计 ================');
-console.log('  数据源: docs/07-loot-tables.json');
+console.log('  数据源: src/config/loot.json');
 console.log('  状态  : 待审核裁定（本报告用于评审，不代表已批准）\n');
 
 // ============================================================
@@ -215,21 +219,12 @@ console.log('\n—— ③ 数值合法性 ——');
 // ============================================================
 console.log('\n—— ④ 各容器概率分布与期望价值 ——');
 
-const itemsByRarity = {};
-for (const r of T.rarity) itemsByRarity[r.id] = T.items.filter((i) => i.rarity === r.id);
+const itemsByRarity = indexByRarity(T.items);
 
 /** 某稀有度的"平均物品价值"（该档所有物品的算术平均） */
 function rarityMeanValue(rarityId) {
   const list = itemsByRarity[rarityId];
   return list.reduce((a, i) => a + i.value, 0) / list.length;
-}
-
-function normalizedWeights(c) {
-  const ks = dataKeys(c.rarityWeights);
-  const total = ks.reduce((a, k) => a + c.rarityWeights[k], 0);
-  const out = {};
-  for (const k of ks) out[k] = c.rarityWeights[k] / total;
-  return out;
 }
 
 const containerStats = [];
@@ -317,82 +312,8 @@ for (const c of T.containers) {
 // ============================================================
 console.log('\n—— ⑤ 单局收益区间（蒙特卡洛 ' + RUNS + ' 次/档，种子固定可复现）——');
 
-function mulberry32(a) {
-  return function () {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function pickRarity(c, rnd) {
-  const p = normalizedWeights(c);
-  let x = rnd();
-  for (const [r, prob] of Object.entries(p)) {
-    x -= prob;
-    if (x <= 0) return r;
-  }
-  return dataKeys(c.rarityWeights)[0];
-}
-
-/**
- * 二维网格贪心排放（首次适配）。
- *
- * 为什么需要真正的二维排放而不是"格数计数"：安全箱档位用 1x2 / 2x3 / 3x4 表达，
- * 这是**行列**记法 —— 物品有形状，装包是排放。一个 2x1 的急救包放不进 1x2 的格子
- * （只能旋转后才放得进），而"只算格数"的模型看不出这个区别。
- *
- * 贪心而不是最优解：玩家的实际行为就是"先捡单位体积最值钱的，能塞就塞"，
- * 贪心更贴近真人，也不把模型做得比玩法更聪明。
- *
- * @param items 已按价值密度降序排好的物品
- * @returns { placed, value, weightKg, vol }
- */
-function packGrid(gridW, gridH, items, weightLimitKg = Infinity, excludeCategories = []) {
-  const occupied = Array.from({ length: gridH }, () => new Array(gridW).fill(false));
-  const placed = [];
-  let value = 0;
-  let weightKg = 0;
-  let vol = 0;
-
-  const fits = (x, y, w, h) => {
-    if (x + w > gridW || y + h > gridH) return false;
-    for (let dy = 0; dy < h; dy++) {
-      for (let dx = 0; dx < w; dx++) if (occupied[y + dy][x + dx]) return false;
-    }
-    return true;
-  };
-  const mark = (x, y, w, h, v) => {
-    for (let dy = 0; dy < h; dy++) {
-      for (let dx = 0; dx < w; dx++) occupied[y + dy][x + dx] = v;
-    }
-  };
-
-  const excluded = new Set(excludeCategories);
-  for (const it of items) {
-    if (excluded.has(it.category)) continue;
-    if (weightKg + it.weightKg > weightLimitKg) continue;
-    let put = false;
-    // 正放放不下就试旋转（90°）—— 真人一定会转一下再塞
-    for (const [w, h] of [[it.w, it.h], [it.h, it.w]]) {
-      if (put) break;
-      for (let y = 0; y + h <= gridH && !put; y++) {
-        for (let x = 0; x + w <= gridW && !put; x++) {
-          if (!fits(x, y, w, h)) continue;
-          mark(x, y, w, h, true);
-          placed.push({ item: it, x, y, w, h, rotated: w !== it.w });
-          value += it.value;
-          weightKg += it.weightKg;
-          vol += it.vol;
-          put = true;
-        }
-      }
-    }
-  }
-  return { placed, value, weightKg, vol, occupied };
-}
+// mulberry32 / pickRarity / packGrid 已迁到 src/core（rng.js / lootTable.js / packing.js），
+// 本脚本改为从那里导入 —— 见文件头的"算法同源"说明。
 
 function simulateRaid(containerCounts, rnd) {
   // 第一步：把地上的东西全部收集起来
@@ -658,7 +579,7 @@ console.log('        运行时统计需在 M3-4 接入后补齐，两者对不�
 if (JSON_OUT) {
   const out = {
     generatedAt: new Date().toISOString(),
-    source: 'docs/07-loot-tables.json',
+    source: path.relative(ROOT, TABLE).replace(/\\/g, '/'),
     status: 'pending-review',
     runs: RUNS,
     seed: 20260301,
