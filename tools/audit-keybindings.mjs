@@ -72,7 +72,7 @@ for (const r of RESERVED) {
   if (boundKeys.has(r.key)) {
     warnings.push(
       `键 ${r.key} 被游戏动作使用；它与 Ctrl 组合是 "${r.combo}"（${r.what}）。` +
-        `当前未绑定 Ctrl，故安全；但未来做按键自定义时**必须拒绝 Ctrl/Alt/Meta 组合**`
+        `当前未绑定 Ctrl，故安全；改键路径由 core/keybinds.js 拒绝此类组合（约束 C-19）`
     );
   }
 }
@@ -107,6 +107,8 @@ if (problems.length) {
   process.exit(1);
 }
 console.log('审计通过。');
-console.log('注意：本审计只能防止"绑定表本身写错"这一类回归（修饰键、重复占用）；');
-console.log('      按键自定义功能（M2/M5）上线后，必须在 UI 层同样执行这两条规则，');
-console.log('      否则玩家自己就能绑出一个会关页面或一次触发两个动作的键。');
+console.log('注意：本审计防的是"**默认**绑定表本身写错"这一类回归（修饰键、重复占用）。');
+console.log('      M5-8 起玩家可以改键，那条路径由 core/keybinds.js 的 sanitizeBindings 把关');
+console.log('      （白名单键码 + 拒绝 Ctrl/Alt/Meta 组合 + 拒绝重复绑定 + 移动类锁定），');
+console.log('      并且它与本审计**共用同一份键位表**（core/keybinds.js）—— 两处不会分叉。');
+console.log('      端到端另有 4 条断言守着"改键真的生效 / 非法键真的被拒"。');

@@ -1,0 +1,69 @@
+{
+  "_comment": "M5-4 经济表（唯一真值）：仓库规格、买卖价差、商店在售清单、通胀监控参数。",
+  "_priceAuthorityNote": "★ 价格的**算法**只有一处（core/shop.js 的 basePrice/buyPrice/sellPrice）。本表只给『价差比例』与『卖什么』，不给任何成品的买价或卖价数字 —— 否则改一次价差就要改一列数字，正是 M5 约束词禁止的『两处各算一次价格』。",
+  "_basePriceRule": "基价 = 装备表（weapons.json / combat.json）的 price（若 id 命中某件装备）；否则 = 物品表（loot.json）的 value。搜刮结算用的是 value（估值），商店用的是 price（市价）—— 估值与市价不同是设计意图，不是不一致。",
+
+  "stash": {
+    "_comment": "仓库：二维格子，与局内背包同一套排放算法（core/packing.js）。",
+    "w": 10,
+    "h": 12,
+    "_slots": 120,
+    "limits": {
+      "maxBytes": 200000,
+      "_maxBytesNote": "档案序列化后的软上限。超过时先丢 _repairs、再截断 economy.samples（保游戏进度，牺牲诊断与统计），仍超则不动旧档并记一次警告 —— 宁可少存一次，也不要写半份。"
+    },
+    "sortModes": ["category", "rarity", "value", "name"],
+    "_sortNote": "排序只改坐标、不改内容（多重集合必须相等，有单测守住）。默认按类别，其次稀有度降序、再按价值降序。"
+  },
+
+  "priceRules": {
+    "buySpread": { "weapon": 1.15, "armor": 1.1, "ammo": 0.7, "medical": 0.9, "consumable": 0.9 },
+    "_buySpreadNote": "买价 = ceil(基价 × buySpread)。>1 表示商店加价（弹药与医疗按 0.7/0.9 是**补贴**：它们是消耗品，定价过高会让玩家不敢开枪/不敢治伤）。",
+    "sellRatio": {
+      "weapon": 0.42, "armor": 0.42, "attachment": 0.38, "ammo": 0.28,
+      "medical": 0.32, "consumable": 0.32, "valuable": 0.55, "quest": 0
+    },
+    "_sellRatioNote": "卖价 = floor(基价 × sellRatio)。**每一个物品类别都必须在这里出现**（含 0），否则启动期报错 —— 缺一类的表现是『这类东西卖不掉且没人知道为什么』。quest 固定为 0：任务物品不可出售。",
+    "_noArbitrageNote": "启动期校验：凡在 buySpread 里出现的类别，都必须满足 sellRatio < buySpread，否则玩家可以『买入再卖出』无限刷钱。",
+    "minSellPrice": 1,
+    "_minSellPriceNote": "单件卖价下限。破甲（耐久 0）另有 brokenSellRatio 规则，见 equipment.json 的 durabilityRules。"
+  },
+
+  "stock": {
+    "_comment": "商店在售清单。qty 的语义：-1 = 无限；正数 = **单次购买上限**（不做『刷新库存』，那属 M6+）。",
+    "_unlockNote": "unlockLevel 对照 progression.json 的等级；启动期校验它不超过 maxLevel。",
+    "items": [
+      { "id": "pistol_p9", "kind": "weapon", "ref": "pistol_p9", "unlockLevel": 1, "qty": -1 },
+      { "id": "rifle_m4", "kind": "weapon", "ref": "rifle_m4", "unlockLevel": 1, "qty": -1 },
+      { "id": "smg_v9", "kind": "weapon", "ref": "smg_v9", "unlockLevel": 2, "qty": -1 },
+      { "id": "shotgun_m590", "kind": "weapon", "ref": "shotgun_m590", "unlockLevel": 3, "qty": -1 },
+      { "id": "dmr_sr25", "kind": "weapon", "ref": "dmr_sr25", "unlockLevel": 6, "qty": -1 },
+      { "id": "helmet2", "kind": "armor", "ref": "helmet2", "unlockLevel": 1, "qty": -1 },
+      { "id": "vest2", "kind": "armor", "ref": "vest2", "unlockLevel": 1, "qty": -1 },
+      { "id": "helmet3", "kind": "armor", "ref": "helmet3", "unlockLevel": 4, "qty": -1 },
+      { "id": "vest3", "kind": "armor", "ref": "vest3", "unlockLevel": 4, "qty": -1 },
+      { "id": "ammo_556", "kind": "item", "ref": "ammo_556", "unlockLevel": 1, "qty": 300 },
+      { "id": "ammo_762", "kind": "item", "ref": "ammo_762", "unlockLevel": 2, "qty": 200 },
+      { "id": "ammo_ap", "kind": "item", "ref": "ammo_ap", "unlockLevel": 5, "qty": 150 },
+      { "id": "pistol_mag", "kind": "item", "ref": "pistol_mag", "unlockLevel": 1, "qty": 200 },
+      { "id": "bandage", "kind": "item", "ref": "bandage", "unlockLevel": 1, "qty": -1 },
+      { "id": "medkit", "kind": "item", "ref": "medkit", "unlockLevel": 1, "qty": -1 }
+    ]
+  },
+
+  "inflation": {
+    "_comment": "通胀监控（M5 硬性要求：能输出监控数据）。判定用档案里的 economy.samples（每局一行）。",
+    "windowRaids": 20,
+    "_windowNote": "只看最近 N 局的样本。样本不足 N 局时 verdict = 'insufficient'（而不是硬判）——30 局打不满就报『通缩』是误导。",
+    "inflationRatio": 1.35,
+    "deflationRatio": 0.5,
+    "_verdictNote": "中位净收入 > 目标上限 × inflationRatio → 'inflation'；< 目标下限 × deflationRatio → 'deflation'；其余 'ok'。目标上下限由 loot.json 的 raidTargets 派生（min(valueMin) ~ max(valueMax)）。",
+    "maxSamples": 60,
+    "_maxSamplesNote": "档案里保留的样本行数上限（环形）。它同时是档案体积的主要来源，所以有限制。"
+  },
+
+  "starterCurrency": 20000,
+  "_starterCurrencyNote": "新账号起始货币。**由制作人裁定为 20000**（我原先自拟 8000，理由是『刚好买得起 M4+二级甲+二级头 ≈ 6020』；20000 的后果是开局可以直接买齐一把 SR-25 + 三级甲 + 三级头还剩约一半，前期经济压力显著更低）。这是策划数值，无实测依据 —— 标定属试玩阶段，改它只改这一行。",
+  "starterStash": null,
+  "_starterStashNote": "★ 制作人裁定（M5-3）：新账号仓库**为空**，起始装备**不预置** —— 玩家拿 20000 起始货币自己去商店买；不买就只能赤手空拳进战区（配合『允许缺件进局』）。推论（已实现）：大厅与配装界面必须把库存缺口**显著**列出来，否则新玩家会一头雾水地进局。null 而不是空数组占位：空仓库由 createNewProfile 统一生成。"
+}

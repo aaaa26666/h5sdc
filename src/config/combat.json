@@ -9,7 +9,12 @@
       "durability": 0,
       "damageAbsorb": 0.0,
       "durabilityLossPerHit": 0,
-      "covers": []
+      "covers": [],
+      "weightKg": 0,
+      "value": 0,
+      "price": 0,
+      "item": { "w": 1, "h": 1 },
+      "lootItemId": null
     },
     {
       "id": "vest2",
@@ -18,7 +23,12 @@
       "durability": 55,
       "damageAbsorb": 0.35,
       "durabilityLossPerHit": 1.6,
-      "covers": ["chest", "stomach"]
+      "covers": ["chest", "stomach"],
+      "weightKg": 3.2,
+      "value": 550,
+      "price": 800,
+      "item": { "w": 2, "h": 2 },
+      "lootItemId": "vest2"
     },
     {
       "id": "vest3",
@@ -27,7 +37,12 @@
       "durability": 80,
       "damageAbsorb": 0.48,
       "durabilityLossPerHit": 2.1,
-      "covers": ["chest", "stomach"]
+      "covers": ["chest", "stomach"],
+      "weightKg": 4,
+      "value": 1250,
+      "price": 1900,
+      "item": { "w": 2, "h": 3 },
+      "lootItemId": "vest3"
     },
     {
       "id": "helmet2",
@@ -36,7 +51,12 @@
       "durability": 40,
       "damageAbsorb": 0.4,
       "durabilityLossPerHit": 1.4,
-      "covers": ["head"]
+      "covers": ["head"],
+      "weightKg": 1.8,
+      "value": 480,
+      "price": 700,
+      "item": { "w": 2, "h": 2 },
+      "lootItemId": "helmet2"
     },
     {
       "id": "helmet3",
@@ -45,7 +65,12 @@
       "durability": 60,
       "damageAbsorb": 0.55,
       "durabilityLossPerHit": 1.8,
-      "covers": ["head"]
+      "covers": ["head"],
+      "weightKg": 2.1,
+      "value": 980,
+      "price": 1500,
+      "item": { "w": 2, "h": 2 },
+      "lootItemId": "helmet3"
     }
   ],
 
@@ -84,10 +109,9 @@
   ],
 
   "playerVitals": {
-    "_comment": "M2 玩家生命、护甲与初始消耗品。负重/背包等属 M3。",
+    "_comment": "M2 玩家生命与护甲规则（数值真值）。",
+    "_movedNote": "★ M5-3：原来的 startArmor / startConsumables 已迁至 equipment.json 的 starterLoadout —— 『进战区带什么』只能有一份真值，而配装界面要改的正是这一份。config/index.js 会把它派生回 playerVitals.startArmor / startConsumables（**派生视图**，供 player.js / briefing.js 沿用，不是第二份真值）。此处不再保留副本。",
     "maxHealth": 100,
-    "startArmor": { "body": "vest2", "head": "helmet2" },
-    "startConsumables": { "bandage": 3, "medkit": 2 },
     "headshotInstantDeathChance": 0.0
   }
 }

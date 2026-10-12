@@ -1,0 +1,166 @@
+{
+  "generatedAt": "2026-10-12T14:29:08.871Z",
+  "seed": 20260201,
+  "simulatedRaids": 200,
+  "_method": "理论分布模拟（掉落表目标区间均匀抽样 + 设计存活率），不是运行时实测收益",
+  "targetBand": [
+    1800,
+    36000
+  ],
+  "allSampleMedian": 2286,
+  "window": {
+    "raids": 20,
+    "totalRaids": 200,
+    "windowRaids": 20,
+    "netMedian": 1943,
+    "netP90": 23651,
+    "incomePerRaid": 5956,
+    "spentPerRaid": 662,
+    "currency": 20000,
+    "targetBand": [
+      1800,
+      36000
+    ],
+    "verdict": "ok",
+    "verdictReason": "中位净收入 1943 落在目标区间内"
+  },
+  "prices": [
+    {
+      "ref": "pistol_p9",
+      "itemId": "pistol_p9",
+      "units": 1,
+      "unlockLevel": 1,
+      "buy": 1380,
+      "sell": 504,
+      "margin": 876
+    },
+    {
+      "ref": "rifle_m4",
+      "itemId": "rifle_m4",
+      "units": 1,
+      "unlockLevel": 1,
+      "buy": 4370,
+      "sell": 1596,
+      "margin": 2774
+    },
+    {
+      "ref": "smg_v9",
+      "itemId": "smg_v9",
+      "units": 1,
+      "unlockLevel": 2,
+      "buy": 2990,
+      "sell": 1092,
+      "margin": 1898
+    },
+    {
+      "ref": "shotgun_m590",
+      "itemId": "shotgun_m590",
+      "units": 1,
+      "unlockLevel": 3,
+      "buy": 3450,
+      "sell": 1260,
+      "margin": 2190
+    },
+    {
+      "ref": "dmr_sr25",
+      "itemId": "rifle_sr25",
+      "units": 1,
+      "unlockLevel": 6,
+      "buy": 5980,
+      "sell": 2184,
+      "margin": 3796
+    },
+    {
+      "ref": "helmet2",
+      "itemId": "helmet2",
+      "units": 1,
+      "unlockLevel": 1,
+      "buy": 771,
+      "sell": 294,
+      "margin": 477
+    },
+    {
+      "ref": "vest2",
+      "itemId": "vest2",
+      "units": 1,
+      "unlockLevel": 1,
+      "buy": 881,
+      "sell": 336,
+      "margin": 545
+    },
+    {
+      "ref": "helmet3",
+      "itemId": "helmet3",
+      "units": 1,
+      "unlockLevel": 4,
+      "buy": 1651,
+      "sell": 630,
+      "margin": 1021
+    },
+    {
+      "ref": "vest3",
+      "itemId": "vest3",
+      "units": 1,
+      "unlockLevel": 4,
+      "buy": 2090,
+      "sell": 798,
+      "margin": 1292
+    },
+    {
+      "ref": "ammo_556",
+      "itemId": "ammo_556",
+      "units": 60,
+      "unlockLevel": 1,
+      "buy": 77,
+      "sell": 30,
+      "margin": 47
+    },
+    {
+      "ref": "ammo_762",
+      "itemId": "ammo_762",
+      "units": 60,
+      "unlockLevel": 2,
+      "buy": 266,
+      "sell": 106,
+      "margin": 160
+    },
+    {
+      "ref": "ammo_ap",
+      "itemId": "ammo_ap",
+      "units": 60,
+      "unlockLevel": 5,
+      "buy": 630,
+      "sell": 252,
+      "margin": 378
+    },
+    {
+      "ref": "pistol_mag",
+      "itemId": "pistol_mag",
+      "units": 60,
+      "unlockLevel": 1,
+      "buy": 105,
+      "sell": 42,
+      "margin": 63
+    },
+    {
+      "ref": "bandage",
+      "itemId": "bandage",
+      "units": 1,
+      "unlockLevel": 1,
+      "buy": 117,
+      "sell": 41,
+      "margin": 76
+    },
+    {
+      "ref": "medkit",
+      "itemId": "medkit",
+      "units": 1,
+      "unlockLevel": 1,
+      "buy": 378,
+      "sell": 134,
+      "margin": 244
+    }
+  ],
+  "verdict": "ok",
+  "failures": []
+}

@@ -131,5 +131,39 @@
       "keepFraction": 0,
       "_keepNote": "中断后保留的进度比例。0 = 清零（严格，与搜索的 lose_all 同性质）。若改成 0.5 即与搜索的 keep_partial 对齐。"
     }
+  },
+  "audio": {
+    "_comment": "音频基线的**唯一真值**。M5-1 之前这两个数字写死在 audio.js 里（master.gain.value = 0.35，两处），属硬编码。",
+    "masterGain": 0.35,
+    "_masterGainNote": "混音总线的基础增益。实际增益 = masterGain × 音量档位倍率（见 settings.volumeLevels），只由 audio.js 的一处函数计算。"
+  },
+  "settings": {
+    "_comment": "M5-1 本机偏好设置的**唯一真值**：合法取值、默认值、档位倍率都在这里。此前 sprintMode/crouchMode 的合法取值硬编码在 platform/settings.js 里（ENUMS），改档位要同时改代码与界面 —— 现在只改这一张表。",
+    "_scopeNote": "本表只管**本机偏好**（画质/灵敏度/音量/操作方式）。游戏进度（仓库、等级、任务）不在这里，属 M5-7 的档案（platform/profileStore.js）。",
+    "_levelsKeyNote": "M5-8：档位 → 倍率的映射不再写死在代码里（原 validateSettings 与 settings.js 各硬编码了一份映射表名）。现在由每项的 levelsKey 声明，加一档只改这里。",
+    "schema": {
+      "sprintMode": { "values": ["hold", "toggle"], "default": "hold" },
+      "crouchMode": { "values": ["hold", "toggle"], "default": "hold" },
+      "mouseSens": { "values": ["low", "normal", "high", "veryHigh"], "default": "normal", "levelsKey": "mouseSensLevels" },
+      "masterVolume": { "values": ["off", "low", "normal", "high"], "default": "normal", "levelsKey": "volumeLevels" },
+      "sfxVolume": { "values": ["off", "low", "normal", "high"], "default": "normal", "levelsKey": "volumeLevels" },
+      "musicVolume": { "values": ["off", "low", "normal", "high"], "default": "normal", "levelsKey": "volumeLevels" },
+      "graphicsQuality": { "values": ["low", "medium", "high"], "default": "medium", "tableKey": "qualityTable" },
+      "touchLayout": { "values": ["off", "auto", "on"], "default": "auto" },
+      "bindings": { "type": "keymap", "default": {} }
+    },
+    "_schemaNote": "值为**字符串档位**而不是数字：字符串进 localStorage 后能被逐字段校验（非枚举即回落默认值），不必再为浮点数写一套范围校验；数字语义集中在下面几张档位表里。bindings 是唯一例外（type=keymap）：它是一张『动作 → 键位』的映射，由 core/keybinds.js 的 sanitizeBindings 校验（拒绝修饰键组合、拒绝重复绑定），空对象表示『全部用默认键位』。",
+    "mouseSensLevels": { "low": 0.6, "normal": 1, "high": 1.4, "veryHigh": 1.8 },
+    "_mouseSensNote": "鼠标灵敏度**倍率**。实际灵敏度 = player.mouseSensitivity（基线，弧度/像素）× 本倍率，只在 player.js 的一处函数里计算 —— 归因统计与真正转视角必须用同一个值，否则 M2-TEMP-1 的「鼠标贡献了多少」会失真。",
+    "volumeLevels": { "off": 0, "low": 0.4, "normal": 1, "high": 1.5 },
+    "_volumeNote": "音量**倍率**，与 audio.masterGain 相乘。high 给到 1.5 是有意的：手机外放普遍偏小。masterVolume / sfxVolume / musicVolume 三项共用本表（分轨在 audio.js 里做乘法，不在这里复制一份数字）。",
+    "qualityTable": {
+      "_comment": "★ 制作人裁定的三档画质（M5-8）：档位 → 渲染参数的**唯一映射**（加一档只改这里）。低 = 阴影关 + 像素比 1.0；中 = 阴影 1024 + 1.5；高 = 阴影 2048 + 2.0。",
+      "_deltaNote": "默认档（medium）与 M5 之前的渲染**有一处不同**：像素比上限由 2 降为 1.5（制作人裁定）。因此 DPR=2 的屏幕默认会以内部分辨率 1.5× 渲染 —— 画面略软、帧率更好。要高像素比就切到 high。",
+      "_antialiasNote": "抗锯齿（antialias）是 WebGLRenderer 的**构造参数**，运行时改不了 —— 三档都不动它。这是限制，不是遗漏：表里因此刻意没有这个字段（放一个改不动的字段等于骗人）。",
+      "low": { "shadows": false, "shadowMapSize": 0, "pixelRatioMax": 1 },
+      "medium": { "shadows": true, "shadowMapSize": 1024, "pixelRatioMax": 1.5 },
+      "high": { "shadows": true, "shadowMapSize": 2048, "pixelRatioMax": 2 }
+    }
   }
 }

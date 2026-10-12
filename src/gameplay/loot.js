@@ -47,6 +47,10 @@ export function createLoot(cfg, level, scene, opts = {}) {
   const rnd = mulberry32(cfg.level.seed + 4231);
   const onOpened = opts.onOpened || (() => {});
   const hasKey = opts.hasKey || (() => true);
+  // M5-5：搜刮熟练技能提高搜索速度（>1 = 更快）。缺省 1 = 配置基线。
+  const searchScale = opts.kit ? opts.kit.modifiers.searchSpeedScale : 1;
+  /** 某类容器的实际搜索耗时（毫秒）—— 唯一的口径，进度条与完成判定都用它 */
+  const searchMsOf = (def) => def.searchMs / searchScale;
   // 移动打断的判定半径：站在原地搜，走开就断。
   // 这个值**没有实测依据**，是我按"允许小幅走位但不允许跑开"选的，待评审裁定。
   const moveAbortM = L.moveAbortRadius ?? 1.0;
@@ -245,9 +249,9 @@ export function createLoot(cfg, level, scene, opts = {}) {
           searchAnchor = { x: playerPos.x, z: playerPos.z };
         }
         activeContainer.progress += dt * 1000;
-        if (activeContainer.progress >= nearest.def.searchMs) {
+        if (activeContainer.progress >= searchMsOf(nearest.def)) {
           nearest.opened = true;
-          nearest.progress = nearest.def.searchMs;
+          nearest.progress = searchMsOf(nearest.def);
           dimContainer(nearest);
           hideBeam(nearest);
           justOpened = nearest;

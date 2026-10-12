@@ -113,8 +113,8 @@ try {
   await page.click('#btnStart');
   await sleep(1200);
   const hudOn = await page.evaluate(() => document.getElementById('hud').classList.contains('on'));
-  const startGone = await page.evaluate(() => !document.getElementById('screenStart').classList.contains('on'));
-  check('点击「进入战区」后 HUD 出现、开始界面关闭', hudOn && startGone, `hud=${hudOn} startGone=${startGone}`);
+  const startGone = await page.evaluate(() => !document.getElementById('screenLobby').classList.contains('on'));
+  check('点击「进入战区」后 HUD 出现、大厅关闭', hudOn && startGone, `hud=${hudOn} lobbyGone=${startGone}`);
 
   const locked = await page.evaluate(() => document.pointerLockElement !== null);
   check('指针锁定生效（能转视角）', locked === true, locked ? '已锁定' : '未锁定 —— 将无法转视角');

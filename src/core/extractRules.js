@@ -120,11 +120,42 @@ export function evaluateOpenRule(rule, ctx) {
   throw new Error(`[extractRules] 未知撤离点规则类型: ${rule.type}`);
 }
 
-/** 规则的人类可读说明（HUD 提示与报告用，不含数值判断） */
+/**
+ * 规则的人类可读说明（大厅简报与 HUD 提示用，**不含任何数值判断**）。
+ *
+ * M5-1 之前这个函数是**死代码**（全项目零调用），M5-1 的大厅简报要用它。
+ * 当时它只说"条件点（时间门槛后开放）"，不说是多久之后 —— 大厅里那样写等于没说。
+ * 因此把它改成带数字的版本，并**由简报直接复用**，而不是在简报里另写一份
+ * （"两处各描述一遍同一条规则"正是本项目反复踩过的坑）。
+ * 规则类型本身用 OPEN_RULE 常量比对，避免字符串字面量散落。
+ */
 export function describeOpenRule(rule) {
-  if (!rule || !rule.type || rule.type === OPEN_RULE.ALWAYS) return '常驻';
-  if (rule.type === OPEN_RULE.TIME_AFTER) return '条件点（时间门槛后开放）';
-  if (rule.type === OPEN_RULE.TIME_WINDOW) return '时间窗（限时开放）';
-  if (rule.type === OPEN_RULE.KILLS_AFTER) return `条件点（淘汰 ${rule.kills} 名后开放）`;
-  return `未知规则(${rule.type})`;
+  if (!rule || !rule.type || rule.type === OPEN_RULE.ALWAYS) return '常驻开放';
+  if (rule.type === OPEN_RULE.TIME_AFTER) {
+    if (typeof rule.afterFraction === 'number') return `局内时间过 ${pct(rule.afterFraction)} 后开放`;
+    if (typeof rule.afterMs === 'number') return `局内第 ${sec(rule.afterMs)} 秒起开放`;
+    return '条件点（时间门槛未配置）';
+  }
+  if (rule.type === OPEN_RULE.TIME_WINDOW) {
+    const a = fracOrSec(rule.fromFraction, rule.fromMs);
+    const b = fracOrSec(rule.toFraction, rule.toMs);
+    return `仅在局内 ${a} ~ ${b} 期间开放`;
+  }
+  if (rule.type === OPEN_RULE.KILLS_AFTER) return `累计淘汰 ${rule.kills} 名敌人后开放`;
+  return `未知规则（${rule.type}）`;
+}
+
+/** 比例 → 百分数文案 */
+function pct(f) {
+  return `${Math.round(f * 100)}%`;
+}
+/** 毫秒 → 秒文案 */
+function sec(ms) {
+  return `${Math.round(ms / 1000)}`;
+}
+/** 时间点：优先用比例（跟单局时限缩放），否则用绝对值 */
+function fracOrSec(fraction, ms) {
+  if (typeof fraction === 'number') return pct(fraction);
+  if (typeof ms === 'number') return `第 ${sec(ms)} 秒`;
+  return '未配置';
 }

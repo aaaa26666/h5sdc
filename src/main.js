@@ -19,7 +19,7 @@ import * as THREE from 'three';
 import { config } from './config/index.js';
 import { createLevel } from './level/level.js';
 import { createInput } from './platform/input.js';
-import { loadSettings, saveSettings } from './platform/settings.js';
+import { loadSettings, saveSettings, resetSettings, mouseSensScale, volumeScale, qualityParams, sfxVolumeScale, musicVolumeScale } from './platform/settings.js';
 import { createPlayer } from './gameplay/player.js';
 import { createWeaponSystem } from './gameplay/weapon.js';
 import { createAiManager } from './gameplay/aiManager.js';
@@ -29,12 +29,45 @@ import { createInventory } from './gameplay/inventory.js';
 // M4-3：结算改由独立的纯函数产出（src/core/raidResult.js），
 // 不再在 endRaid 里现拼数据 —— 那样无法单测、无法重放，也谈不上幂等。
 import { buildRaidResult } from './core/raidResult.js';
+// M5-1：主大厅的展示数值由纯函数产出（core/briefing.js），界面只排版不算数。
+import { buildRaidBriefing } from './core/briefing.js';
 import { createMinimap } from './ui/minimap.js';
+// M5-1：局内世界现在是"可创建 / 可销毁"的一整块（挂在 raidRoot 下）。
+import { createRaidRoot, disposeSubtree } from './render/sceneCleanup.js';
+// M5-8：画质档位的应用（档位参数来自配置表，本文件只负责装上去）
+import { applyQuality } from './render/quality.js';
 // M4-7：断线/刷新策略。快照的纯逻辑在 core，存储在 platform，本文件只做接线。
 import { buildCheckpoint, checkpointToFacts } from './core/raidCheckpoint.js';
 import { saveCheckpoint, loadCheckpoint, clearCheckpoint, isAvailable } from './platform/raidStore.js';
 import { createFlow, FLOW, END_REASON } from './core/flow.js';
 import { createHud } from './ui/hud.js';
+// M5-1：局外入口（主大厅）。它只负责排版与显示，数值全部来自 core/briefing.js。
+import { createLobby } from './ui/lobby.js';
+// M5：局外五个面板的渲染（仓库 / 配装 / 商店 / 技能 / 任务）。只排版，数值来自 core/lobbyView.js。
+import { createPanels, reasonText } from './ui/panels.js';
+// M5-7：玩家档案（存档）。存储是平台层，纯逻辑在 core/profile.js。
+import { loadProfile, saveProfile, clearProfile, storageInfo, isProfileAvailable } from './platform/profileStore.js';
+import { profileView, activeLoadout } from './core/profile.js';
+import { buildLobbyViews, buildSettingsView } from './core/lobbyView.js';
+// M5-8：设置面板（独立模块，销 M5-TEMP-4）与改键校验
+import { createSettings } from './ui/settings.js';
+import { sanitizeBindings, formatKey, actionLabel } from './core/keybinds.js';
+import {
+  buildRaidKit,
+  takeLoadout,
+  setAmmo,
+  setConsumable,
+  updatePreset,
+  addPreset,
+  removePreset,
+  setActivePreset,
+  ammoOnHand,
+} from './core/loadout.js';
+import { stashSort, stashSummary, stashAdd } from './core/stash.js';
+import { buy as shopBuy, sell as shopSell } from './core/shop.js';
+import { acceptQuest, claimQuest, abandonQuest } from './core/quests.js';
+import { learnSkill, respec, applyExp } from './core/progression.js';
+import { applyRaidToProfile } from './core/settlement.js';
 import { createDecals } from './ui/decals.js';
 import { createAudio } from './audio/audio.js';
 import { createLayeredNavGrid, createAStar, createPathScheduler, makeLos } from './core/navgrid.js';
@@ -74,75 +107,192 @@ sc.updateProjectionMatrix();
 scene.add(sun);
 scene.add(sun.target);
 
-// ---------------- 世界与系统 ----------------
+// ---------------- 局外外壳 ----------------
+//
+// 下面这些对象**跨局存活**：渲染器、场景、相机、灯光、HUD、小地图、输入、
+// 音频、设置、流程状态机。它们不随"进入/离开战区"生灭。
 const hud = createHud();
+// M5-1：主大厅。启动后玩家先看到它，而不是"点击即开始"的开始页。
+const lobby = createLobby();
+// M5：局外进度（档案）。它是**唯一**的持久化真值：货币、仓库、等级、技能、任务、统计。
+// 加载失败时 profileStore 会回落备份或新档，并留下可观测的 repairs（见它的注释）。
+let profileState = loadProfile(cfg, Date.now());
+let profile = profileState.profile;
+/** 局外界面态：只影响显示（选中哪些仓库条目、用哪个排序），不参与任何玩法数值。 */
+const lobbyUi = { selectedUids: [], sortMode: 'category' };
+/** 本局从仓库取走的配装（撤离要把没用完的还回来，阵亡则整份丢失）。 */
+let raidTaken = null;
+/** 上一局的结算落库摘要（结算界面要显示经验 / 任务 / 入库明细）。 */
+let lastRaidSummary = null;
+/** 进局时的配装快照（DEV 接口与结算读数用它，避免"局内再算一遍"）。 */
+let raidKit = null;
+/** 已开容器按类型计数（任务 open 类目标要用；它必须按"这一局"统计）。 */
+let openedByType = {};
+/** 本局是从哪个撤离点走的（任务的 extract 类目标可以限定撤离点；未撤离为 null）。 */
+let lastExtractZoneId = null;
+/** 最近一次的大厅面板视图（DEV 接口与断言读它，避免"界面与纯函数各说各话"）。 */
+let lobbyViews = null;
+/** 当前生效的画质参数（DEV 接口读它，断言"档位真的装上了"）。 */
+let qualityState = null;
+/** 本局 HUD 的任务追踪行（进局时由 raidKit.quests 生成，局内不再回查档案）。 */
+let raidQuestLines = [];
+
+/**
+ * M5：局外面板的动作接线。
+ *
+ * 所有动作都走 `mutate()`：成功 → 落库并重绘大厅；失败 → 把**原因**显示出来。
+ * 为什么不允许静默失败：玩家点了"买"没反应，与"点了但钱不够"在界面上完全一样，
+ * 而后者是可解释的（core 已经算好了 reason），不显示出来等于把可解释的错误扔掉。
+ */
+const panels = createPanels({
+  // ---- 配装 ----
+  presetSelect: (d) => mutate((p) => setActivePreset(p, d.id)),
+  presetAdd: () => mutate((p) => addPreset(p, cfg)),
+  presetRemove: () => mutate((p) => removePreset(p, p.activeLoadoutId, cfg)),
+  slotSelect: (d, node) =>
+    mutate((p) => updatePreset(p, p.activeLoadoutId, { [d.slot]: node.value || null }, cfg)),
+  ammoInc: (d) =>
+    mutate((p) => {
+      const lo = activeLoadout(p);
+      const step = Number(d.step);
+      const want = (lo.ammo[d.cal] || 0) + step;
+      // 上限是**仓库里实际有的发数** —— 制作人裁定"不设数量上限"，但仓库供给是硬约束
+      return setAmmo(p, lo.id, d.cal, Math.min(want, ammoOnHand(p, d.cal, cfg)), cfg);
+    }),
+  ammoDec: (d) =>
+    mutate((p) => {
+      const lo = activeLoadout(p);
+      const step = Number(d.step);
+      return setAmmo(p, lo.id, d.cal, Math.max(0, (lo.ammo[d.cal] || 0) - step), cfg);
+    }),
+  consInc: (d) =>
+    mutate((p) => {
+      const lo = activeLoadout(p);
+      const step = Number(d.step);
+      const want = (lo.consumables[d.id] || 0) + step;
+      const have = p.stash.reduce((a, e) => (e.itemId === d.id ? a + e.count : a), 0);
+      return setConsumable(p, lo.id, d.id, Math.min(want, have), cfg);
+    }),
+  consDec: (d) =>
+    mutate((p) => {
+      const lo = activeLoadout(p);
+      const step = Number(d.step);
+      return setConsumable(p, lo.id, d.id, Math.max(0, (lo.consumables[d.id] || 0) - step), cfg);
+    }),
+
+  // ---- 仓库 ----
+  stashSort: (d) => {
+    lobbyUi.sortMode = d.mode;
+    mutate((p) => ({ ok: true, profile: { ...p, stash: stashSort(p.stash, d.mode, cfg).stash } }));
+  },
+  stashToggle: (d) => {
+    const uid = Number(d.uid);
+    const i = lobbyUi.selectedUids.indexOf(uid);
+    if (i >= 0) lobbyUi.selectedUids.splice(i, 1);
+    else lobbyUi.selectedUids.push(uid);
+    refreshLobby();
+  },
+  stashSelectAll: () => {
+    lobbyUi.selectedUids = profile.stash.map((e) => e.uid);
+    refreshLobby();
+  },
+  stashClear: () => {
+    lobbyUi.selectedUids = [];
+    refreshLobby();
+  },
+  stashSell: () => {
+    const res = mutate((p) => shopSell(p, lobbyUi.selectedUids, cfg));
+    if (res && res.ok) {
+      lobbyUi.selectedUids = [];
+      lobby.toast(`出售完成：+${res.gained} 货币`);
+      refreshLobby();
+    }
+  },
+
+  // ---- 商店 ----
+  shopBuy: (d) => {
+    const res = mutate((p) => shopBuy(p, d.ref, Number(d.step), cfg));
+    if (res && res.ok) lobby.toast(`已买入（-${res.spent} 货币）`);
+  },
+
+  // ---- 技能 ----
+  skillLearn: (d) => mutate((p) => learnSkill(p, d.id, cfg)),
+  skillsRespec: () => mutate((p) => respec(p, cfg)),
+
+  // ---- 任务 ----
+  questAccept: (d) => mutate((p) => acceptQuest(p, d.id, cfg)),
+  questClaim: (d) => mutate((p) => claimQuest(p, d.id, cfg)),
+  questAbandon: (d) => mutate((p) => abandonQuest(p, d.id, cfg)),
+});
+
+/**
+ * 执行一次"档案变换"。
+ * @param {(profile:object) => {ok:boolean, profile?:object, reason?:string}} fn
+ *        必须是 core/ 的纯函数（buy / sell / learnSkill / updatePreset …）
+ */
+function mutate(fn) {
+  const res = fn(profile);
+  if (!res || !res.ok) {
+    const why = res && res.reason ? reasonText(res.reason) : '未知原因';
+    lobby.toast(`操作失败：${why}`, true);
+    return res;
+  }
+  profile = res.profile;
+  saveProfileNow();
+  lobby.toast('');
+  refreshLobby();
+  return res;
+}
 // M4-6：小地图。数据每帧由主循环组装后喂给它，它只画不判。
 const minimap = createMinimap(hud.el.minimap, cfg);
 let minimapLastDraw = 0;
 const settings = loadSettings();
 const input = createInput(renderer.domElement, cfg, settings);
 const flow = createFlow(cfg);
-const audio = createAudio();
+// [M5-1] 音频基础增益来自配置表（此前 0.35 硬编码在 audio.js 里两处）。
+const audio = createAudio(cfg);
 
-const level = createLevel(cfg, scene);
-const player = createPlayer(cfg, level);
-const decals = createDecals(scene);
-// M3-5 背包（二维网格 + 负重）与 M3-6 安全箱。
-// 先于 loot 创建：开箱回调要把物品塞进背包，而钥匙房要先查背包里有没有门禁卡。
-const inventory = createInventory(cfg);
-const extract = createExtract(cfg, level, scene);
-const loot = createLoot(cfg, level, scene, {
-  /**
-   * 开箱（或拾取遗留）：逐件尝试入包，装不下的**留在容器里**而不是凭空消失。
-   * 容量与负重因此成为真约束 —— 这正是"搜"这个字的核心取舍。
-   */
-  onOpened(container, items) {
-    const taken = [];
-    const left = [];
-    for (const it of items) {
-      const r = inventory.tryAdd(it);
-      if (r.ok) taken.push(it);
-      else left.push(it);
-    }
-    container.items = left;
-
-    if (taken.length) {
-      audio.dropTier(container.dropSoundTier);
-      const rarityLabel = container.rarity ? `（${container.colorHex ? '' : ''}${container.rarity}）` : '';
-      hud.toast(`搜到 ${taken.length} 件${rarityLabel}：${taken.map((i) => i.label).join('、')}`);
-    }
-    if (left.length) {
-      const why = inventory.weightKg() + left[0].weightKg > inventory.weightLimitKg ? '超重' : '没地方放';
-      hud.toast(`背包${why}，留下 ${left.length} 件（可腾出空间后再来拿）`);
-    } else if (!taken.length) {
-      hud.toast('空容器');
-    }
-  },
-  hasKey: (itemId) => inventory.items.some((e) => e.item.id === itemId),
-});
-
-// 导航：网格来自关卡，查询一律经预算调度器（M0 约束 C-1/C-2）
+// ---------------- 局内世界：一局一套，可创建 / 可销毁 ----------------
 //
-// 用关卡的分层网格（M3-1b-2 ②）而不是旧的单层 pathBlocked：
-// 节点 = floor*W*H + cell，可行走性由"该层有没有落脚面 + 有没有迈不过去的实体"决定。
-// 当前地图只有一层，floorCount=1、节点索引恒等于 cell，因此对现有 AI 完全等价
-// （高掩体仍然算阻挡，低掩体仍然可走 —— 这一条由 level 的构建期判据保证，见其注释）。
-const navGrid = createLayeredNavGrid(level.nav);
-const aStar = createAStar(navGrid);
-const scheduler = createPathScheduler(aStar, cfg.aiPathBudget);
-// 该视线函数供后续 AI 侧扩展使用；当前 AI 用的是 level.hasLineOfSight（含高度判定）
-void makeLos;
+// M5-1 起局内世界不再是"加载页面时就建好、直到刷新页面才消失"。
+// 闭环（结算 → 大厅 → 再进战区）**不允许刷新页面**，于是同一张页面里会
+// 反复创建/销毁局内世界 —— 不释放就是随局数增长的泄漏。
+//
+// 这些句柄是**模块级变量**而不是每局的局部 const：下面的主循环与 DEV 接口
+// （600 余行）引用的是同一批名字。改成"每局新建局部变量"意味着把那 800 行
+// 全部改成带前缀的访问 —— 纯风险、零收益。因此只把 `const` 改成 `let`，
+// 赋值点收敛进 enterRaidWorld 一个函数里。
+let raidRoot = null;
+let level = null;
+let player = null;
+let decals = null;
+let inventory = null;
+let extract = null;
+let loot = null;
+let navGrid = null;
+let aStar = null;
+let scheduler = null;
+let aiManager = null;
+let weaponSys = null;
+let weaponRng = null;
+let consumables = null;
+let footstepsAccum = 0;
+/** 本页面内局内世界被创建 / 销毁的次数（DEV 断言用：证明"重建"真的发生了） */
+let worldBuilds = 0;
+let worldDisposals = 0;
 
-const aiManager = createAiManager({ cfg, level, scene, scheduler, player });
-
-// 消耗品库存
-const consumables = { ...cfg.playerVitals.startConsumables };
+// 消耗品定义表来自配置，与局无关；库存（consumables）每局重置。
 const consumableDefs = cfg.consumables;
 function consumableDef(id) {
   return consumableDefs.find((c) => c.id === id) || null;
 }
 
-// ---------------- 武器 ----------------
+// ---------------- 武器与战斗统计 ----------------
+//
+// 为什么 combatStats 是**常驻对象、每局就地清零**（而不是每局 new 一个）：
+// weaponSys 的 emit 闭包直接对它自增。若每局换成新对象，上一局残留的闭包
+// （例如某个 setTimeout 里的延时回调）会往旧对象上写，读数就分裂成两份。
+// 就地清零让"谁的闭包写都不丢"，代价只是 9 个字段的循环。
 const combatStats = {
   shotsFired: 0,
   hits: 0,
@@ -154,6 +304,180 @@ const combatStats = {
   deaths: 0,
   emptyClicks: 0,
 };
+
+/**
+ * 跨局残留状态的复位。
+ *
+ * ★ 这里每一个字段都是"M5-1 之前不需要重置、现在必须重置"的：
+ *   以前一整局的生命周期 = 一次页面加载，模块级变量天然是干净的；
+ *   现在同一张页面会跑很多局，任何没被重置的累加量都会**带进下一局**。
+ *   最容易漏也最致命的是暂停计时：`pausedTotalMs` 不清零，第二局的
+ *   剩余时间会从第一局的暂停总时长开始扣（表现为"第二局时间莫名其妙少了一截"）。
+ */
+function resetRaidState() {
+  for (const k of Object.keys(combatStats)) combatStats[k] = 0;
+  kills = 0;
+  lastExtract = null;
+  footstepsAccum = 0;
+  isPaused = false;
+  pauseStartedAt = 0;
+  pausedTotalMs = 0;
+  lockGraceUntilMs = 0;
+  // M5-6：已开容器按类型计数是**每局**的量，任务推进要用它
+  openedByType = {};
+  lastExtractZoneId = null;
+  // ★ 注意：**不要**在这里清 raidTaken —— 它在 `startRaid` 里由 takeLoadout 赋值，
+  //   而 resetRaidState 是 enterRaidWorld 的第一步。清掉它就等于"这一局从仓库扣走的
+  //   配装没有记录"，撤离时不会还回、阵亡时也不计入损失（静默丢装备）。
+  lastRaidSummary = null;
+  raidQuestLines = [];
+}
+
+/**
+ * 建一局：装配局内世界与全部局内系统。
+ *
+ * 所有对象都挂在 `raidRoot` 下（把它当作 scene 传给各模块），
+ * 这是"能整体释放"的前提 —— 理由见 src/render/sceneCleanup.js。
+ */
+function enterRaidWorld(kit) {
+  resetRaidState();
+  // ★ M5-3：进局的配装与技能倍率由 raidKit 一次传入，局内系统**只读**它。
+  //   此前局内读的是 weapons.json 里写死的 startLoadout（M5-TEMP-2），
+  //   于是"玩家换了枪但局内还是旧枪"，而且技能倍率根本没有传递通道。
+  raidKit = kit;
+  // M5-6：HUD 的任务追踪行。**在进局时快照一次**而不是每帧回查档案 ——
+  //   局内不该读档案（那是局外状态），而任务进度在本局结束前不会变。
+  raidQuestLines = (kit.quests || []).map((q) => ({
+    id: q.id,
+    label: q.label,
+    text: `${q.label}：${q.lines.map((l) => `${l.text} ${l.have}/${l.need}${l.done ? ' ✓' : ''}`).join('；')}`,
+  }));
+
+  raidRoot = createRaidRoot(scene);
+  level = createLevel(cfg, raidRoot);
+  // 灵敏度倍率以**函数**注入，而不是传当前数值快照：
+  // 设置面板可以在局内被打开并改动，传快照会让"改了但本局不生效"变成一个
+  // 说不清的行为，而玩家会认为设置坏了。
+  player = createPlayer(cfg, level, { sensitivityScale: () => mouseSensScale(settings), kit });
+  decals = createDecals(raidRoot);
+  // M3-5 背包（二维网格 + 负重）与 M3-6 安全箱。
+  // 先于 loot 创建：开箱回调要把物品塞进背包，而钥匙房要先查背包里有没有门禁卡。
+  // M5-5：负重上限与安全箱档位来自 raidKit（技能与任务解锁都会改它们）。
+  inventory = createInventory(cfg, { kit });
+  extract = createExtract(cfg, level, raidRoot);
+  loot = createLoot(cfg, level, raidRoot, {
+    // M5-5：搜刮速度倍率（搜刮熟练技能）由 raidKit 传入；缺省时等价于配置基线
+    kit,
+    /**
+     * 开箱（或拾取遗留）：逐件尝试入包，装不下的**留在容器里**而不是凭空消失。
+     * 容量与负重因此成为真约束 —— 这正是"搜"这个字的核心取舍。
+     */
+    onOpened(container, items) {
+      // M5-6：任务 open 类目标要按**容器类型**计数（"开 8 个民用箱"），
+      // 而 loot 只提供"一共开了几个"。在这里记一份是最省改动、也最难写错的位置。
+      openedByType[container.type] = (openedByType[container.type] || 0) + 1;
+      const taken = [];
+      const left = [];
+      for (const it of items) {
+        const r = inventory.tryAdd(it);
+        if (r.ok) taken.push(it);
+        else left.push(it);
+      }
+      container.items = left;
+
+      if (taken.length) {
+        audio.dropTier(container.dropSoundTier);
+        const rarityLabel = container.rarity ? `（${container.colorHex ? '' : ''}${container.rarity}）` : '';
+        hud.toast(`搜到 ${taken.length} 件${rarityLabel}：${taken.map((i) => i.label).join('、')}`);
+      }
+      if (left.length) {
+        const why = inventory.weightKg() + left[0].weightKg > inventory.weightLimitKg ? '超重' : '没地方放';
+        hud.toast(`背包${why}，留下 ${left.length} 件（可腾出空间后再来拿）`);
+      } else if (!taken.length) {
+        hud.toast('空容器');
+      }
+    },
+    hasKey: (itemId) => inventory.items.some((e) => e.item.id === itemId),
+  });
+
+  // 导航：网格来自关卡，查询一律经预算调度器（M0 约束 C-1/C-2）
+  //
+  // 用关卡的分层网格（M3-1b-2 ②）而不是旧的单层 pathBlocked：
+  // 节点 = floor*W*H + cell，可行走性由"该层有没有落脚面 + 有没有迈不过去的实体"决定。
+  // 层数由 level.nav 自己给出，因此换地图不需要改这里。
+  // 必须每局重建：它绑定的是**这一局**的 level 实例，复用上一局的网格会指到
+  // 已释放的几何上（并且地图表若改了尺寸就是两个世界的网格混用）。
+  navGrid = createLayeredNavGrid(level.nav);
+  aStar = createAStar(navGrid);
+  scheduler = createPathScheduler(aStar, cfg.aiPathBudget);
+  // 该视线函数供后续 AI 侧扩展使用；当前 AI 用的是 level.hasLineOfSight（含高度判定）
+  void makeLos;
+
+  aiManager = createAiManager({ cfg, level, scene: raidRoot, scheduler, player });
+
+  // 消耗品库存（M5-3 起来自这一局的配装，不再是配置表里写死的固定携带）
+  consumables = { ...kit.loadout.consumables };
+
+  // 武器随机流每局重取。它是**确定性**的（同一个全局种子），因此重开一局的
+  // 后坐力抖动序列与上一局完全一致 —— 这是可复现性（测试依赖它），
+  // 不是"忘了重置"。
+  weaponRng = mulberry32(cfg.level.seed + 7717);
+  weaponSys = createWeaponSystem({
+    cfg,
+    level,
+    player,
+    rng: weaponRng,
+    kit,
+    emit(ev) {
+      switch (ev.type) {
+        case 'fire':
+          combatStats.shotsFired++;
+          audio.gunshot(ev.weapon.class, 0);
+          aiManager.broadcastGunshot(lastNowMs, player.state.pos.x, player.state.pos.z, player.state.pos.y);
+          player.cancelUse(); // 开火打断治疗
+          break;
+        case 'hit':
+          combatStats.hits++;
+          combatStats.damageDealt += ev.damage;
+          if (ev.zone === 'head') {
+            combatStats.headshots++;
+            audio.headshotHitmark();
+          } else {
+            audio.hitmark();
+          }
+          hud.hitmark();
+          if (ev.killed) {
+            combatStats.kills++;
+            aiManager.noteKill();
+            audio.kill();
+            hud.killNotice(ev.target ? ev.target.tier.label : '敌人', ev.zone === 'head');
+          }
+          break;
+        case 'impact':
+          decals.add(level, ev.point, ev.kind);
+          audio.impact();
+          break;
+        case 'empty':
+          combatStats.emptyClicks++;
+          audio.emptyClick();
+          break;
+        case 'reloadStart':
+          audio.reloadStart();
+          break;
+        case 'reloadEnd':
+          audio.reloadEnd();
+          break;
+        case 'swap':
+          audio.swap();
+          break;
+        default:
+          break;
+      }
+    },
+  });
+
+  worldBuilds++;
+}
 
 /**
  * 击杀计数的**唯一权威**是 `aiManager.kills`（它由"谁死"决定），
@@ -172,62 +496,50 @@ const combatStats = {
 function syncKills() {
   if (aiManager.kills > combatStats.kills) combatStats.kills = aiManager.kills;
 }
-const weaponRng = mulberry32(cfg.level.seed + 7717);
 
-let footstepsAccum = 0;
+/**
+ * 拆一局：释放局内世界的全部资源，并把句柄清空。
+ *
+ * 顺序是有讲究的，三步不能换：
+ *   ① 先让 AI 与贴花各自 dispose —— 它们会在生命周期中途把自己的 mesh
+ *      从场景摘走（AI 死亡时、贴花环形覆盖时），那些 mesh **不在**子树里，
+ *      遍历子树永远碰不到它们。
+ *   ② 再遍历 `raidRoot` 释放剩下的静态几何与材质。
+ *   ③ 最后清句柄，让任何残留调用立刻变成"读 null"而不是"读到上一局的对象"。
+ *
+ * 幂等：局外调用它是空操作（raidRoot 已经是 null）。这一点很重要 ——
+ * "回大厅"与"开局前先清上一局"两条路径都会调它。
+ *
+ * @returns {{objects:number, geometries:number, materials:number}|null} 释放数量
+ */
+function leaveRaidWorld() {
+  if (!raidRoot) return null;
+  aiManager.dispose();
+  decals.dispose();
+  const freed = disposeSubtree(raidRoot);
+  // M5：配装快照属于**局内**状态。局外读它必须是 null —— 否则
+  // "回大厅后再读 raidKit"会拿到上一局的配装，而这个值看起来完全合理。
+  raidKit = null;
 
-const weaponSys = createWeaponSystem({
-  cfg,
-  level,
-  player,
-  rng: weaponRng,
-  emit(ev) {
-    switch (ev.type) {
-      case 'fire':
-        combatStats.shotsFired++;
-        audio.gunshot(ev.weapon.class, 0);
-        aiManager.broadcastGunshot(lastNowMs, player.state.pos.x, player.state.pos.z, player.state.pos.y);
-        player.cancelUse(); // 开火打断治疗
-        break;
-      case 'hit':
-        combatStats.hits++;
-        combatStats.damageDealt += ev.damage;
-        if (ev.zone === 'head') {
-          combatStats.headshots++;
-          audio.headshotHitmark();
-        } else {
-          audio.hitmark();
-        }
-        hud.hitmark();
-        if (ev.killed) {
-          combatStats.kills++;
-          aiManager.noteKill();
-          audio.kill();
-          hud.killNotice(ev.target ? ev.target.tier.label : '敌人', ev.zone === 'head');
-        }
-        break;
-      case 'impact':
-        decals.add(level, ev.point, ev.kind);
-        audio.impact();
-        break;
-      case 'empty':
-        combatStats.emptyClicks++;
-        audio.emptyClick();
-        break;
-      case 'reloadStart':
-        audio.reloadStart();
-        break;
-      case 'reloadEnd':
-        audio.reloadEnd();
-        break;
-      case 'swap':
-        audio.swap();
-        break;
-      default:
-        break;
-    }
-  },
-});
+  raidRoot = null;
+  level = null;
+  player = null;
+  decals = null;
+  inventory = null;
+  extract = null;
+  loot = null;
+  navGrid = null;
+  aStar = null;
+  scheduler = null;
+  aiManager = null;
+  weaponSys = null;
+  weaponRng = null;
+  consumables = null;
+  resetRaidState();
+
+  worldDisposals++;
+  return freed;
+}
 
 // ---------------- 局内状态 ----------------
 let kills = 0;
@@ -286,10 +598,14 @@ function raidView(nowMs) {
     lootCount: inventory.count,
     lootValue: inventory.value(),
     bagText: `背包 ${inventory.usedSlots()}/${inventory.totalSlots()} 格 · ${inventory.weightKg().toFixed(1)}/${inventory.weightLimitKg}kg`,
-    // [M4-TEMP-4] 任务追踪：任务线属 M5-6，M4 阶段没有真实数据。
-    // 制作人裁定先显示占位（与结算里"任务进度 0/0"同一口径），
-    // 因此这里给出的是 0 而不是真实进度 —— 见 docs/M4-TEMP-REGISTRY.md。
-    questText: '任务 0 / 0',
+    // ★ M5-6 销账 [M4-TEMP-4]：任务追踪不再占位 —— 数据来自进局时的 raidKit.quests，
+    //   而 raidKit 是 core/quests.js 的 questTrackerView 产物（纯函数，可单测）。
+    //   制作人裁定：**全部列出**（最多 maxActive 条），每条形如"开 8 个民用箱 3/8"。
+    questLines: raidQuestLines,
+    // 兼容既有断言/旧字段：把进度压成一行文本（HUD 的主显示用 questLines）
+    questText: raidQuestLines.length
+      ? raidQuestLines.map((l) => l.text).join(' · ')
+      : '无进行中的任务',
     safeText: `保险 ${inventory.safeValue()}（${inventory.safeTier.label}）`,
     extractInZone: false,
     extractProgress: 0,
@@ -325,6 +641,16 @@ function frame(nowMs) {
   const inRaid = flow.state === FLOW.RAID;
   const paused = updatePause(nowMs, inRaid);
   const t = raidClock(nowMs);
+
+  // ★ M5-1：局外（大厅）没有局内世界。
+  //   这里必须**早退**，而不是"带着 null 往下跑"：
+  //   局外跑局内逻辑既是 M5 分层约束（禁止把局内逻辑耦合进局外系统）的违反，
+  //   也会在 raidView() 里读 player.state 直接崩。
+  //   仍然渲染一帧是为了两件事：窗口 resize 后画面不残留、以及进战区后第一帧即正确。
+  if (!raidRoot) {
+    renderer.render(scene, camera);
+    return;
+  }
 
   if (inRaid && !paused) {
     player.update(dt, input, t);
@@ -428,8 +754,12 @@ function frame(nowMs) {
     // 唯一例外是同一帧里撤离倒计时**已经走完**的情况：那是既成事实，
     // 所以 completed 排在 expired 之前。这不是宽限，是"完成了就算完成"。
     if (!player.state.alive) endRaid(END_REASON.DEAD, t);
-    else if (ex.completed) endRaid(END_REASON.EXTRACTED, t);
-    else if (tm.expired) endRaid(END_REASON.TIMEOUT, t);
+    else if (ex.completed) {
+      // M5-6：记下是从哪个撤离点走的（任务的 extract 类目标可以限定撤离点）。
+      // 必须在 endRaid **之前**记录 —— endRaid 会立刻落库。
+      lastExtractZoneId = ex.zone ? ex.zone.id : null;
+      endRaid(END_REASON.EXTRACTED, t);
+    } else if (tm.expired) endRaid(END_REASON.TIMEOUT, t);
 
     // ---- HUD ----
     const view = raidView(nowMs);
@@ -552,22 +882,39 @@ function writeCheckpoint(elapsedMs) {
 }
 
 function startRaid(nowMs) {
-  flow.startRaid(nowMs);
-  raidStartAtMs = nowMs;
-  lockGraceUntilMs = nowMs + 600;
-
   // ★ [M4-BUG-02] 开新局之前，先把"上局没走完"补成正式结算。
   //
   // 这是**写在这个函数里**而不是只写在 btnStart 里 —— 否则任何绕过按钮的入口
-  // （DEV 的 startRaid 接口、将来的"再来一局"）都会静默丢掉上局。
+  // （DEV 的 startRaid 接口、结算页的"返回大厅"）都会静默丢掉上局。
   // `showIt=false`：新局立刻开始，结算页闪一下反而像 bug；数据仍记在 lastRaidResult。
   // 正常玩家路径（btnStart）会先自己调一次并显示，因此这里是幂等的空操作。
   settleInterruptedRaid(false);
 
+  // ★ M5-3：进局前把配装从仓库取走。
+  //   这一份 `taken` 是结算的依据：撤离时把**没用完的**还回仓库，阵亡则整份丢失。
+  //   制作人裁定的"缺件也允许进局"在这里自然成立 —— takeLoadout 拿多少算多少，
+  //   没有的就当没带（界面刻意**不提示**缺什么）。
+  const takenRes = takeLoadout(profile, cfg);
+  profile = takenRes.profile;
+  raidTaken = takenRes.taken;
+  saveProfileNow();
+
+  // ★ M5-1：局内世界**在这里**才创建（此前是页面加载时就建好）。
+  //   必须在 flow.startRaid **之前**：状态一旦进入 RAID，主循环的下一帧就会
+  //   开始推进局内逻辑，而那一刻 world 还没装好。
+  //   同时它会复位跨局残留状态（见 resetRaidState）。
+  enterRaidWorld(buildRaidKit(profile, cfg));
+
   // 新的一局开始，上局的残留快照到此为止（正常情况下上面那一步已经清掉了）。
   raidId = `r${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
   clearCheckpoint();
-  hud.showInterruptedNotice(false);
+  // [M5-BUG-01] 这里也**不再**手写收起大厅提示：进战区时大厅随即被 show(false) 关掉，
+  //   而下次它重新可见一定经过 showLobby()，那时会按快照重新推导一次。
+  //   （"局外界面状态由局外入口负责" —— 这个函数是局内流程，不该管大厅上的东西。）
+
+  flow.startRaid(nowMs);
+  raidStartAtMs = nowMs;
+  lockGraceUntilMs = nowMs + 600;
 
   // ★ M4-BUG-02（同一条缺陷的第二面）：开局的**第一份快照必须立刻写**。
   //
@@ -585,8 +932,13 @@ function startRaid(nowMs) {
   // 注意这里没有 await 它 —— 见 audio.js 的说明，无手势时 resume() 会永久挂起。
   audio.unlock();
 
-  hud.showStart(false);
+  lobby.show(false);
+  // 同 returnToLobby：进入战区时把局外与局内的界面层都归位，
+  // 免得出现"已经在打但屏幕上还盖着设置页"这种界面（不刷新之后才会发生的问题）。
   hud.showEnd(false);
+  settingsPanel.show(false);
+  hud.showPause(false);
+  settingsOpen = false;
   hud.showHud(true);
   hud.toast('进入战区：搜刮物资并撤离');
 }
@@ -621,10 +973,94 @@ function endRaid(reason, nowMs) {
   // M4-7：本局**已经**有了正式结算，快照到此为止。
   // 这一句是幂等结算的关键：不清的话，下次启动会拿旧快照再结算一遍。
   clearCheckpoint();
+  // ★ M5：把这一局写进档案（货币不变、仓库收战利品、经验升级、任务推进、统计与样本）。
+  //   纯函数 + raidId 幂等键两道防线，见 core/settlement.js 顶部说明。
+  applyRaidToProfileNow(result);
   hud.showHud(false);
   hud.showEnd(true);
-  hud.showResult(result);
+  hud.showResult(result, lastRaidSummary);
   input.exitLock();
+}
+
+/** 本局剩余的弹药（按口径）与消耗品 —— 撤离时要把"没用完的"还回仓库。 */
+function currentRemaining() {
+  const ammo = {};
+  for (const cal of cfg.equipment.ammo.carryCalibers) {
+    // 局外（补结算路径）没有 weaponSys：剩余一律按 0 算。
+    // 这是**正确**的口径而不是兜底 —— 刷新意味着这一局已经中断（按未撤离处理），
+    // 而"未撤离"本来就不把配装还回仓库。
+    ammo[cal] = weaponSys ? weaponSys.reserveOf(cal) : 0;
+  }
+  return { ammo, consumables: { ...consumables } };
+}
+
+/** 把这一局的事实整理成 core/settlement.js 需要的形状（任务推进与统计都用它）。 */
+function raidFacts(result) {
+  const counts = new Map();
+  for (const it of result.items || []) counts.set(it.id, (counts.get(it.id) || 0) + 1);
+  const keptItems = [];
+  for (const [itemId, count] of counts) keptItems.push({ itemId, count });
+  const killsByTier = {};
+  // ★ 局外没有 aiManager（刷新后的补结算就走这条路）。它以前会在这里崩，
+  //   表现是"点了提示什么都没发生" —— 一条把整个结算流程吞掉的缺陷。
+  if (aiManager && aiManager.ais) {
+    for (const a of aiManager.ais) {
+      if (a.isDead) killsByTier[a.tier.id] = (killsByTier[a.tier.id] || 0) + 1;
+    }
+  }
+  return {
+    kills: combatStats.kills,
+    killsByTier,
+    containersOpened: loot ? loot.openedCount() : 0,
+    containersByType: { ...openedByType },
+    keptItems,
+    keptValue: result.loot.keptValue,
+    extractId: lastExtractZoneId,
+    mapId: cfg.map.id,
+  };
+}
+
+/**
+ * 落库（唯一入口）：把一局的结算写进档案并保存。
+ *
+ * @param {string} [raidIdOverride] 补结算路径必须传**快照里的** raidId ——
+ *   刷新之后模块级的 `raidId` 是空的（新页面还没开局），用它会让幂等键失效。
+ * @returns {object|null} 结算摘要（结算界面要显示经验 / 任务 / 入库明细）
+ */
+function applyRaidToProfileNow(result, raidIdOverride) {
+  const id = raidIdOverride || raidId;
+  const applied = applyRaidToProfile(
+    profile,
+    {
+      raidId: id,
+      atMs: Date.now(),
+      result,
+      facts: raidFacts(result),
+      taken: raidTaken,
+      remaining: currentRemaining(),
+    },
+    cfg
+  );
+  if (!applied.ok) {
+    // 理论上不可达：result 一定有，raidId 一定在开局时生成。真发生也必须留下痕迹。
+    console.warn('[main] 结算未落库：', applied.reason);
+    lastRaidSummary = null;
+    return null;
+  }
+  profile = applied.profile;
+  lastRaidSummary = applied.summary;
+  saveProfileNow();
+  return applied.summary;
+}
+
+/** 保存档案。写失败（配额满 / 存储被禁用）不影响本局游玩，profileStore 会降级为内存档。 */
+function saveProfileNow() {
+  const ok = saveProfile(profile, cfg);
+  if (!ok && isProfileAvailable() === false) {
+    // 只提示一次：每次存档都刷屏会淹没真正有用的日志
+    console.warn('[main] 档案未能落盘（存储不可用或体积超限），本次会话的进度只在内存中');
+  }
+  return ok;
 }
 
 /**
@@ -651,41 +1087,205 @@ function settleInterruptedRaid(showIt) {
   // 否则"不丢档"这件事只能靠肉眼确认。
   lastRaidResult = result;
   clearCheckpoint();
-  hud.showInterruptedNotice(false);
+  // ★ M5：补结算同样要落库 —— 否则刷新那一局的战利品与经验会静默消失。
+  //   用快照里的 raidId：刷新后模块级 raidId 是空的，用它会让幂等键失效。
+  applyRaidToProfileNow(result, cp.raidId);
+  // [M5-BUG-01] 这里**不再**手写收起大厅提示：可见性已收口到 showLobby()，由快照推导
+  //   （此刻快照已清 → 下次回大厅时推出来就是"收起"）。原先"清快照必须在收起提示之前"
+  //   这条顺序依赖因此不需要再显式维护，不变式变强也变简单：**showLobby() 必须在结算之后被调用**
+  //   （四个调用点都满足）。
+  //   ★ 调用方那一段（结算 → 隐藏大厅 → 显示结算页）必须**保持同步**，中间不得插入 await：
+  //     否则两者之间会插进一次绘制，短暂露出"大厅已可见但提示还挂着"的一帧。
   // [M4-BUG-02] 是否把结算**显示出来**由调用方决定：
   //   · 点提示 → 显示（玩家就是要看它）
   //   · 直接开新局 → 不显示（新局立刻开始，闪一下反而像 bug）
   // 但"结算 + 清快照"这两件事**无条件**发生。
-  if (showIt) hud.showResult(result);
+  if (showIt) hud.showResult(result, lastRaidSummary);
   return result;
 }
 
-hud.el.btnStart.addEventListener('click', () => {
+// ---------------- 局外（大厅）与结算的界面切换 ----------------
+
+/**
+ * 显示主大厅。
+ * 每次显示都重绘简报：简报是纯函数产物，重算是"同一份配置得到同一个结果"，
+ * 不存在状态；而"进入战区"前的数值必须是最新的（例如设置刚被改过）。
+ */
+function showLobby() {
+  // ★ M5-3：简报显示的是**玩家当前配装**（同一个 buildRaidKit，局内用的也是它 ——
+  //   因此不存在"大厅说带这把枪、进局却是另一把"的可能）。
+  lobby.render(buildRaidBriefing(cfg, buildRaidKit(profile, cfg)));
+  // M5：局外读数与五个面板每次显示都重绘 —— 它们都是纯函数产物（同一份档案
+  // 必然得到同一份视图），因此重绘不存在状态漂移，而"进战区前的数值必须是最新的"。
+  refreshLobby();
+  // [M5-BUG-01] "上局未正常结束"提示的可见性**只在这里推导**：由"是否还有待结算快照"决定。
+  //   收口前它由 settleInterruptedRaid() / startRaid() / 初始化段各自手写（共 4 处），
+  //   那是把同一个事实算好几遍 —— 漏写一处就会出现"大厅可见但提示状态是旧的"。
+  //   现在唯一数据源是快照，而"大厅何时可见"的唯一入口是本函数：
+  //   有快照就显示、没有就不显示，结构上不可能再漏。
+  //   注意推导是**惰性**的：结算那一刻不再立刻收起，而是等下一次回大厅时重新算。
+  lobby.showInterruptedNotice(!!loadCheckpoint());
+  lobby.show(true);
+}
+
+/** 重绘大厅的局外读数与五个面板（档案变过就调它）。 */
+function refreshLobby() {
+  lobbyViews = buildLobbyViews(profile, cfg, { selectedUids: lobbyUi.selectedUids });
+  lobby.renderStats(lobbyViews.stats);
+  panels.renderAll(lobbyViews);
+}
+
+/**
+ * 结算页 → 返回大厅（M5-1 的闭环动作）。
+ *
+ * 结算页有**两条来源**，这里必须都处理对：
+ *   ① 一局真的打完了（flow=ENDED）—— 需要一次状态迁移；
+ *   ② 启动时对"上局未正常结束"补了结算（flow 一直在 LOBBY）—— 本来就在局外，
+ *      不能也不该再迁移（状态机会拒绝）。这不是"容忍非法状态"，而是两条正当路径。
+ */
+function returnToLobby() {
+  // ★ 健壮性（M5-3 引入"进局扣件"之后必须补的一道守卫）：
+  //   若这一局还在进行中，先按「放弃本局」走完结算。
+  //   不这么做的话，进局时从仓库扣走的配装会**既不还回、也没有结算记录** ——
+  //   那是最难发现的一类丢档：玩家只看到"装备不见了"，日志里什么都没有。
+  if (flow.state === FLOW.RAID) endRaid(END_REASON.ABANDONED, raidClock(performance.now()));
+  if (flow.state === FLOW.ENDED) flow.backToLobby(performance.now());
+  // 幂等：没有局内世界时是空操作。
+  leaveRaidWorld();
+  // ★ 必须把局内的每一层界面都收干净。
+  //   「放弃本局」是从暂停菜单发起的，所以回大厅那一刻 **暂停菜单还开着**；
+  //   在 M5-1 之前这不要紧（"再进一局"是整页刷新，界面状态跟着页面一起没了），
+  //   现在不刷新了，留着就会变成"大厅上面盖着暂停菜单"这种说不清的界面。
+  hud.showEnd(false);
+  hud.showPause(false);
+  settingsPanel.show(false);
+  hud.showHud(false);
+  settingsOpen = false;
+  showLobby();
+  input.exitLock();
+}
+
+/**
+ * 设置生效。**运行时有副作用的东西都在这里下发**，只有一处：
+ *   · 音量 → 音频总线（音频总线的实际增益 = 配置基线 × 档位倍率，只在 audio.js 算）
+ *   · 灵敏度 → 不需要下发：player 每帧读当前倍率（见 enterRaidWorld 里注入的函数），
+ *     因此局内打开设置改动它能立刻生效。
+ * @param {boolean} persist 是否落盘（启动时的首次应用不该写盘）
+ */
+function applySettings(s, persist) {
+  if (persist) saveSettings(s);
+  audio.setVolumeScale(volumeScale(s));
+  // ★ M5-8：分轨（制作人裁定：音乐轨先接上空总线，BGM 属 M7）
+  audio.setBusScales({ sfx: sfxVolumeScale(s), music: musicVolumeScale(s) });
+  // ★ M5-8：画质档位**立即生效**（制作人裁定：大厅与局内都能改，改完就看到效果）。
+  //   阴影尺寸变更必须释放旧 shadow map，否则分辨率不会变 —— 那是"看不见的假生效"，
+  //   细节见 render/quality.js 的注释。
+  qualityState = applyQuality(renderer, sun, qualityParams(s), window.devicePixelRatio);
+  // ★ M5-8：改键也立即生效（要求重进游戏才生效会被当成"改键失败"）
+  input.syncSettings(s);
+}
+
+lobby.el.btnStart.addEventListener('click', () => {
   // ★ 补结算上局（若有），再开新局。这一步不能省 —— 省了就是 M4-BUG-02。
   //   这里显示出来是给玩家看的；结算本身在 startRaid 里还会再兜一次，
-  //   因此**任何**入口（含 DEV 接口、将来的"再来一局"）都不会绕过它。
+  //   因此**任何**入口（含 DEV 接口）都不会绕过它。
   settleInterruptedRaid(true);
   input.requestLock();
   startRaid(performance.now());
 });
-hud.el.btnRestart.addEventListener('click', () => location.reload());
+// M5-1：结算页的出口改成"返回大厅"，不再是整页刷新。
+// 刷新能"回到大厅"却会重建整个页面 —— 那正是 M5 之前局内世界必须重建的原因。
+hud.el.btnRestart.addEventListener('click', returnToLobby);
 
-hud.bindSettings(settings, (s) => saveSettings(s));
-hud.el.btnSettingsFromStart.addEventListener('click', () => {
+// 启动时应用一次设置（不落盘：读出来的东西没必要原样写回去）
+applySettings(settings, false);
+
+/**
+ * 关闭设置面板：回到它是从哪儿打开的（局内 → 暂停菜单；局外 → 大厅）。
+ * 抽成函数是因为它现在有两个入口（面板自己的"返回"按钮、以及外部流程）。
+ */
+function closeSettings() {
+  settingsOpen = false;
+  settingsPanel.show(false);
+  if (flow.state === FLOW.RAID) hud.showPause(!input.state.pointerLocked);
+  else showLobby();
+}
+
+/** 重绘设置面板（打开时、以及任一设置项变更后） */
+function renderSettingsNow() {
+  settingsPanel.render(
+    buildSettingsView(settings, cfg, {
+      // 制作人裁定 S1：**仅大厅可改键** —— 局内捕获按键会与游戏输入打架
+      allowRebind: flow.state !== FLOW.RAID,
+      onClose: closeSettings,
+      notes: isProfileAvailable() ? '' : '⚠ 本机存储不可用：本次会话的进度只保存在内存中',
+    })
+  );
+}
+
+/** 把 core/keybinds.js 的拒绝原因翻成人话（界面不显示机器串） */
+function bindRejectText(rej) {
+  const map = {
+    'locked-action': '移动类动作固定不可改（防止改完走不动）',
+    'browser-reserved-modifier': '该组合被浏览器保留（关标签页 / 刷新等），不能用作动作键',
+    'reserved-key': '这个键被游戏保留（Esc / F5 / F11 / Tab 等）',
+    'unbindable-key': '这个键不在可绑定范围内',
+    'not-a-string': '按键无法识别',
+    'not-an-array': '绑定格式非法',
+  };
+  if (map[rej.reason]) return map[rej.reason];
+  if (rej.reason && rej.reason.startsWith('conflict-with:')) {
+    return `与「${actionLabel(rej.reason.split(':')[1])}」冲突（一个键不能绑定两个动作）`;
+  }
+  return rej.reason || '改键被拒绝';
+}
+
+// M5-8：设置面板现在是独立模块（销 M5-TEMP-4）。它只把"改哪一项、改成什么"交过来，
+// 合法性一律由 core 判定 —— 界面不参与任何校验决定。
+const settingsPanel = createSettings({
+  onChange: (key, value) => {
+    if (key === 'bindings') {
+      // 改键：把这一次改动合并进现有覆盖表，再交给校验器。
+      // 注意 bindings 是**整表覆盖**，因此必须合并而不是替换 ——
+      // 替换会让玩家改一个动作时把其它动作的覆盖项全部丢掉。
+      const merged = { ...(settings.bindings || {}), [value.action]: [value.code] };
+      const res = sanitizeBindings(merged);
+      const rej = res.rejected.find((r) => r.action === value.action);
+      if (rej) {
+        settingsPanel.toast(bindRejectText(rej), true);
+        return;
+      }
+      settings.bindings = res.bindings;
+      settingsPanel.toast(`已把「${actionLabel(value.action)}」改为 ${formatKey(value.code)}`);
+    } else {
+      settings[key] = value;
+    }
+    applySettings(settings, true);
+    renderSettingsNow();
+  },
+  onReset: () => {
+    const d = resetSettings();
+    Object.assign(settings, d);
+    // 不落盘：resetSettings 内部已经写过一次盘了
+    applySettings(settings, false);
+    renderSettingsNow();
+    settingsPanel.toast('已恢复默认设置');
+  },
+});
+
+lobby.el.btnSettings.addEventListener('click', () => {
   settingsOpen = true;
-  hud.showStart(false);
-  hud.showSettings(true);
+  lobby.show(false);
+  settingsPanel.toast('');
+  renderSettingsNow();
+  settingsPanel.show(true);
 });
 hud.el.btnSettingsFromPause.addEventListener('click', () => {
   settingsOpen = true;
   hud.showPause(false);
-  hud.showSettings(true);
-});
-hud.el.btnSettingsClose.addEventListener('click', () => {
-  settingsOpen = false;
-  hud.showSettings(false);
-  if (flow.state === FLOW.RAID) hud.showPause(!input.state.pointerLocked);
-  else hud.showStart(true);
+  settingsPanel.toast('');
+  renderSettingsNow();
+  settingsPanel.show(true);
 });
 hud.el.btnResume.addEventListener('click', () => {
   hud.showPause(false);
@@ -709,15 +1309,23 @@ window.addEventListener('beforeunload', flushCheckpoint);
 // ★ 提示只是"让玩家知道"的入口，**不是**结算的唯一触发点：
 //   `startRaid()` 自身在开新局前也会兜一次 settleInterruptedRaid(false)。
 //   否则"不点提示直接开新局"就成了静默丢档的路径（M4-BUG-02）。
-if (loadCheckpoint()) hud.showInterruptedNotice(true);
-hud.el.interruptedNotice.addEventListener('click', () => {
+//
+// [M5-BUG-01] 这里**不再**判断"该不该显示提示" —— 那是 showLobby() 的职责（由快照推导），
+//   而本文件末尾的 showLobby() 会读同一个 loadCheckpoint() 得出同一个结论。
+//   原先两处各写一遍同一个判定，等于把同一个事实算两次。
+lobby.el.interruptedNotice.addEventListener('click', () => {
   // showIt=true：玩家点提示就是来看结算的，必须显示出来。
   const result = settleInterruptedRaid(true);
   if (!result) {
-    hud.showInterruptedNotice(false);
+    // 守卫分支：提示本应只在有待结算快照时可见，走到这里说明快照已经没了
+    // （例如另一个标签页先结算过）。用 showLobby() 复用同一个推导，
+    // 而不是再手写一遍"收起" —— 全局因此只剩 showLobby() 一个写入点。
+    showLobby();
     return;
   }
-  hud.showStart(false);
+  // 下面两句与 settleInterruptedRaid() 之间**必须保持同步**（不得插入 await），
+  // 否则中间会插进一次绘制，短暂露出"大厅可见但提示还挂着"的一帧。见 [M5-BUG-01]。
+  lobby.show(false);
   hud.showEnd(true);
 });
 // M4 DoD 五条结束路径里的"主动退出"一条：暂停菜单 → 放弃本局。
@@ -746,6 +1354,11 @@ input.onLockedChange((locked) => {
   }
 });
 
+// ---- M5-1：开局落在大厅 ----
+// 首帧之前就把简报渲染好，否则会先看到一个空大厅再补上数值（闪一下）。
+// 注意此时**没有**创建局内世界 —— 那是"进入战区"才做的事。
+showLobby();
+
 requestAnimationFrame(frame);
 
 // ============================================================================
@@ -759,18 +1372,189 @@ requestAnimationFrame(frame);
 // 又保留自动化测试的驱动手段（直接删掉会让 60+ 条断言全部失效）。
 // ============================================================================
 if (import.meta.env.DEV) {
+  /**
+   * 测试用的"富配装"：把一套装备塞进仓库并设成当前配装。
+   *
+   * 为什么必须有它：制作人裁定新账号**仓库为空**（装备要自己买），于是端到端
+   * 一进战区就是赤手空拳 —— 而绝大多数断言（开火 / 后坐力 / 切枪 / 护甲）都要求
+   * 玩家手里有枪。这个接口把"新账号状态"与"测试需要的最小装备"解耦：
+   * 测试显式调用它，而产品路径一行不改。
+   */
+  function grantTestKit() {
+    const ITEMS = [
+      ['pistol_p9', 1], ['rifle_m4', 1], ['smg_v9', 1], ['shotgun_m590', 1], ['dmr_sr25', 1],
+      ['vest2', 2], ['vest3', 2], ['helmet2', 2], ['helmet3', 2],
+      ['ammo_556', 300], ['pistol_mag', 180], ['ammo_762', 120], ['ammo_12ga', 80],
+      ['bandage', 6], ['medkit', 4],
+    ];
+    let p = profile;
+    for (const [ref, n] of ITEMS) {
+      const itemId = cfg.equipmentDefs[ref] ? cfg.equipmentDefs[ref].itemId : ref;
+      p = { ...p, stash: stashAdd(p.stash, itemId, n, cfg).stash };
+    }
+    const preset = p.loadouts[0];
+    const lo = {
+      ...preset,
+      primary: 'rifle_m4',
+      secondary: 'pistol_p9',
+      body: 'vest3',
+      head: 'helmet3',
+      ammo: { '5.56': 120, '9mm': 60 },
+      consumables: { bandage: 3, medkit: 2 },
+    };
+    p = { ...p, loadouts: [lo], activeLoadoutId: lo.id };
+    profile = p;
+    saveProfileNow();
+    refreshLobby();
+    return { stash: profile.stash.length };
+  }
+
+  /**
+   * ★ M5-1：局外（大厅）没有局内世界，但仍要给出**同形状**的快照。
+   *
+   * 为什么不能直接抛错或返回 null：端到端在开局前会反复轮询
+   * `snapshot().flow`（`page.waitForFunction(() => ... === 'raid')`），
+   * 那是正常路径而不是误用。键全部保留、局内专属字段为 null，
+   * 断言侧因此不必为两种状态写两套读法。
+   */
+  const lobbySnapshot = () => ({
+    flow: flow.state,
+    endReason: flow.endReason,
+    raidId: null,
+    transitions: flow.transitions.slice(),
+    paused: isPaused,
+    remainingMs: Math.round(flow.timing(raidClock(performance.now())).remainingMs),
+    settings: { ...settings },
+    // M5-8：局外也要能读到生效键位与画质参数（断言在进局前就要能验证它们）
+    bindings: input.bindingsOf(),
+    quality: qualityState,
+    world: { alive: false, builds: worldBuilds, disposals: worldDisposals },
+    player: null,
+    weapon: null,
+    ai: [],
+    aiAlive: 0,
+    kills: combatStats.kills,
+    combat: { ...combatStats },
+    raidResult: lastRaidResult,
+    loot: null,
+    consumables: null,
+    extract: [],
+    extractInterrupt: { leaveMs: 0, cause: null },
+    scheduler: null,
+    audio: {
+      unlocked: audio.isUnlocked(),
+      gain: audio.currentGain(),
+      buses: audio.busGains(),
+      ...audio.stats,
+    },
+    decals: 0,
+    level: null,
+  });
+
   window.__m2 = {
+    // ---- M5：局外（档案）读数 ----
+    // 端到端的断言尽量读这些，而不是读 DOM 文本 —— DOM 文本会随排版变，
+    // 而这些读数是纯函数产物（与界面显示的同一份）。
+    profile() {
+      return {
+        view: profileView(profile, cfg),
+        stash: profile.stash.map((e) => ({
+          uid: e.uid, itemId: e.itemId, count: e.count, x: e.x, y: e.y, rotated: e.rotated,
+        })),
+        loadout: activeLoadout(profile),
+        quests: JSON.parse(JSON.stringify(profile.quests)),
+        safeTierUnlocked: profile.safeTierUnlocked,
+        repairs: (profile._repairs || []).slice(),
+        lastRaidId: profile.lastRaidId,
+        source: profileState.source,
+        storage: storageInfo(),
+      };
+    },
+    lobby() {
+      return {
+        tab: lobby.tab,
+        statsText: lobby.el.stats ? lobby.el.stats.textContent : '',
+        toastText: lobby.el.toast ? lobby.el.toast.textContent : '',
+        interruptedVisible: lobby.el.interruptedNotice
+          ? lobby.el.interruptedNotice.getClientRects().length > 0
+          : false,
+        views: lobbyViews,
+      };
+    },
+    /** 进局时用的配装快照（断言"局内用的就是局外配的"要靠它） */
+    raidKit() {
+      return raidKit;
+    },
+    /** 这一局从仓库取走了什么（结算要还回去的那份清单） */
+    raidTaken() {
+      return raidTaken ? raidTaken.map((t) => ({ ...t })) : null;
+    },
+    /** 上一局的落库摘要（结算界面显示的就是它） */
+    lastRaidSummary() {
+      return lastRaidSummary;
+    },
+    grantTestKit,
+    /**
+     * 测试用：给档案加经验（技能点随升级发放）。
+     * 走与结算**同一条**路径（core/progression.js 的 applyExp）——
+     * 另写一条"直接改等级"的捷径会让断言失去意义。
+     */
+    grantExp(n) {
+      const r = applyExp(profile, Number(n) || 0, cfg);
+      profile = r.profile;
+      saveProfileNow();
+      refreshLobby();
+      return { level: r.after.level, skillPoints: profile.progression.skillPoints };
+    },
+    /** 清空档案（测试注入"存档损坏 / 被清空"用） */
+    clearProfile() {
+      clearProfile();
+      // 走与启动时**同一条**加载路径（这样 repairs / source 的口径才一致）
+      profileState = loadProfile(cfg, Date.now());
+      profile = profileState.profile;
+      refreshLobby();
+      return true;
+    },
+    /** 直接写 localStorage 的档案键（测试注入坏档 / 未来版本档用） */
+    writeRawProfile(text) {
+      try {
+        localStorage.setItem('h5_extract_profile', text);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    /** 重新加载档案（模拟"重开浏览器"） */
+    reloadProfile() {
+      profileState = loadProfile(cfg, Date.now());
+      profile = profileState.profile;
+      refreshLobby();
+      return { source: profileState.source, repairs: profileState.repairs };
+    },
+
     snapshot() {
+      // 局外：返回同形状的空快照（见上）。
+      if (!raidRoot) return lobbySnapshot();
       // 击杀计数在快照时对齐一次：调试接口可能在两帧之间淘汰 AI（不在武器路径上），
       // 不补这一步的话，端到端读到的 kills 会比事实小一个帧的量。
       syncKills();
       return {
         flow: flow.state,
         endReason: flow.endReason,
+        // M5-1：本局 id。断言"回到大厅后再进战区拿到的确实是**新的一局**"要靠它 ——
+        // 只看 world.builds 只能证明建过一次，证明不了新局不是旧局。
+        raidId,
         transitions: flow.transitions.slice(),
         paused: isPaused,
         remainingMs: Math.round(flow.timing(raidClock(performance.now())).remainingMs),
         settings: { ...settings },
+        // M5-8：**当前生效**的键位表（默认 + 玩家覆盖）。断言改键是否真的生效要读它，
+        // 而不是读 settings.bindings —— 后者只是"玩家填了什么"。
+        bindings: input.bindingsOf(),
+        // M5-1：局内世界是否活着、本页面内重建过几次。
+        // 断言"回大厅后世界确实被销毁、再进战区确实是新建的"要靠它，否则
+        // "重建"这件事只能看代码，看不出运行时有没有真的发生。
+        world: { alive: true, builds: worldBuilds, disposals: worldDisposals },
         player: {
           x: player.state.pos.x,
           z: player.state.pos.z,
@@ -940,7 +1724,14 @@ if (import.meta.env.DEV) {
           totalProcessed: scheduler.stats.totalProcessed,
           pending: scheduler.pendingCount(),
         },
-        audio: { unlocked: audio.isUnlocked(), ...audio.stats },
+        audio: {
+          unlocked: audio.isUnlocked(),
+          gain: audio.currentGain(),
+          buses: audio.busGains(),
+          ...audio.stats,
+        },
+        // M5-8：画质档位实际生效的参数（断言读它，而不是读"我以为设成了什么"）
+        quality: qualityState,
         decals: decals.placedTotal,
         level: { W: level.W, cell: level.cell, free: level.free.length, walls: level.wallCount,
                  cover: level.coverList.length, stepHeight: level.stepHeight },
@@ -1323,8 +2114,13 @@ if (import.meta.env.DEV) {
     },
     setSetting(key, value) {
       settings[key] = value;
-      saveSettings(settings);
-      hud.syncSettings(settings);
+      // M5-1：走与界面**同一条**下发路径（applySettings），不在这里另写一遍副作用 ——
+      // 否则"从界面改"与"从接口改"会各有一套生效逻辑，迟早分叉。
+      // 它本身不做合法性校验：非法取值会被 saveSettings 内部的 sanitize 丢掉，
+      // 所以返回值是"落盘后的真值"，断言应以返回值为准。
+      applySettings(settings, true);
+      // 设置面板若正开着，同步重绘（改键/画质从接口改也要看得见 —— 与界面同一条路径）
+      if (settingsOpen) renderSettingsNow();
       return { ...settings };
     },
     getSettings() {
@@ -1333,6 +2129,10 @@ if (import.meta.env.DEV) {
     isPaused: () => isPaused,
     startRaid() {
       startRaid(performance.now());
+    },
+    /** M5-1：结算页 → 返回大厅（与界面按钮走同一条路径） */
+    returnToLobby() {
+      returnToLobby();
     },
     killPlayer() {
       player.takeDamage(9999);

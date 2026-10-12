@@ -1,0 +1,64 @@
+{
+  "_comment": "M5-6 任务线表（唯一真值）。目标类型与奖励都在这里；推进与领奖的**算法**只有一处（core/quests.js）。",
+  "_objectiveKinds": "extract（成功撤离）/ kill（击杀）/ open（开某类容器）/ collect（**带出**指定物品）/ value（单局带出估值达标）。collect 以『带出』为准：阵亡时不计 —— 否则『把任务物品塞保险箱再送死』会变成最优解。",
+
+  "maxActive": 3,
+  "_maxActiveNote": "同时进行中的任务数上限。超过时新任务显示为『未接取』，需要先完成一个。",
+
+  "quests": [
+    {
+      "id": "q1_first_extract",
+      "label": "活着回来",
+      "requires": [],
+      "brief": "带着任何战利品成功撤离一次。死在战区里不算 —— 这就是搜打撤。",
+      "objectives": [{ "id": "o1", "kind": "extract", "need": 1, "text": "成功撤离" }],
+      "rewards": {
+        "currency": 2500,
+        "exp": 200,
+        "items": [{ "itemId": "bandage", "count": 2 }],
+        "unlockSafeTier": "safe_t2"
+      }
+    },
+    {
+      "id": "q2_scavenge",
+      "label": "物资回收",
+      "requires": ["q1_first_extract"],
+      "brief": "搜空民用箱。它们最不值钱，但也最不惹人注意。",
+      "objectives": [{ "id": "o1", "kind": "open", "containerType": "crate_civil", "need": 8, "text": "开 8 个民用箱" }],
+      "rewards": { "currency": 3000, "exp": 300, "items": [] }
+    },
+    {
+      "id": "q3_cleanup",
+      "label": "清场",
+      "requires": ["q2_scavenge"],
+      "brief": "淘汰 6 名敌人。装填好再进。",
+      "objectives": [{ "id": "o1", "kind": "kill", "need": 6, "text": "淘汰 6 名敌人" }],
+      "rewards": { "currency": 4500, "exp": 500, "items": [{ "itemId": "ammo_556", "count": 60 }] }
+    },
+    {
+      "id": "q4_courier",
+      "label": "情报快递",
+      "requires": ["q3_cleanup"],
+      "brief": "带出 2 个加密硬盘。它们只在保险箱与钥匙房里。",
+      "objectives": [{ "id": "o1", "kind": "collect", "itemId": "encrypted_drive", "need": 2, "text": "带出 2 个加密硬盘" }],
+      "rewards": {
+        "currency": 7000,
+        "exp": 800,
+        "items": [{ "itemId": "medkit", "count": 2 }],
+        "unlockSafeTier": "safe_t3"
+      }
+    },
+    {
+      "id": "q5_big_haul",
+      "label": "大丰收",
+      "requires": ["q4_courier"],
+      "brief": "单局带出估值达到 20000。要么搜得狠，要么活着走出钥匙房。",
+      "objectives": [{ "id": "o1", "kind": "value", "need": 20000, "text": "单局带出估值 ≥ 20000" }],
+      "rewards": { "currency": 12000, "exp": 1500, "items": [], "unlockSafeTier": "safe_t4" }
+    }
+  ],
+
+  "_unlockNote": "unlockSafeTier 引用 loot.json 的 safeContainer.tiers[].id（启动期校验）。M3-TEMP-4 的另一半（门禁卡只能靠掉落）保持原样：M5 只落地『档案记录已解锁档位』。",
+  "_chainNote": "★ 制作人裁定（M5-6）：任务**全部取消等级门槛** —— 表里不写 level 字段（全表写 \"level\": 1 就是死配置）。因此当前唯一的进度约束是 `requires` 前置链（线性五步）。M6 若要恢复等级门槛，加回字段即可，校验器仍支持它。",
+  "_chainNote2": "任务链是**线性的**（每个任务只有一个前置）。M5 刻意不做分支/互斥任务：那需要一套『任务状态机 + 存档兼容』，收益远低于成本。requires 数组结构已为分支留位。"
+}

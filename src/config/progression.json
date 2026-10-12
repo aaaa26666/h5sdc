@@ -1,0 +1,109 @@
+{
+  "_comment": "M5-5 成长表（唯一真值）：等级曲线、经验规则、技能树。",
+  "_scopeNote": "经验的**发放时机**与技能效果的**聚合算法**也各只有一处：core/progression.js 的 raidExp() 与 skillModifiers()。界面只显示这个纯函数的产物。",
+
+  "levelCurve": {
+    "_comment": "升到第 n+1 级所需的经验 = round(base × growth^(n-1))，n 从 1 开始。",
+    "base": 900,
+    "growth": 1.05,
+    "maxLevel": 30,
+    "_checkNote": "满级总经验 ≈ 55.6k（各级之和，由 totalExpToMax 算出，不写死在表里）。按一局撤离约 640 经验（开 12 箱 / 杀 3 人 / 带出 8000）估算 ≈ 87 局满级；若多是失败局（约 180 经验）则 ≈ 300 局。原定 growth=1.35 是错的：那会让满级需要 9.2 千万经验，等级系统在现实游玩中永远不会推进 —— 一个'设计了但玩不到'的曲线等于没有。",
+    "_pointsNote": "满级可得技能点 = (maxLevel-1) × skillPointsPerLevel = 29，正好等于点满全树所需（31 → 已调整为 29）。校验器要求『够点满全树』，因此加一个技能就必须同时给出对应的点数来源。"
+  },
+
+  "expRules": {
+    "_comment": "一局的经验。撤离成功用 add* 各项；阵亡/超时/放弃只有 multiplied 部分，另加 failedBase。",
+    "extractBase": 300,
+    "_extractBaseNote": "只有成功撤离才给。它的作用是让『活着出去』本身有奖励，而不是只看带出估值。",
+    "perContainer": 12,
+    "perKill": 45,
+    "perValuePer1000": 8,
+    "valueStep": 1000,
+    "_valueNote": "带出估值每满 1000 给一次，向下取整。用步长而不是线性系数，是为了让收益数字看起来是整数（界面上不会出现 +873.6 这种经验）。",
+    "failedBase": 60,
+    "_failedBaseNote": "阵亡/超时/放弃也给的少量经验。**刻意不为 0**：完全没有成长反馈会让连续失败变得难以忍受；但它必须显著低于撤离（300+）。",
+    "failedMultiplier": 0.35,
+    "_failedMultiplierNote": "失败局的 perContainer/perKill/perValue 三项打折。"
+  },
+
+  "skillPointsPerLevel": 1,
+  "_skillPointsNote": "每升一级给 1 点。技能树的 `costPerLevel` 之和是策划数值，启动期校验『满级总点数 ≥ 点满全树所需点数』（否则会出现点数不够、树永远点不满的死配置）。",
+
+  "branches": [
+    { "id": "strength", "label": "体魄" },
+    { "id": "mobility", "label": "机动" },
+    { "id": "gunnery", "label": "枪械" },
+    { "id": "medical", "label": "医疗" }
+  ],
+
+  "_effectsComment": "效果类型是**枚举**，启动期校验。每个 kind 都必须被局内至少一处真实消费（CONSUMED_MODIFIERS 白名单），否则就是『看起来有用但什么都没改』的假技能。",
+  "effectKinds": {
+    "weightLimitKg": { "base": "fromLoot", "perLevel": "add", "_desc": "背包负重上限（kg）" },
+    "moveSpeedScale": { "base": 1, "perLevel": "add", "_desc": "移动/冲刺速度倍率" },
+    "recoilScale": { "base": 1, "perLevel": "add", "_desc": "后坐力倍率（负数 = 更稳）" },
+    "spreadScale": { "base": 1, "perLevel": "add", "_desc": "扩散倍率（负数 = 更准）" },
+    "searchSpeedScale": { "base": 1, "perLevel": "add", "_desc": "搜刮速度倍率（>1 = 更快）" },
+    "healSpeedScale": { "base": 1, "perLevel": "add", "_desc": "医疗速度倍率（>1 = 更快）" },
+    "sellBonusRatio": { "base": 0, "perLevel": "add", "_desc": "卖价加成比例（唯一作用于局外的效果）" }
+  },
+
+  "_treeNote": "★ 制作人裁定（M5-5）：技能之间**没有前置依赖、也没有等级门槛** —— 7 个技能只要有点数就能直接点（branch / tier 仅用于界面的分组与排序）。因此表里不写 requires / minLevel：全表都写 \"requires\": [] 就是死配置。core/progression.js 的 canLearn 仍支持这两个字段（缺省视为无约束），M6 若要恢复树形结构，加回字段即可，但那必须同时补一条覆盖断言。",
+  "skills": [
+    {
+      "id": "pack_mule", "label": "负重训练", "branch": "strength",
+      "tier": 1, "maxLevel": 3,
+      "costPerLevel": [1, 1, 2],
+      "effects": [{ "kind": "weightLimitKg", "perLevel": 6 }],
+      "desc": "每级 +6 kg 负重上限（制作人裁定：效果翻倍）"
+    },
+    {
+      "id": "scavenger", "label": "搜刮熟练", "branch": "strength",
+      "tier": 2, "maxLevel": 3,
+      "costPerLevel": [1, 2, 2],
+      "effects": [{ "kind": "searchSpeedScale", "perLevel": 0.12 }],
+      "desc": "每级搜索快 12%（制作人裁定：效果翻倍）"
+    },
+    {
+      "id": "negotiator", "label": "议价", "branch": "strength",
+      "tier": 3, "maxLevel": 2,
+      "costPerLevel": [2, 3],
+      "effects": [{ "kind": "sellBonusRatio", "perLevel": 0.1 }],
+      "desc": "每级卖价 +10%（制作人裁定：效果翻倍）"
+    },
+    {
+      "id": "sprinter", "label": "耐力", "branch": "mobility",
+      "tier": 1, "maxLevel": 3,
+      "costPerLevel": [1, 1, 2],
+      "effects": [{ "kind": "moveSpeedScale", "perLevel": 0.04 }],
+      "desc": "每级移动速度 +4%（制作人裁定：效果翻倍）"
+    },
+    {
+      "id": "steady", "label": "据枪稳定", "branch": "gunnery",
+      "tier": 1, "maxLevel": 3,
+      "costPerLevel": [1, 1, 2],
+      "effects": [{ "kind": "recoilScale", "perLevel": -0.08 }],
+      "desc": "每级后坐力 -8%（制作人裁定：效果翻倍）"
+    },
+    {
+      "id": "marksman", "label": "精度训练", "branch": "gunnery",
+      "tier": 2, "maxLevel": 3,
+      "costPerLevel": [1, 2, 1],
+      "effects": [{ "kind": "spreadScale", "perLevel": -0.1 }],
+      "desc": "每级扩散 -10%（制作人裁定：效果翻倍）"
+    },
+    {
+      "id": "field_medic", "label": "战地医疗", "branch": "medical",
+      "tier": 1, "maxLevel": 3,
+      "costPerLevel": [1, 1, 1],
+      "effects": [{ "kind": "healSpeedScale", "perLevel": 0.16 }],
+      "desc": "每级医疗动作快 16%（制作人裁定：效果翻倍）"
+    }
+  ],
+
+  "respec": {
+    "_comment": "★ 制作人裁定（M5-5）：洗点**要做**，且要花货币。退款口径：已花技能点**全额退还**，技能全部回到未学状态 —— 这是唯一能算出确定结果的口径（按比例退还会让『点了几级』变成小数）。",
+    "costPerPoint": 1500,
+    "_costNote": "洗点价 = 已花点数 × 1500。点满全树 29 点 → 洗一次 43500 货币（约等于一套三级套 + 一把 SR-25）。数值无实测依据，标定属试玩阶段。",
+    "_zeroNote": "已花 0 点时洗点免费且无副作用（幂等），界面应把按钮置灰而不是弹错误。"
+  }
+}

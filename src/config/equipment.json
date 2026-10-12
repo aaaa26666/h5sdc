@@ -1,0 +1,62 @@
+{
+  "_comment": "M5-3 配装表（唯一真值）。槽位定义、起始配装、弹药与消耗品携带上限、超重惩罚。",
+  "_scopeNote": "本表只管『进战区带什么』。装备的**数值**（伤害/减伤/耐久/重量/估值）分别在 weapons.json 与 combat.json 里，本表只按 id 引用 —— 复制一份重量或价格到这里就违反了 M5 的『单一数据源』红线。",
+  "_movedNote": "starterLoadout 由 weapons.json 的 startLoadout 迁入（M5-3），并按制作人裁定重写：★ 起始**不给长枪**（只有 P9 手枪 + 二级甲 + 二级头盔），弹药只带 9mm 60 发 —— 原先 M2 那四种口径的固定携带（含两把枪用不上的 7.62/12ga）不是配装设计，而是『让战斗循环能跑』的临时值。",
+
+  "slots": [
+    { "id": "primary", "label": "主武器", "accepts": ["weapon"], "weaponSlot": 1 },
+    { "id": "secondary", "label": "副武器", "accepts": ["weapon"], "weaponSlot": 2 },
+    { "id": "body", "label": "护甲", "accepts": ["armor"], "armorCovers": "chest" },
+    { "id": "head", "label": "头盔", "accepts": ["armor"], "armorCovers": "head" },
+    { "_comment": "背包槽刻意不存在：M5 的背包容量固定来自 loot.json.backpack（6x5 / 22kg），没有任何可替换项。按项目纪律『不留占位入口』，做一个只有一件可选物的槽位是假功能，属 M6。",
+      "id": "backpack", "label": "背包", "accepts": [], "disabled": true, "reason": "背包升级属 M6（当前容量由 loot.json.backpack 固定）" }
+  ],
+
+  "ammo": {
+    "_comment": "按**口径**携带（不给任意弹药）。每发重量在 weapons.json 的 ammo 表里（weightPerRoundKg），那是随身负重的唯一来源；loot.json 里的 ammo_* 物品是『作为战利品的整盒弹药』，两者的 weightKg 语义不同、刻意分开写（一处是携带、一处是战利品占格），本表不复制任何重量。",
+    "_noCapNote": "★ 制作人裁定（M5-3）：**不设数量上限** —— 带多少发只受负重三档（见 overweight）与仓库库存约束。原先的 maxReserveByCaliber 已删除：留着一份没人执行的上限就是死配置。",
+    "carryCalibers": ["9mm", "5.56", "7.62", "12ga"]
+  },
+
+  "consumables": {
+    "_comment": "★ 制作人裁定（M5-3）：**不设数量上限**，带多少只受负重与仓库库存约束。原先的 maxByItem 已删除。",
+    "_m6Note": "[M5-TEMP-11] 制作人的原始意图是『只要背包格子塞得下』—— 那要求弹药与消耗品成为**占背包网格的物体**（射击与治疗从网格扣减）。M5 先按『取消数量上限、但仍是不占格的数字』实现，把网格化记入 M6 清单（涉及 weapon / player / inventory 三个局内模块）。"
+  },
+
+  "starterLoadout": {
+    "_comment": "新账号的默认配装。★ 制作人裁定（M5-3）：起始**不给长枪**（只有 P9 手枪），护甲给二级套，弹药只带 9mm。",
+    "_riskNote": "首局只有手枪、要面对 7 名 AI，难度显著高于『M4 开局』（手枪 TTK 更长、交战距离更短）。这是刻意选择，不是遗漏。",
+    "id": "default",
+    "name": "标准配装",
+    "primary": null,
+    "secondary": "pistol_p9",
+    "body": "vest2",
+    "head": "helmet2",
+    "ammo": { "9mm": 60 },
+    "consumables": { "bandage": 3, "medkit": 2 }
+  },
+
+  "maxPresets": 4,
+  "_maxPresetsNote": "预设方案上限。删除预设必须保持至少一套（否则新账号没有可进局的配装）。",
+
+  "overweight": {
+    "_comment": "★ 制作人裁定的**三档**超重惩罚（M5-3）。允许进局但受罚，不做『禁止进局』—— 那会让玩家卡在局外无法自救（例如把全部家当背在身上又卖不掉）。",
+    "bands": [
+      { "id": "normal", "label": "正常", "maxKg": 20, "speedScale": 1, "noSprint": false },
+      { "id": "light", "label": "略微超重", "maxKg": 30, "speedScale": 0.8, "noSprint": false },
+      { "id": "heavy", "label": "超重", "maxKg": 40, "speedScale": 0.6, "noSprint": true },
+      { "id": "severe", "label": "严重超重", "maxKg": null, "speedScale": 0.4, "noSprint": true }
+    ],
+    "_bandsNote": "判定：取第一个满足 weightKg < maxKg 的档位（最后一档 maxKg=null 表示无上限）。阈值与系数都是策划数值、无实测依据 —— 标定属试玩阶段，改它只改这张表。",
+    "_thresholdsNote": "20kg 的依据：手枪开局约 7kg；满配（SR-25 + 三级甲 + 三级头 + 满弹 + 满医疗）约 20kg，因此『要不要换更重的甲/枪』正好压在这条线上。30 / 40kg 两档没有依据，是为了让『把仓库全背身上』有明确代价。"
+  },
+
+  "durabilityRules": {
+    "_comment": "装备耐久在局外的持久化口径。",
+    "_tempNote": "★ [M5-TEMP-10] M5 **不做**护甲耐久的局外持久化：每次进局的护甲都是满耐久（combat.json 的 durability）。理由与武器的弹匣一致 —— 耐久持久化要求仓库条目带『这一件』的状态、配装取件与阵亡丢失都按件追踪，那是一个独立的数据模型改动，M5 的目标是把外循环跑通。本段的两个字段已就位，只差数据。",
+    "armorMinDurability": 0,
+    "_armorMinDurabilityNote": "耐久降到 0 仍可装备（减伤按 armorRules 打折），但商店回收价为 0。",
+    "brokenSellRatio": 0,
+    "_weaponNote": "★ [M5-TEMP-9] 武器**没有耐久**，弹匣内子弹也不单独持久化：进局固定满弹匣。武器耐久属 M6+。"
+  }
+}

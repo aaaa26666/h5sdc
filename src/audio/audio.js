@@ -12,19 +12,42 @@
 //   C-9 未解锁前，所有播放请求走"静默丢弃 + 排队"分支，不得抛异常中断游戏逻辑。
 //
 // [M2-TEMP-2] 音效全部为合成音，没有做距离衰减的分层素材、没有遮挡滤波、
-//             没有混音总线（音乐/音效/语音分离）、没有音量设置。
-//             M3/M5 重写清单：接入真实音频资源与混音总线。
+//             没有混音总线（音乐/音效/语音分离）。
+//             音效素材与分层衰减属 M7（美术与音频替换），混音总线属 M5-8 之后的调音工作。
+//             （M5-1 已补上主音量档位：见下方 baseGain / setVolumeScale。）
 
-export function createAudio() {
+// ★ M5-1：基础增益与音量倍率。
+//   此前 `master.gain.value = 0.35` **硬编码两处**（创建时与 setEnabled），
+//   属"数值散落在逻辑代码中"，且让"加一个音量设置"变成改两处数字。
+//   现在：基础增益来自 config.audio.masterGain，音量档位倍率来自设置项，
+//   两者的相乘**只发生在 applyGain() 一处** —— 任何调音量的路径都必须过它。
+export function createAudio(cfg) {
+  const baseGain = cfg.audio.masterGain;
   let ctx = null;
   let master = null;
+  // ★ M5-8：两条分轨总线（制作人裁定：分轨要做；音乐轨先接上空总线 —— BGM 属 M7）。
+  //   结构：音源 → sfxBus/musicBus → master → destination。
+  //   分轨增益与主增益一样，**只在 applyGain() 一处相乘** —— 任何调音量的路径都必须过它。
+  let sfxBus = null;
+  let musicBus = null;
+  let sfxScale = 1;
+  let musicScale = 1;
   let unlocked = false;
   let enabled = true;
+  let volumeScale = 1;
   let unlockAttempted = false;
   const pending = [];
   const stats = { playRequests: 0, played: 0, droppedBeforeUnlock: 0, queuedBeforeUnlock: 0 };
 
   const MAX_QUEUE = 24;
+
+  /** 实际写入各级增益的值：静音开关 × 基础增益 × 总线倍率 × 分轨倍率 */
+  function applyGain() {
+    if (!master) return;
+    master.gain.value = enabled ? baseGain * volumeScale : 0;
+    if (sfxBus) sfxBus.gain.value = enabled ? sfxScale : 0;
+    if (musicBus) musicBus.gain.value = enabled ? musicScale : 0;
+  }
 
   /**
    * 解锁门。**必须在用户手势回调内调用**（见 C-8）。
@@ -40,7 +63,15 @@ export function createAudio() {
       if (!ctx) {
         ctx = new AC();
         master = ctx.createGain();
-        master.gain.value = 0.35;
+        sfxBus = ctx.createGain();
+        musicBus = ctx.createGain();
+        sfxBus.connect(master);
+        // musicBus 现在没有音源（BGM 属 M7），但它是**真实存在**的总线：
+        // 设置项"音乐音量"改的就是它的增益 —— 不是假开关，只是暂时没声音可放。
+        musicBus.connect(master);
+        // 用 applyGain 而不是直接写 baseGain：设置里的音量档位可能在解锁前就已加载，
+        // 直接写基线会把那一档丢掉（表现为"进游戏后第一次开枪音量不对"）。
+        applyGain();
         master.connect(ctx.destination);
       }
       if (ctx.state !== 'running') {
@@ -53,7 +84,7 @@ export function createAudio() {
         // 播放一次静音占位，确认管线真的通了
         const g = ctx.createGain();
         g.gain.value = 0;
-        g.connect(master);
+        g.connect(sfxBus);
         const o = ctx.createOscillator();
         o.connect(g);
         o.start();
@@ -112,7 +143,7 @@ export function createAudio() {
     const g = ctx.createGain();
     g.gain.setValueAtTime(gain, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + decay + dur * 0.5);
-    src.connect(f).connect(g).connect(master);
+    src.connect(f).connect(g).connect(sfxBus);
     src.start(t);
     src.stop(t + dur);
   }
@@ -126,7 +157,7 @@ export function createAudio() {
     const g = ctx.createGain();
     g.gain.setValueAtTime(gain, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g).connect(master);
+    o.connect(g).connect(sfxBus);
     o.start(t);
     o.stop(t + dur);
   }
@@ -147,9 +178,37 @@ export function createAudio() {
     stats,
     setEnabled(v) {
       enabled = !!v;
-      if (master) master.gain.value = enabled ? 0.35 : 0;
+      applyGain();
     },
     isEnabled: () => enabled,
+
+    /**
+     * 主音量档位倍率（M5-1）。设置界面调用它，值来自配置表
+     * （settings.volumeLevels），本函数只负责落到总线上。
+     */
+    setVolumeScale(scale) {
+      volumeScale = scale;
+      applyGain();
+    },
+
+    /**
+     * 分轨倍率（M5-8）。制作人裁定：分轨要做，音乐轨先接上空总线（BGM 属 M7）。
+     * 一次同时设两条，因为设置界面永远是把整份设置交过来的。
+     */
+    setBusScales({ sfx, music }) {
+      if (typeof sfx === 'number') sfxScale = sfx;
+      if (typeof music === 'number') musicScale = music;
+      applyGain();
+    },
+
+    /** 当前实际写到各级增益的数值（诊断/断言用；未解锁时的各字段为 null） */
+    currentGain: () => (master ? master.gain.value : null),
+    /** 分轨增益读数：断言"分轨真的接上了"要靠它（音乐轨暂时没有音源，但增益是真实的） */
+    busGains: () => ({
+      master: master ? master.gain.value : null,
+      sfx: sfxBus ? sfxBus.gain.value : null,
+      music: musicBus ? musicBus.gain.value : null,
+    }),
 
     /** 枪声。distanceM 用于粗略衰减（真实的距离衰减需 3D 音频节点，属 M3） */
     gunshot(weaponClass = 'rifle', distanceM = 0) {

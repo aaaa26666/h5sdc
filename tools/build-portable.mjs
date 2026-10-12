@@ -26,7 +26,9 @@ const TMP = path.join(ROOT, '.portable-build');
 // 的资产名会**丢掉所有非 ASCII 字符**：`?name=搜打撤PVE-M3-免安装.zip` 传上去变成
 // `PVE-M3-.zip`，而 CDN 的下载路径又对不上，表现为「上传成功但下载 404」。
 // 用 ASCII 名可以同时满足：Release 资产名、下载 URL、解压目录名三者一致。
-const PKG_NAME = 'H5-SDC-PVE-M3';
+//
+// 阶段号随里程碑推进：M2 → M3 → **M5**（v0.0.4 这一版是 M5 局外系统）。
+const PKG_NAME = 'H5-SDC-PVE-M5';
 const RELEASE_DIR = path.join(ROOT, 'release');
 const PKG_DIR = path.join(RELEASE_DIR, PKG_NAME);
 

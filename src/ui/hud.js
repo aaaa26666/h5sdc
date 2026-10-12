@@ -1,5 +1,10 @@
-// 局内 HUD 与结算界面。
+// 局内 HUD、暂停菜单、设置面板、结算界面。
 // M1 只做信息可读性，不做视觉打磨（M1 明确禁止美化）。
+//
+// ★ M5-1：开始页**搬走了** —— 它变成 src/ui/lobby.js 的主大厅。
+//   本文件不再持有 screenStart / btnStart / interruptedNotice。
+//   为什么不把大厅也塞在这里：大厅是**局外**系统（M5 约束"禁止把局内逻辑耦合进
+//   局外系统，反之亦然"），而本文件是局内 HUD 与局内弹窗。
 
 const $ = (id) => document.getElementById(id);
 
@@ -32,28 +37,24 @@ export function createHud() {
     toast: $('toast'),
     hitmark: $('hitmark'),
     damageFlash: $('damageFlash'),
-    screenStart: $('screenStart'),
     screenEnd: $('screenEnd'),
     endTitle: $('endTitle'),
     endSubtitle: $('endSubtitle'),
     endBody: $('endBody'),
-    btnStart: $('btnStart'),
     btnRestart: $('btnRestart'),
     screenPause: $('screenPause'),
-    screenSettings: $('screenSettings'),
     btnResume: $('btnResume'),
-    btnSettingsFromStart: $('btnSettingsFromStart'),
     btnSettingsFromPause: $('btnSettingsFromPause'),
     btnAbandon: $('btnAbandon'),
     screenAbandon: $('screenAbandon'),
     btnAbandonConfirm: $('btnAbandonConfirm'),
     btnAbandonCancel: $('btnAbandonCancel'),
-    interruptedNotice: $('interruptedNotice'),
     minimap: $('minimap'),
     minimapLabel: $('minimapLabel'),
     questText: $('questText'),
-    btnSettingsClose: $('btnSettingsClose'),
-    segs: Array.from(document.querySelectorAll('.seg[data-group]')),
+    // 注意：设置面板的 DOM（#screenSettings / #settingsBody / #btnSettingsClose）
+    // 已归 src/ui/settings.js 管（M5-8 销 M5-TEMP-4）。hud 不再持有它们 ——
+    // 一个模块同时管"局内 HUD"与"本机偏好"正是那次拆分要解决的问题。
   };
 
   let toastTimer = null;
@@ -71,9 +72,6 @@ export function createHud() {
 
     showHud(on) {
       el.hud.classList.toggle('on', on);
-    },
-    showStart(on) {
-      el.screenStart.classList.toggle('on', on);
     },
     showEnd(on) {
       el.screenEnd.classList.toggle('on', on);
@@ -98,43 +96,10 @@ export function createHud() {
     showAbandonConfirm(on) {
       if (el.screenAbandon) el.screenAbandon.classList.toggle('on', on);
     },
-    showSettings(on) {
-      el.screenSettings.classList.toggle('on', on);
-    },
-
     /**
-     * M4-7：开始页上的"上局未正常结束"提示。
-     * 只在开始页显示一条，点击后才去看结算 —— 不主动打断进入流程。
+     * 设置面板的显示/隐藏已迁到 src/ui/settings.js（M5-8，销 M5-TEMP-4）。
+     * hud 不再持有设置面板的 DOM 与交互 —— 它只管局内 HUD 与结算页。
      */
-    showInterruptedNotice(on) {
-      if (el.interruptedNotice) el.interruptedNotice.hidden = !on;
-    },
-
-    /**
-     * 绑定设置页的分段选择器。
-     * @param settings 当前设置对象（会被就地修改）
-     * @param onChange 任一设置项变更后的回调，用于同步到输入层并落盘
-     */
-    bindSettings(settings, onChange) {
-      for (const seg of el.segs) {
-        seg.addEventListener('click', () => {
-          const group = seg.dataset.group;
-          const value = seg.dataset.value;
-          if (settings[group] === value) return;
-          settings[group] = value;
-          this.syncSettings(settings);
-          onChange(settings);
-        });
-      }
-      this.syncSettings(settings);
-    },
-
-    /** 把设置对象的状态反映到 UI 高亮上 */
-    syncSettings(settings) {
-      for (const seg of el.segs) {
-        seg.classList.toggle('on', settings[seg.dataset.group] === seg.dataset.value);
-      }
-    },
 
     update(view) {
       el.hpText.textContent = `${Math.ceil(view.health)} / ${view.maxHealth}`;
@@ -165,7 +130,15 @@ export function createHud() {
       if (el.bagText) el.bagText.textContent = view.bagText || '—';
       if (el.safeText) el.safeText.textContent = view.safeText || '—';
       // M4-6 任务追踪：[M4-TEMP-4] 当前是占位值（任务线属 M5-6，尚无真实数据）
-      if (el.questText) el.questText.textContent = view.questText || '任务 —';
+      if (el.questText) {
+      // ★ M5-6 销账 [M4-TEMP-4]：任务追踪改为**多行**（制作人裁定：全部列出，
+      //   最多 maxActive 条）。内容来自 raidKit.quests —— 即 core/quests.js 的
+      //   questTrackerView 产物；HUD 只负责换行排版。
+      const lines = view.questLines || [];
+      el.questText.innerHTML = lines.length
+        ? lines.map((l) => `· ${l.text}`).join('<br />')
+        : '任务 —';
+    }
 
       if (view.useProgress > 0) {
         el.useBar.classList.add('on');
@@ -234,7 +207,13 @@ export function createHud() {
       toastTimer = setTimeout(() => (el.toast.className = ''), 1600);
     },
 
-    showResult(result) {
+    /**
+     * 结算页。
+     * @param {object} result core/raidResult.js 的产物（"这一局发生了什么"）
+     * @param {object} [summary] core/settlement.js 的落库摘要（"它给玩家带来什么"）。
+     *        没有它时经验一栏退回旧的占位口径 —— 但那只是防御：正常路径一定有。
+     */
+    showResult(result, summary) {
       const titles = {
         extracted: '撤离成功',
         dead: '阵亡',
@@ -260,16 +239,27 @@ export function createHud() {
       const loot = result.loot || {};
       const c = result.combat || {};
       const prog = result.progression || {};
+      const s = summary || null;
 
+      // ★ M5 销账 [M4-TEMP-3]：经验与任务进度不再是占位值 0 ——
+      //   它们来自 core/settlement.js 的落库摘要，即"这一局真正记到档案上的量"。
       const rows = [
         ['单局用时', fmtTime(result.elapsedMs)],
         ['击杀敌人', `${c.kills} / ${c.aiTotal}`],
         ['开启容器', `${c.containersOpened} / ${c.containersTotal}`],
         ['开火次数', String(c.shotsFired)],
         ['剩余生命', `${Math.ceil(c.health)}`],
-        // [M4-TEMP-3] 经验与任务线属 M5-5 / M5-6，M4 阶段恒为 0（占位数值，非计算结果）
-        ['经验', `+${prog.exp ?? 0}`],
-        ['任务进度', `${prog.questsCompleted ?? 0} / ${prog.questsTotal ?? 0}`],
+        ['经验', s ? `+${s.exp}` : `+${prog.exp ?? 0}`],
+        [
+          '等级',
+          s ? (s.leveledTo ? `升到 ${s.level} 级（+${s.skillPoints} 技能点）` : `${s.level} 级`) : '—',
+        ],
+        [
+          '任务',
+          s
+            ? `完成 ${s.questsCompleted.length} 个 · 推进 ${s.questsAdvanced.length} 项`
+            : `${prog.questsCompleted ?? 0} / ${prog.questsTotal ?? 0}`,
+        ],
       ];
 
       // 收益明细：明确回答"带回什么、失去什么、保险箱保住了什么"
@@ -317,6 +307,43 @@ export function createHud() {
 
       const itemsHtml = keptHtml + lostHtml;
 
+      // ★ M5：局外落库明细。玩家必须知道"这些东西真的进了仓库"，
+      //   以及"仓库已满，以下没能存入"（静默丢弃是最不可接受的一类缺陷）。
+      //   label 从本局的结算明细里取；取不到的（弹药/消耗品）回落到 id。
+      const labelMap = new Map();
+      for (const it of result.items || []) labelMap.set(it.id, it.label);
+      for (const it of result.lostItems || []) labelMap.set(it.id, it.label);
+      const labelOf = (id) => labelMap.get(id) || id;
+      let stashHtml = '';
+      if (s) {
+        if (s.deposited.length) {
+          stashHtml +=
+            '<p class="muted" style="margin-top:14px">存入仓库：</p><ul class="items">' +
+            s.deposited
+              .map(
+                (d) =>
+                  `<li>${labelOf(d.itemId)} ×${d.count}` +
+                  (d.leftover ? ` <span class="bad">（${d.leftover} 未存入）</span>` : '') +
+                  '</li>'
+              )
+              .join('') +
+            '</ul>';
+        }
+        if (s.overflow.length) {
+          stashHtml +=
+            '<p class="muted bad" style="margin-top:10px">仓库已满，以下物品<b>未能存入</b>：</p><ul class="items">' +
+            s.overflow.map((d) => `<li>${labelOf(d.itemId)} ×${d.count}</li>`).join('') +
+            '</ul>';
+        }
+        if (s.questsCompleted.length) {
+          stashHtml += `<p class="muted" style="margin-top:10px">任务完成：${s.questsCompleted.join('、')}（回大厅领奖）</p>`;
+        }
+        if (s.consumed.length) {
+          const used = s.consumed.reduce((a, x) => a + x.count, 0);
+          stashHtml += `<p class="muted" style="margin-top:10px">消耗 / 损失：${used} 件（估值 ${s.spentValue}）</p>`;
+        }
+      }
+
       el.endBody.innerHTML =
         '<div class="row"><span class="k">状态</span><span class="' +
         (carried ? 'ok' : 'bad') +
@@ -328,7 +355,8 @@ export function createHud() {
           .join('') +
         (rarityHtml ? `<div class="row"><span class="k">稀有度</span><span>${rarityHtml}</span></div>` : '') +
         rows.map(([k, v]) => `<div class="row"><span class="k">${k}</span><span>${v}</span></div>`).join('') +
-        itemsHtml;
+        itemsHtml +
+        stashHtml;
     },
   };
 }

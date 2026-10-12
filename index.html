@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
-    <title>H5 搜打撤 PVE · M4 撤离与局内流程闭环</title>
+    <title>H5 搜打撤 PVE · M5-1 主大厅</title>
     <style>
       :root { --ink: #cfe3ea; --dim: #7c8f98; --warn: #ffcc66; --bad: #ff6b5a; --ok: #7fe0a0; }
       * { box-sizing: border-box; }
@@ -12,6 +12,18 @@
         font: 13px/1.6 ui-monospace, Consolas, "Cascadia Mono", monospace; overflow: hidden; }
       #app { position: fixed; inset: 0; }
       canvas { display: block; }
+
+      /* [M5-BUG-01] hidden 属性的规范语义：带 hidden 的元素不该渲染。
+         UA 样式表用 `[hidden] { display: none }` 实现它，但 WHATWG HTML 明确指出这个实现
+         **可以被 author 的 display 规则取消**（原文：a rule that applies 'display: block'
+         to all elements will cancel the effects of the hidden state）。
+         本项目就有现成的反例：#interruptedNotice（大厅那条"上局未正常结束"提示）同时带
+         class="row"，而下方 `.row { display: flex }` 与 UA 规则同 specificity、且 author 必然
+         胜出 —— 于是"隐藏的"提示条一直画在屏幕上，连虚线下边框都占了一行高度。
+         这里用 !important **不是为了打赢某条具体样式**，而是让 hidden 的规范语义**不受任何
+         author display 规则与书写顺序的影响**地恢复（今天的 .row，明天的任意一条，都得兜住）。
+         ★ 删掉 !important 会立刻重新引入该缺陷（见 docs/M5-TEMP-REGISTRY.md 的 M5-BUG-01）。 */
+      [hidden] { display: none !important; }
 
       .overlay { position: fixed; inset: 0; pointer-events: none; }
 
@@ -90,6 +102,11 @@
         border-radius: 10px; padding: 26px 30px; }
       .card h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .06em; }
       .card h2 { font-size: 15px; margin: 0 0 18px; color: var(--dim); font-weight: normal; }
+      /* 主大厅（M5-1）：内容比结算页长（战区简报 + 可折叠的操作说明），
+         所以给它更宽并允许纵向滚动 —— 小屏上不能靠"内容很少"侥幸不溢出。 */
+      .card.lobby { width: min(780px, 94vw); max-height: 92vh; overflow: auto; }
+      .card.lobby .li { padding-left: 12px; line-height: 1.5; }
+      .card.lobby details { margin-top: 10px; }
       .card p { margin: 6px 0; }
       .row { display: flex; justify-content: space-between; border-bottom: 1px dashed rgba(120,160,180,.18);
         padding: 5px 0; }
@@ -118,6 +135,44 @@
       .keycap { display: inline-block; padding: 1px 7px; border: 1px solid rgba(140,200,225,.3);
         border-radius: 3px; color: var(--ink); font-size: 12px; }
       .btns { display: flex; gap: 10px; flex-wrap: wrap; }
+
+      /* ---- M5 大厅：状态条 + 标签页 + 面板 ---- */
+      /* 状态条显示档案的读数（等级/经验/货币/仓库估值），数值全部来自 core/profile.js 的派生视图 */
+      .statsbar { display: flex; gap: 20px; flex-wrap: wrap; padding-bottom: 8px;
+        border-bottom: 1px solid rgba(120,160,180,.25); margin-bottom: 10px; }
+      .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+      .tab { padding: 4px 14px; cursor: pointer; user-select: none; color: var(--dim);
+        border: 1px solid rgba(140,200,225,.3); border-bottom: none; border-radius: 4px 4px 0 0;
+        pointer-events: auto; }
+      .tab:hover { border-color: rgba(140,200,225,.6); }
+      .tab.on { background: rgba(80,150,190,.3); color: var(--ink); border-color: rgba(140,200,225,.85); }
+      .tabbody { display: none; }
+      .tabbody.on { display: block; }
+      /* 仓库网格：物品**有形状**，所以用绝对定位 + 背景网格线，而不是 flex 排列。
+         格子尺寸与整体宽高都由 CSS 变量算出来 —— JS 只给格坐标，**不做任何乘法**。 */
+      .grid-wrap { --cell: 30px;
+        width: calc(var(--cell) * var(--cols)); height: calc(var(--cell) * var(--rows));
+        position: relative; margin: 6px 0;
+        background:
+          repeating-linear-gradient(to right, rgba(120,160,180,.16) 0 1px, transparent 1px var(--cell)),
+          repeating-linear-gradient(to bottom, rgba(120,160,180,.16) 0 1px, transparent 1px var(--cell));
+        border: 1px solid rgba(120,160,180,.3); border-radius: 4px; }
+      .grid-item { position: absolute; padding: 2px 3px; font-size: 10px; line-height: 1.15;
+        overflow: hidden; border: 1px solid rgba(140,200,225,.55); border-radius: 3px;
+        background: rgba(60,110,150,.35); cursor: pointer; pointer-events: auto; }
+      .grid-item.on { background: rgba(120,190,240,.55); border-color: #cfe3ea; }
+      .grid-item .qty { color: var(--warn); }
+      .list-scroll { max-height: 300px; overflow: auto; }
+      .li-row { display: flex; justify-content: space-between; align-items: center; gap: 10px;
+        padding: 4px 0; border-bottom: 1px dashed rgba(120,160,180,.14); }
+      .mini { padding: 1px 9px; font-size: 11px; cursor: pointer; user-select: none;
+        border: 1px solid rgba(140,200,225,.4); border-radius: 3px; color: var(--ink);
+        pointer-events: auto; }
+      .mini:hover { background: rgba(80,150,190,.28); }
+      .mini.dis { opacity: .35; pointer-events: none; }
+      .mini.on { background: rgba(80,150,190,.42); border-color: rgba(140,200,225,.9); }
+      .slot-line { display: flex; justify-content: space-between; align-items: center;
+        padding: 5px 0; border-bottom: 1px dashed rgba(120,160,180,.16); }
     </style>
   </head>
   <body>
@@ -164,34 +219,72 @@
       <div id="toast"></div>
     </div>
 
-    <div class="screen on" id="screenStart">
-      <div class="card">
+    <!-- 主大厅（局外）。id 与样式沿用原"开始页"，M5-1 起它是游戏的入口屏。
+         ★ #btnStart 这个 id **刻意保留**：它是自动化测试点"进入战区"的锚点，
+           改名等于让一批既有断言失效（那不是回归，是自找的噪声）。 -->
+    <div class="screen on" id="screenLobby">
+      <div class="card lobby">
         <h1>H5 搜打撤 · PVE</h1>
-        <h2>M4 撤离与局内流程闭环 —— 电视台两层图 · 撤离点规则 · 结算 · 小地图</h2>
-        <p class="muted">目标：进入战区搜刮物资，与 AI 交战，带着战利品撤离</p>
-        <!-- §2.6 要求"断线惩罚规则需在首次进入时告知玩家" -->
-        <p class="muted">⚠ 断线或关闭页面视为<b>未撤离</b>：除保险箱内的物品外，本局携带物全部损失。</p>
+        <h2>主大厅 —— 查看本局战区简报，配好心态再进去</h2>
+
+        <!-- 档案读数（等级 / 经验 / 货币 / 仓库）。全部来自 core/profile.js 的派生视图，
+             界面只排版 —— 与 M5-1 对简报的口径一致。 -->
+        <div id="lobbyStats" class="statsbar"></div>
+
+        <!-- M5：大厅内标签页（制作人裁定）。每个面板只渲染 core/ 的纯函数产物。 -->
+        <div class="tabs" id="lobbyTabs">
+          <div class="tab on" data-tab="brief">简报</div>
+          <div class="tab" data-tab="loadout">配装</div>
+          <div class="tab" data-tab="stash">仓库</div>
+          <div class="tab" data-tab="shop">商店</div>
+          <div class="tab" data-tab="skills">技能</div>
+          <div class="tab" data-tab="quests">任务</div>
+        </div>
+
+        <div class="tabbody on" id="tabBrief">
+          <!-- 战区简报：数值全部由 src/core/briefing.js 从配置表产出，这里只排版 -->
+          <div id="lobbyBody"></div>
+          <!-- §2.6 要求"断线惩罚规则需在首次进入时告知玩家" -->
+          <p class="muted" style="margin-top:14px">
+            ⚠ 断线或关闭页面视为<b>未撤离</b>：除保险箱内的物品外，本局携带物全部损失。
+          </p>
+        </div>
+        <div class="tabbody" id="tabLoadout"></div>
+        <div class="tabbody" id="tabStash"></div>
+        <div class="tabbody" id="tabShop"></div>
+        <div class="tabbody" id="tabSkills"></div>
+        <div class="tabbody" id="tabQuests"></div>
+
+        <details style="margin-top:10px">
+          <summary class="muted" style="cursor:pointer">操作说明</summary>
+          <div class="row"><span class="k">移动 / 视角</span><span>W A S D · 鼠标</span></div>
+          <div class="row"><span class="k">射击 / 开镜</span><span>鼠标左键 · 鼠标右键（按住）</span></div>
+          <div class="row"><span class="k">切枪 / 换弹</span><span>1 主武器 · 2 副武器 · 滚轮 · R</span></div>
+          <div class="row"><span class="k">奔跑 / 蹲下</span><span>Shift / C（可在设置里改成按住或切换）</span></div>
+          <div class="row"><span class="k">跳跃</span><span>Space</span></div>
+          <div class="row"><span class="k">左右探头</span><span>Q / E（按住；射击从探头位置出膛）</span></div>
+          <div class="row"><span class="k">搜索容器</span><span>靠近后按住 F</span></div>
+          <div class="row"><span class="k">医疗</span><span>3 绷带 · 4 急救包（受击会打断）</span></div>
+          <div class="row"><span class="warn">注意</span><span class="warn">请勿使用 Ctrl 组合键（浏览器保留，无法拦截）</span></div>
+          <div class="row"><span class="k">撤离</span><span>走进撤离区（绿=可用，灰=未开放）并停留 10 秒</span></div>
+          <div class="row"><span class="k">暂停 / 设置</span><span>Esc 解锁指针后可打开设置</span></div>
+        </details>
+
         <!-- M4-7：上局中断后，这里出现一条可点击的提示（默认隐藏） -->
         <div class="row" id="interruptedNotice" hidden style="cursor:pointer">
           <span class="k warn">上局未正常结束（刷新 / 关闭页面）</span><span class="v">点击查看结算 ›</span>
         </div>
-        <div class="row"><span class="k">移动 / 视角</span><span>W A S D · 鼠标</span></div>
-        <div class="row"><span class="k">射击 / 开镜</span><span>鼠标左键 · 鼠标右键（按住）</span></div>
-        <div class="row"><span class="k">切枪 / 换弹</span><span>1 主武器 · 2 副武器 · 滚轮 · R</span></div>
-        <div class="row"><span class="k">奔跑 / 蹲下</span><span>Shift / C（可在设置里改成按住或切换）</span></div>
-        <div class="row"><span class="k">跳跃</span><span>Space</span></div>
-        <div class="row"><span class="k">左右探头</span><span>Q / E（按住；射击从探头位置出膛）</span></div>
-        <div class="row"><span class="k">搜索容器</span><span>靠近后按住 F</span></div>
-        <div class="row"><span class="k">医疗</span><span>3 绷带 · 4 急救包（受击会打断）</span></div>
-        <div class="row"><span class="warn">注意</span><span class="warn">请勿使用 Ctrl 组合键（浏览器保留，无法拦截）</span></div>
-        <div class="row"><span class="k">撤离</span><span>走进撤离区（绿=可用，灰=未开放）并停留 10 秒</span></div>
-        <div class="row"><span class="k">暂停 / 设置</span><span>Esc 解锁指针后可打开设置</span></div>
+
         <div class="btns">
           <div class="btn" id="btnStart">进入战区</div>
-          <div class="btn" id="btnSettingsFromStart">设置</div>
+          <div class="btn" id="btnSettings">设置</div>
         </div>
+        <!-- 大厅自己的提示条：局内 HUD 的 #toast 在 #hud 里，局外看不到，
+             而"操作失败（货币不足 / 技能点不够 / 仓库满）"必须让玩家看见。 -->
+        <p class="muted" id="lobbyToast" style="min-height:19px;margin-top:8px"></p>
         <p class="muted" style="margin-top:14px">
-          本次为 M1 灰盒：无音效、无特效、无正式美术资源。临时实现清单见 M1-TEMP-REGISTRY.md
+          配装由仓库供给：进战区时把身上的东西从仓库取走，撤离把没用完的还回来，阵亡则全部丢失。<br />
+          全程灰盒：无正式美术与音频素材，临时实现清单见 docs/M5-TEMP-REGISTRY.md
         </p>
       </div>
     </div>
@@ -223,36 +316,19 @@
       </div>
     </div>
 
+    <!-- M5-8：设置面板改为**独立模块**（src/ui/settings.js）渲染，销 M5-TEMP-4。
+         面板内容全部由 JS 生成 —— 设置项的档位来自配置表（tunables.settings.schema），
+         在这里手写选项就等于把同一份数据写两遍。 -->
     <div class="screen" id="screenSettings">
-      <div class="card">
+      <div class="card lobby">
         <h1>设置</h1>
-        <h2>M1 灰盒 —— 仅列出已实现的设置项</h2>
-
-        <div class="row opt">
-          <span class="k">冲刺 <span class="keycap">Shift</span></span>
-          <span>
-            <span class="seg" data-group="sprintMode" data-value="hold">按住</span>
-            <span class="seg" data-group="sprintMode" data-value="toggle">切换</span>
-          </span>
+        <h2>本机偏好（存在这台浏览器里；游戏进度是另一份档案）</h2>
+        <div id="settingsBody"></div>
+        <div class="btns">
+          <div class="btn" id="btnSettingsReset">恢复默认</div>
+          <div class="btn" id="btnSettingsClose">返回</div>
         </div>
-        <div class="row opt">
-          <span class="k">蹲下 <span class="keycap">C</span></span>
-          <span>
-            <span class="seg" data-group="crouchMode" data-value="hold">按住</span>
-            <span class="seg" data-group="crouchMode" data-value="toggle">切换</span>
-          </span>
-        </div>
-        <div class="row opt">
-          <span class="k">左右探头 <span class="keycap">Q</span> <span class="keycap">E</span></span>
-          <span class="muted">固定为按住（探头需即时回正）</span>
-        </div>
-
-        <p class="muted" style="margin-top:16px">
-          设置保存在本机浏览器，刷新后仍有效。篡改或旧版本写入的非法取值会被校验并回落默认值。<br />
-          按键自定义（改键）尚未实现 —— 属 M2 范围，届时必须拒绝 Ctrl / Alt / Meta 组合键：
-          这类组合由浏览器保留、页面无法拦截，绑定它会导致游戏内按键直接关闭页面。
-        </p>
-        <div class="btn" id="btnSettingsClose">返回</div>
+        <p class="muted" id="settingsToast" style="min-height:19px;margin-top:8px"></p>
       </div>
     </div>
 
@@ -261,7 +337,9 @@
         <h1 id="endTitle">结算</h1>
         <h2 id="endSubtitle"></h2>
         <div id="endBody"></div>
-        <div class="btn" id="btnRestart">再进一局</div>
+        <!-- M5-1：这里是**返回大厅**，不再是整页刷新。
+             刷新也能"回到大厅"，但会重建整个页面 —— 那样局外系统每局都要重建一次。 -->
+        <div class="btn" id="btnRestart">返回大厅</div>
       </div>
     </div>
 

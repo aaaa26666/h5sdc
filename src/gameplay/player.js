@@ -31,13 +31,44 @@ import {
 
 const DEG = Math.PI / 180;
 
-export function createPlayer(cfg, level) {
+/**
+ * @param {object} cfg 配置
+ * @param {object} level 关卡
+ * @param {object} [opts]
+ * @param {() => number} [opts.sensitivityScale] 鼠标灵敏度**倍率**（玩家偏好，1 = 配置基线）。
+ *        以函数形式注入而不是传数值：设置面板可以在局内被打开并改动，
+ *        传入快照会让"改了但本局不生效"变成一个说不清的行为。
+ *        倍率与基线的相乘**只发生在本文件的 sens() 一处** ——
+ *        视角归因统计与真正转视角必须用同一个值，否则两者的口径会分叉。
+ */
+export function createPlayer(cfg, level, opts = {}) {
   const P = cfg.player;
+  const sensScale = opts.sensitivityScale || (() => 1);
+  const sens = () => P.mouseSensitivity * sensScale();
   const spawn = level.cellToWorld(cfg.level.playerSpawnCell[0], cfg.level.playerSpawnCell[1]);
+  // ★ M5-3：进局的护甲与技能倍率来自 raidKit（缺省 = 配置表起始护甲 + 无加成，
+  //   纯逻辑单测走这条路径，有断言守着它与 kit 路径在默认配装下一致）。
+  const kit = opts.kit || null;
+
+  /**
+   * 移动速度倍率 = 配装超重档 × 技能（机动）。
+   *
+   * 两者相乘只发生在这里一处：**超重惩罚与技能加成都是"同一件事"**（走多快），
+   * 分散在别处相乘就会出现"技能加成被超重覆盖"这类说不清的行为。
+   */
+  const moveScale = (() => {
+    const skill = kit ? kit.modifiers.moveSpeedScale : 1;
+    const ow = kit ? kit.overweight.speedScale : 1;
+    return skill * ow;
+  })();
+  /** 超重到"禁止冲刺"的档位时，冲刺键不再生效（但走路仍在，玩家不会被卡住） */
+  const sprintAllowed = kit ? !kit.overweight.noSprint : true;
+  /** 医疗动作速度倍率（战地医疗技能） */
+  const healScale = kit ? kit.modifiers.healSpeedScale : 1;
 
   const vitals = createVitals({
     maxHealth: cfg.playerVitals.maxHealth,
-    armorBySlot: cfg.playerVitals.startArmor,
+    armorBySlot: kit ? kit.loadout.armor : cfg.playerVitals.startArmor,
     cfg,
   });
 
@@ -128,15 +159,15 @@ export function createPlayer(cfg, level) {
       if (leanSpeed > player.maxLeanSpeed) player.maxLeanSpeed = leanSpeed;
     }
     // 归因：本帧视角变化里，鼠标贡献多少、后坐力+探头贡献多少
-    const mouseRad = dmouse * P.mouseSensitivity;
+    const mouseRad = dmouse * sens();
     if (mouseRad > player.maxMouseRad) player.maxMouseRad = mouseRad;
     const residual = Math.max(0, Math.max(dyaw, dpitch) - mouseRad);
     if (residual > player.maxNonMouseJump) player.maxNonMouseJump = residual;
   }
 
   function applyLook(dx, dy) {
-    player.aimYaw -= dx * P.mouseSensitivity;
-    player.aimPitch -= dy * P.mouseSensitivity;
+    player.aimYaw -= dx * sens();
+    player.aimPitch -= dy * sens();
     const lim = P.pitchLimitDeg * DEG;
     player.aimPitch = Math.max(-lim, Math.min(lim, player.aimPitch));
     syncView();
@@ -271,8 +302,11 @@ export function createPlayer(cfg, level) {
     // 已达该消耗品能治到的上限时直接拒绝 —— 否则玩家会白白消耗一个绷带
     if (!canHealWith(vitals, itemDef)) return false;
     player.usingItem = itemDef;
-    player.useTotalMs = itemDef.useMs;
-    player.useEndAt = nowMs + itemDef.useMs;
+    // M5-5：战地医疗技能缩短动作耗时（healScale > 1 = 更快）。
+    // 进度条读的是 useTotalMs，因此它与真正结束的时刻必然一致。
+    const useMs = itemDef.useMs / healScale;
+    player.useTotalMs = useMs;
+    player.useEndAt = nowMs + useMs;
     return true;
   }
 
@@ -325,12 +359,15 @@ export function createPlayer(cfg, level) {
     if (m.dx || m.dy) applyLook(m.dx, m.dy);
 
     player.crouching = input.crouchActive();
-    player.sprinting = input.sprintActive() && !player.crouching;
-    const targetSpeed = player.crouching
+    // M5-3：超重到"禁止冲刺"档时冲刺键不再生效（走路仍在 —— 玩家不会被卡住）
+    player.sprinting = sprintAllowed && input.sprintActive() && !player.crouching;
+    // M5-5：技能移速与超重惩罚在 moveScale 里相乘（只此一处）
+    const baseSpeed = player.crouching
       ? P.crouchSpeed
       : player.sprinting
         ? P.sprintSpeed
         : P.walkSpeed;
+    const targetSpeed = baseSpeed * moveScale;
 
     // ---- 期望方向 ----
     let fx = 0;

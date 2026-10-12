@@ -33,6 +33,72 @@ import {
   stepUpTarget,
 } from '../src/core/movement.js';
 import { config, weaponById, ammoById, armorById } from '../src/config/index.js';
+// M5 局外系统的纯函数层。它们全部不依赖 DOM，因此能在 Node 里直接驱动。
+import {
+  PROFILE_VERSION,
+  createNewProfile,
+  migrateProfile,
+  sanitizeProfile,
+  parseProfile,
+  serializeProfile,
+  activeLoadout,
+  alreadyApplied,
+} from '../src/core/profile.js';
+import {
+  stashAdd,
+  stashSort,
+  stashGrid,
+  stashUsedSlots,
+  stashTotalOf,
+  stashBulkSell,
+  stashRemoveItem,
+} from '../src/core/stash.js';
+import { itemDef, itemIdOfEquipment, equipmentIdOfItem, equivalentIds } from '../src/core/items.js';
+import {
+  expForLevel,
+  totalExpToMax,
+  levelFromExp,
+  raidExp,
+  skillModifiers,
+  canLearn,
+  learnSkill,
+  applyExp,
+  spentPoints,
+  respec,
+  respecCost,
+} from '../src/core/progression.js';
+import {
+  loadoutWeight,
+  overweightBand,
+  loadoutRequirements,
+  availableForSlot,
+  ammoOnHand,
+  takeLoadout,
+  returnLoadout,
+  buildRaidKit,
+  updatePreset,
+  addPreset,
+  removePreset,
+  setActivePreset,
+} from '../src/core/loadout.js';
+import {
+  basePriceOf,
+  buyPriceOf,
+  sellPriceOf,
+  buy,
+  sell,
+  stockView,
+  inflationReport,
+  targetBand,
+} from '../src/core/shop.js';
+import {
+  questStates,
+  acceptQuest,
+  advanceQuests,
+  claimQuest,
+  questTrackerView,
+} from '../src/core/quests.js';
+import { applyRaidToProfile } from '../src/core/settlement.js';
 
 let pass = 0;
 const failures = [];
@@ -121,6 +187,13 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 // 2. 设置校验
 // ============================================================
 {
+  // ★ M5-1：期望的键集合**从配置表推导**，不再写死。
+  //   原先这里写的是 'crouchMode,sprintMode' —— 加一个设置项就要改测试，
+  //   而"改测试让它过"正是最该避免的动作。现在它守的是更强的一条：
+  //   校验结果必须与配置表的 schema **逐键一致**，且每个值都落在该键的枚举内。
+  const schema = config.settings.schema;
+  const expectedKeys = Object.keys(schema).filter((k) => !k.startsWith('_')).sort();
+
   const cases = [
     ['null', null], ['字符串', 'garbage'], ['数字', 42], ['数组', []],
     ['合法值', { sprintMode: 'toggle', crouchMode: 'hold' }],
@@ -128,20 +201,67 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     ['枚举胡写', { sprintMode: '飞行', crouchMode: 'x' }],
     ['类型错误', { sprintMode: 123, crouchMode: null }],
     ['夹带未知键', { sprintMode: 'toggle', evil: 'alert(1)' }],
+    ['灵敏度非法档位', { mouseSens: 'insane' }],
+    ['音量非法档位', { masterVolume: '11' }],
+    ['画质非法档位', { graphicsQuality: 'ultra' }],
+    // M5-8：键位是唯一非枚举的设置项（type=keymap），它的校验在 core/keybinds.js
+    ['键位覆盖', { bindings: { forward: ['KeyI'] } }],
+    ['键位含 Ctrl 组合（约束 C-19）', { bindings: { forward: ['ControlLeft'] } }],
+    ['键位非法结构', { bindings: ['KeyI'] }],
   ];
   for (const [name, raw] of cases) {
     const r = sanitizeSettings(raw);
-    const valid =
-      Object.keys(r).sort().join(',') === 'crouchMode,sprintMode' &&
-      ['hold', 'toggle'].includes(r.sprintMode) &&
-      ['hold', 'toggle'].includes(r.crouchMode);
-    check(`设置校验：${name} → 合法且无多余键`, valid, JSON.stringify(r));
+    const keysOk = Object.keys(r).sort().join(',') === expectedKeys.join(',');
+    const valuesOk = expectedKeys.every((k) => {
+      const spec = schema[k];
+      // keymap 项没有 values 枚举：它由 core/keybinds.js 校验，这里只要求结构是对象
+      if ((spec.type || 'enum') === 'keymap') {
+        return r[k] && typeof r[k] === 'object' && !Array.isArray(r[k]);
+      }
+      return spec.values.includes(r[k]);
+    });
+    check(`设置校验：${name} → 逐键合法且无多余键`, keysOk && valuesOk, JSON.stringify(r));
   }
-  const kept = sanitizeSettings({ sprintMode: 'toggle', crouchMode: 'toggle' });
-  check('设置校验：合法值必须保留', kept.sprintMode === 'toggle' && kept.crouchMode === 'toggle');
+  const kept = sanitizeSettings({ sprintMode: 'toggle', crouchMode: 'toggle', mouseSens: 'high', masterVolume: 'low' });
+  check('设置校验：合法值必须保留',
+    kept.sprintMode === 'toggle' && kept.crouchMode === 'toggle'
+    && kept.mouseSens === 'high' && kept.masterVolume === 'low',
+    JSON.stringify(kept));
   const polluted = sanitizeSettings(JSON.parse('{"__proto__":{"polluted":true},"sprintMode":"toggle"}'));
   check('设置校验：不污染 Object.prototype', ({}).polluted === undefined);
   void polluted;
+
+  // M5-1：档位 → 数值的换算只有一处（platform/settings.js），这里守它的输出。
+  {
+    const { mouseSensScale, volumeScale } = await import('../src/platform/settings.js');
+    const levels = config.settings.mouseSensLevels;
+    const vols = config.settings.volumeLevels;
+
+    for (const v of schema.mouseSens.values) {
+      check(`灵敏度档位 ${v} 能换成配置表里的倍率`,
+        mouseSensScale({ mouseSens: v }) === levels[v],
+        `${mouseSensScale({ mouseSens: v })} vs ${levels[v]}`);
+    }
+    for (const v of schema.masterVolume.values) {
+      check(`音量档位 ${v} 能换成配置表里的倍率`,
+        volumeScale({ masterVolume: v }) === vols[v],
+        `${volumeScale({ masterVolume: v })} vs ${vols[v]}`);
+    }
+    check('默认灵敏度 = 1（首次进入的手感与 M5-1 之前完全一致）',
+      mouseSensScale(DEFAULT_SETTINGS) === 1, `${mouseSensScale(DEFAULT_SETTINGS)}`);
+    check('默认音量 = 1（默认之下实际增益就等于配置基线 audio.masterGain）',
+      volumeScale(DEFAULT_SETTINGS) === 1 && config.audio.masterGain === 0.35,
+      `倍率 ${volumeScale(DEFAULT_SETTINGS)} × 基线 ${config.audio.masterGain}`);
+    check('静音档位把音量倍率打到 0（而不是"很小"）',
+      volumeScale({ masterVolume: 'off' }) === 0, `${volumeScale({ masterVolume: 'off' })}`);
+
+    // 配置表结构：每个 schema 档位都必须在倍率表里有对应值（否则玩家选了没反应）
+    const missingSens = schema.mouseSens.values.filter((v) => typeof levels[v] !== 'number');
+    const missingVol = schema.masterVolume.values.filter((v) => typeof vols[v] !== 'number');
+    check('倍率表覆盖全部档位（加档位忘了配倍率会在启动期就报错，这里再守一道）',
+      missingSens.length === 0 && missingVol.length === 0,
+      `缺 ${missingSens.join(',') || '无'} / ${missingVol.join(',') || '无'}`);
+  }
 }
 
 // ============================================================
@@ -2295,14 +2415,160 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     flowA.state === FLOW.ENDED && flowA.endReason === END_REASON.ABANDONED,
     `${flowA.state} / ${flowA.endReason}`);
 
-  // 状态机：ENDED 是终态，重复结束会被挡住（幂等的第二道防线）
+  // 状态机：ENDED 之后**只能回大厅**（M5-1 的闭环）。重复结束仍会被挡住。
   flowT.endRaid(END_REASON.TIMEOUT, LIMIT);
-  check('★ 流程进入 ENDED 后是终态（重复结算会被状态机挡住）',
+  check('★ 流程进入 ENDED 后重复结算被状态机挡住（幂等的第二道防线）',
     flowT.state === FLOW.ENDED && flowT.endReason === END_REASON.TIMEOUT);
+
+  // ---- M5-1：局外 / 局内两级状态机 ----
+  check('流程初始态是局外大厅（LOBBY），不再是"点击即开始"的 READY',
+    createFlow(config).state === FLOW.LOBBY, createFlow(config).state);
+
+  {
+    const f = createFlow(config);
+    check('局外时计时未开始（用时 0、剩余等于整局时限）',
+      f.timing(123456).elapsedMs === 0 && f.timing(123456).remainingMs === LIMIT,
+      `elapsed=${f.timing(123456).elapsedMs} remaining=${f.timing(123456).remainingMs}`);
+
+    // ★ 闭环：LOBBY → RAID → ENDED → LOBBY 必须全部合法
+    f.startRaid(0);
+    f.endRaid(END_REASON.EXTRACTED, 1000);
+    f.backToLobby(2000);
+    check('★ M5-1 闭环成立：LOBBY → RAID → ENDED → LOBBY 全程合法',
+      f.state === FLOW.LOBBY && f.transitions.length === 3,
+      f.transitions.map((t) => `${t.from}→${t.to}`).join(' '));
+
+    // 回大厅后还能再开一局（这才是"闭环"的意义，不只是能回去）
+    f.startRaid(3000);
+    check('★ 回大厅后可以再开一局（同一实例，不刷新页面）',
+      f.state === FLOW.RAID && f.transitions.length === 4);
+    check('重新开局后上一局的结束原因被清空（不会把上局结论带进新局）',
+      f.endReason === null, String(f.endReason));
+
+    // 结束原因在大厅里仍然可读（结算页/大厅都要显示"上局怎么结束的"）
+    f.endRaid(END_REASON.DEAD, 4000);
+    f.backToLobby(5000);
+    check('回到大厅后仍能读到上一局的结束原因', f.endReason === END_REASON.DEAD, String(f.endReason));
+  }
+
+  // 非法迁移必须被挡住 —— 这两条是"闭环"最容易被人图省事绕开的地方
+  {
+    const g = createFlow(config);
+    let e1 = null;
+    try { g.backToLobby(1); } catch (err) { e1 = err; }
+    check('★ 局外直接回大厅被挡住（非法迁移，不是静默容忍）', !!e1, e1 && e1.message);
+
+    g.startRaid(0);
+    let e2 = null;
+    try { g.backToLobby(1); } catch (err) { e2 = err; }
+    check('★ 局内直接回大厅被挡住（跳过结算 = 丢掉整局结论，必须非法）',
+      !!e2, e2 && e2.message);
+
+    g.endRaid(END_REASON.TIMEOUT, 2);
+    let e3 = null;
+    try { g.startRaid(3); } catch (err) { e3 = err; }
+    check('★ 结算页直接开新局被挡住（必须先回大厅，保证局外状态有机会刷新）',
+      !!e3, e3 && e3.message);
+  }
 
   // M4-5 裁定：超时不给宽限 —— 结束原因只能是 timeout，不会因为正在撤离而变成 extracted
   check('[裁定] 超时的结束原因就是 timeout（不因"正在撤离"而改写）',
     flowT.endReason === END_REASON.TIMEOUT);
+}
+
+// ============ M5-1 主大厅：战区简报（纯函数）============
+//
+// 简报是大厅上**每一个数字**的来源。《流程文档》10.1 要求"所有 UI 数值必须来自配置表"，
+// 所以这里逐项核对简报字段与配置表的对应关系 —— 界面代码里因此只剩排版。
+{
+  const { buildRaidBriefing } = await import('../src/core/briefing.js');
+  const { describeOpenRule } = await import('../src/core/extractRules.js');
+  const b = buildRaidBriefing(config);
+
+  check('简报：地图标识与名称来自当前生效的地图表',
+    b.map.id === config.map.id && b.map.label === config.map.label,
+    `${b.map.id} / ${b.map.label}`);
+  check('地图表 id 不在简报里被硬编码（换地图不用改代码）',
+    b.map.id !== 'tv_station_01' || config.level.activeMap === 'tv_station_01',
+    `activeMap=${config.level.activeMap}`);
+
+  check('简报：单局时限与告警阈值来自配置表',
+    b.raid.timeLimitMs === config.raid.timeLimitMs
+    && b.raid.warnThresholdMs === config.raid.warningThresholdMs,
+    `${b.raid.timeLimitMs} / ${b.raid.warnThresholdMs}`);
+
+  check('简报：撤离点数量与"常驻/条件"划分与地图表一致',
+    b.extracts.total === config.extract.zones.length
+    && b.extracts.always === config.extract.zones.filter((z) => !z.conditional).length
+    && b.extracts.conditional === config.extract.zones.filter((z) => z.conditional).length,
+    `共 ${b.extracts.total}（常驻 ${b.extracts.always} / 条件 ${b.extracts.conditional}）`);
+
+  check('简报：每个撤离点都有可读的开放规则文案（不能出现空串或 undefined）',
+    b.extracts.list.every((z) => typeof z.rule === 'string' && z.rule.length > 0 && !z.rule.includes('undefined')),
+    b.extracts.list.map((z) => z.rule).join(' | '));
+
+  check('简报：敌方总数 = 地图表各分区配额之和（不是另算一份）',
+    b.enemies.total === (config.map.aiSpawns || []).reduce((a, s) => a + s.count, 0),
+    `${b.enemies.total}`);
+
+  check('简报：起始装备与当前配装一致（新账号按制作人裁定**没有长枪** → 简报显示"无"）',
+    (config.startLoadout.primary === null
+      ? b.loadout.primary === null
+      : b.loadout.primary.id === config.startLoadout.primary)
+    && b.loadout.secondary.id === config.startLoadout.secondary,
+    JSON.stringify({ p: b.loadout.primary, s: b.loadout.secondary && b.loadout.secondary.id }));
+
+  check('★ M5-3 简报接受 raidKit：传入配装时显示的是**玩家配装**（不再写死起始配装）', (() => {
+    const fake = {
+      loadout: {
+        primary: 'rifle_m4',
+        secondary: 'pistol_p9',
+        armor: { body: 'vest3', head: 'helmet3' },
+        ammo: { '5.56': 120 },
+        consumables: { bandage: 1 },
+        safeTierId: config.lootTable.safeContainer.tiers[1].id,
+      },
+    };
+    const b2 = buildRaidBriefing(config, fake);
+    return b2.loadout.primary.id === 'rifle_m4'
+      && b2.loadout.armor.id === 'vest3'
+      && b2.loadout.reserve.length === 1
+      && b2.loadout.reserve[0].rounds === 120
+      && b2.pack.safe.id === config.lootTable.safeContainer.tiers[1].id;
+  })());
+
+  check('简报：备弹逐口径与 startLoadout 一致',
+    b.loadout.reserve.length === Object.keys(config.startLoadout.reserveByAmmo).length
+    && b.loadout.reserve.every((r) => r.rounds === config.startLoadout.reserveByAmmo[r.id]),
+    b.loadout.reserve.map((r) => `${r.id}×${r.rounds}`).join(' '));
+
+  check('简报：背包容量与负重上限取自掉落表（与 inventory 读的是同一个字段）',
+    b.pack.backpack.w === config.lootTable.backpack.w
+    && b.pack.backpack.h === config.lootTable.backpack.h
+    && b.pack.backpack.weightLimitKg === config.lootTable.backpack.weightLimitKg,
+    `${b.pack.backpack.w}×${b.pack.backpack.h} / ${b.pack.backpack.weightLimitKg}kg`);
+
+  check('简报：安全箱档位取自掉落表首档（新账号档）',
+    b.pack.safe.id === config.lootTable.safeContainer.tiers[0].id,
+    b.pack.safe.id);
+
+  // 开放规则文案里的数字必须来自规则本身，而不是写死在文案里
+  // （写死的症状：策划把"局内过半"改成"局内 60%"，大厅还写着 50%）
+  {
+    const fake = { type: 'timeAfter', afterFraction: 0.25 };
+    check('开放规则文案会跟着规则里的数值走（不是写死的"50%"）',
+      describeOpenRule(fake).includes('25%') && !describeOpenRule(fake).includes('50%'),
+      describeOpenRule(fake));
+    const kills = { type: 'killsAfter', kills: 7 };
+    check('击杀类条件点文案会跟着门槛走',
+      describeOpenRule(kills).includes('7'), describeOpenRule(kills));
+    check('常驻点文案固定为"常驻开放"（不显示多余条件）',
+      describeOpenRule({ type: 'always' }) === '常驻开放' && describeOpenRule(null) === '常驻开放',
+      describeOpenRule({ type: 'always' }));
+    check('未知规则类型显式暴露，不伪装成常驻',
+      describeOpenRule({ type: 'teleportGate' }).includes('未知'),
+      describeOpenRule({ type: 'teleportGate' }));
+  }
 }
 
 // ============ M4-6 局内 HUD 完整化 ============
@@ -2402,6 +2668,901 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 
   check('快照写入间隔来自配置表（定期兑底用）',
     config.raid.checkpointIntervalMs > 0, `${config.raid.checkpointIntervalMs}ms`);
+}
+
+// ============================================================
+// M5-7 存档：版本 / 迁移 / 异常三态 / 幂等
+// ============================================================
+{
+  const now = 1_700_000_000_000;
+  const p0 = createNewProfile(config, now, { profileId: 'p-test-1' });
+  const maxLevelOf = (id) => config.progression.skills.find((s) => s.id === id).maxLevel;
+  const needOf = (qid, oid) =>
+    config.quests.quests.find((q) => q.id === qid).objectives.find((o) => o.id === oid).need;
+
+  check('M5-7 新档案：版本等于当前版本', p0.version === PROFILE_VERSION, `v${p0.version} / v${PROFILE_VERSION}`);
+  check('M5-7 新档案：货币来自经济表（不是代码里的数字）',
+    p0.currency === config.economy.starterCurrency, `${p0.currency}`);
+  check('★ M5-7 档案里**不存** level 字段（等级是 exp 的函数，存一份就是两份真值）',
+    p0.progression.level === undefined && levelFromExp(p0.progression.exp, config).level === 1);
+  check('M5-7 新档案：仓库为空、有一套预设、无任务进度',
+    p0.stash.length === 0 && p0.loadouts.length === 1 && p0.quests.active.length === 0);
+
+  const lo0 = activeLoadout(p0);
+  check('★ M5-3 新账号配装 = equipment.starterLoadout（配装只有一份真值）',
+    lo0.primary === config.equipment.starterLoadout.primary
+      && lo0.secondary === config.equipment.starterLoadout.secondary
+      && lo0.body === config.equipment.starterLoadout.body
+      && lo0.head === config.equipment.starterLoadout.head
+      && JSON.stringify(lo0.ammo) === JSON.stringify(config.equipment.starterLoadout.ammo),
+    JSON.stringify(lo0));
+  check('★ M5-3 起始配装按制作人裁定：**没有长枪**、弹药只有 9mm 60 发',
+    config.startLoadout.primary === null
+      && config.startLoadout.secondary === 'pistol_p9'
+      && JSON.stringify(config.startLoadout.reserveByAmmo) === JSON.stringify({ '9mm': 60 }),
+    JSON.stringify(config.startLoadout));
+  check('★ M5-3 起始护甲 / 消耗品与 M2 的旧值一致',
+    config.playerVitals.startArmor.body === 'vest2' && config.playerVitals.startArmor.head === 'helmet2'
+      && config.playerVitals.startConsumables.bandage === 3 && config.playerVitals.startConsumables.medkit === 2);
+
+  // ---- 序列化往返 ----
+  const text = serializeProfile(p0, config);
+  const back = parseProfile(text, config, now);
+  check('M5-7 序列化 → 解析往返后逐字段一致（含仓库坐标）',
+    JSON.stringify(back.profile) === JSON.stringify(p0),
+    `${text.length} 字节`);
+
+  // ---- 迁移 v0 → v1 ----
+  const v0 = {
+    currency: 4321,
+    stash: [{ itemId: 'bandage', count: 2, x: 0, y: 0, rotated: false }],
+    stats: { raids: 7 },
+  };
+  const mig = migrateProfile(v0, config, now);
+  check('M5-7 v0 → v1 迁移被执行且记录了步骤',
+    !mig.quarantined && mig.fromVersion === 0 && mig.applied.includes('v0->v1'),
+    JSON.stringify(mig.applied));
+  check('M5-7 迁移结果带上当前版本号（否则下次加载会再迁一遍）',
+    mig.profile.version === PROFILE_VERSION);
+  const s0 = sanitizeProfile(mig.profile, config, now);
+  check('★ M5-7 迁移把 v0 的货币与仓库原样带过来',
+    s0.profile.currency === 4321 && stashTotalOf(s0.profile.stash, 'bandage', config) === 2,
+    `currency=${s0.profile.currency} bandage=${stashTotalOf(s0.profile.stash, 'bandage', config)}`);
+  check('M5-7 迁移补出了 v1 才有的字段（预设 / 任务 / 经济样本）',
+    s0.profile.loadouts.length === 1 && Array.isArray(s0.profile.quests.active)
+      && Array.isArray(s0.profile.economy.samples));
+  check('M5-7 迁移保留 v0 的统计', s0.profile.stats.raids === 7);
+
+  // ---- 异常三态 ----
+  const future = { ...p0, version: PROFILE_VERSION + 5 };
+  const rev = migrateProfile(future, config, now);
+  check('★ M5-7 版本回退（存档版本高于代码）：拒绝解释并隔离，不崩',
+    rev.quarantined && rev.reason.startsWith('version-ahead'), rev.reason);
+  check('M5-7 版本回退时给出的是一份可玩的新档案',
+    rev.profile.version === PROFILE_VERSION && rev.profile.loadouts.length === 1);
+  const bad = parseProfile('{"version":1,"stash":[', config, now);
+  check('★ M5-7 存档损坏（坏 JSON）：不崩、给出新档案、标记隔离',
+    bad.repairs.includes('bad-json') && bad.mig.quarantined
+      && bad.profile.currency === config.economy.starterCurrency);
+  check('M5-7 存档被清空：等价于新档，且记账',
+    parseProfile(null, config, now).repairs.includes('empty'));
+  check('★ M5-7 未来版本的 JSON 文本走同一条隔离路径',
+    parseProfile(JSON.stringify(future), config, now).mig.quarantined);
+
+  // ---- 逐字段收敛 ----
+  const dirty = {
+    version: PROFILE_VERSION,
+    currency: -50,
+    progression: { exp: 5000, level: 99, skillPoints: 999, skills: { pack_mule: 9, nope: 2 } },
+    stash: [
+      { uid: 1, itemId: 'bandage', count: 99, x: 0, y: 0, rotated: false },
+      { uid: 2, itemId: 'not_an_item', count: 1, x: 1, y: 1 },
+      { uid: 3, itemId: 'gold_bar', count: -3, x: 2, y: 2 },
+    ],
+    loadouts: [
+      {
+        id: 'a', name: 'A', primary: 'pistol_p9', secondary: 'rifle_m4',
+        body: 'helmet2', head: 'vest2',
+        ammo: { '9mm': 9999, bogus: 5 }, consumables: { bandage: 999, nope: 1 },
+      },
+      { id: 'a', name: 'dup', primary: null, secondary: null },
+    ],
+    activeLoadoutId: 'nope',
+    quests: {
+      active: ['q1_first_extract', 'no_such_quest'],
+      progress: { q1_first_extract: { o1: 99 }, ghost: { o1: 1 } },
+      completed: ['q2_scavenge'],
+      claimed: 'x',
+    },
+    stats: { raids: -1, kills: 'x' },
+    economy: {
+      samples: [
+        { raidId: 'r1', atMs: 0, outcome: 'weird', income: 100, spent: 0 },
+        null,
+        { raidId: 42 },
+      ],
+    },
+    lastRaidId: 5,
+  };
+  const sd = sanitizeProfile(dirty, config, now);
+  const sp = sd.profile;
+  check('★ M5-7 收敛：负数货币回落到起始货币', sp.currency === config.economy.starterCurrency, `${sp.currency}`);
+  check('★ M5-7 收敛：未知技能被丢弃、超出上限的等级被截断、level 字段被丢弃',
+    sp.progression.skills.nope === undefined
+      && sp.progression.skills.pack_mule === maxLevelOf('pack_mule')
+      && sd.repairs.includes('dropped-level-field'));
+  check('★ M5-7 收敛：技能点不得超过"应得 − 已花"',
+    sp.progression.skillPoints
+      <= (levelFromExp(sp.progression.exp, config).level - 1) * config.progression.skillPointsPerLevel,
+    `${sp.progression.skillPoints}`);
+  check('★ M5-7 收敛：超量堆叠被**拆开**而不是截断（总量守恒，不许偷偷少东西）',
+    stashTotalOf(sp.stash, 'bandage', config) === 99,
+    `${stashTotalOf(sp.stash, 'bandage', config)}`);
+  check('★ M5-7 收敛：未知物品与非法数量被丢弃',
+    stashTotalOf(sp.stash, 'not_an_item', config) === 0
+      && stashTotalOf(sp.stash, 'gold_bar', config) === 0);
+  check('★ M5-7 收敛：仓库条目互不重叠且都在界内', (() => {
+    const g = stashGrid(sp.stash, config);
+    let cells = 0;
+    for (const row of g.occupied) for (const c of row) if (c) cells++;
+    return cells === stashUsedSlots(sp.stash, config);
+  })());
+  check('★ M5-7 收敛：槽位错配的装备被清空（手枪进不了主武器槽、头盔进不了护甲槽）',
+    sp.loadouts[0].primary === null && sp.loadouts[0].secondary === null
+      && sp.loadouts[0].body === null && sp.loadouts[0].head === null,
+    JSON.stringify(sp.loadouts[0]));
+  check('★ M5-7 收敛：弹药**不设数量上限**（制作人裁定），但未知口径仍要丢弃',
+    sp.loadouts[0].ammo['9mm'] === 9999 && sp.loadouts[0].ammo.bogus === undefined,
+    JSON.stringify(sp.loadouts[0].ammo));
+  check('★ M5-7 收敛：消耗品同样不设上限，未知道具丢弃',
+    sp.loadouts[0].consumables.bandage === 999 && sp.loadouts[0].consumables.nope === undefined);
+  check('★ M5-7 收敛：重复的预设 id 只保留第一个',
+    sp.loadouts.length === 1 && sp.loadouts[0].name === 'A');
+  check('★ M5-7 收敛：activeLoadoutId 非法时回落到第一个预设',
+    sp.activeLoadoutId === sp.loadouts[0].id);
+  check('★ M5-7 收敛：未知任务被丢弃、进度按 need 截断',
+    sp.quests.active.length === 1
+      && sp.quests.progress.q1_first_extract.o1 === needOf('q1_first_extract', 'o1')
+      && sp.quests.progress.ghost === undefined);
+  check('★ M5-7 收敛：claimed 不是数组时按空处理（玩家不会因此进不去游戏）',
+    Array.isArray(sp.quests.claimed) && sp.quests.claimed.length === 0);
+  check('★ M5-7 收敛：非法统计字段回落 0', sp.stats.raids === 0 && sp.stats.kills === 0);
+  check('★ M5-7 收敛：经济样本只保留合法行并按 outcome 归一',
+    sp.economy.samples.length === 1 && sp.economy.samples[0].outcome === 'death',
+    JSON.stringify(sp.economy.samples));
+  check('★ M5-7 收敛：lastRaidId 非字符串时置 null', sp.lastRaidId === null);
+  check('M5-7 收敛：repairs 非空 —— 修复必须可观测（否则"坏了但看起来正常"永远不被发现）',
+    sd.repairs.length > 0, `${sd.repairs.length} 项`);
+
+  // ---- 幂等键 ----
+  check('★ M5-7 幂等键：同一局第二次提交会被识别出来',
+    !alreadyApplied(p0, 'r-1')
+      && alreadyApplied({ ...p0, lastRaidId: 'r-1' }, 'r-1')
+      && alreadyApplied({ ...p0, economy: { samples: [{ raidId: 'r-9' }] } }, 'r-9')
+      && !alreadyApplied(p0, null));
+
+  // ---- 体积控制 ----
+  const fat = createNewProfile(config, now, { profileId: 'p-fat' });
+  fat.economy.samples = Array.from({ length: 5000 }, (_, i) => ({
+    raidId: `r${i}`, atMs: i, outcome: 'extract', income: 1234, spent: 12,
+  }));
+  const fatText = serializeProfile(fat, config);
+  check('★ M5-7 体积控制：超限时先牺牲诊断与统计，而不是丢游戏进度',
+    fatText !== null && fatText.length <= config.economy.stash.limits.maxBytes
+      && fatText.length < JSON.stringify(fat).length,
+    `${fatText ? fatText.length : 'null'} / ${config.economy.stash.limits.maxBytes}`);
+}
+
+// ============================================================
+// M5-5 等级 / 经验 / 技能
+// ============================================================
+{
+  const now = 1_700_000_000_000;
+  check('M5-5 恰好等于阈值时升级（不差一级）',
+    levelFromExp(expForLevel(1, config) - 1, config).level === 1
+      && levelFromExp(expForLevel(1, config), config).level === 2);
+  const maxInfo = levelFromExp(totalExpToMax(config), config);
+  check('M5-5 满级总经验处恰好到 maxLevel 且标记 isMax',
+    maxInfo.level === config.progression.levelCurve.maxLevel && maxInfo.isMax);
+  check('M5-5 满级总经验量级合理（不是一条"玩不到"的曲线）',
+    totalExpToMax(config) > 20000 && totalExpToMax(config) < 200000, `${totalExpToMax(config)}`);
+  check('M5-5 撤离经验 = 固定项 + 变量项（逐项可复算）', (() => {
+    const r = config.progression.expRules;
+    const got = raidExp({ outcome: 'extract', kills: 3, containersOpened: 12, keptValue: 8000 }, config);
+    const want = r.extractBase + r.perContainer * 12 + r.perKill * 3 + r.perValuePer1000 * 8;
+    return got === want;
+  })(), `${raidExp({ outcome: 'extract', kills: 3, containersOpened: 12, keptValue: 8000 }, config)}`);
+  check('M5-5 失败局经验显著低于撤离局',
+    raidExp({ outcome: 'death', kills: 3, containersOpened: 12, keptValue: 0 }, config)
+      < raidExp({ outcome: 'extract', kills: 3, containersOpened: 12, keptValue: 8000 }, config) / 3);
+  check('M5-5 升级按 skillPointsPerLevel 发技能点', (() => {
+    // 用**各级阈值之和**喂经验，而不是"首级 × 3"—— 后者会因曲线递增而少升一级，
+    // 那正是这条断言第一版写错的地方（它测的其实是曲线形状，不是发点逻辑）。
+    const need3 = expForLevel(1, config) + expForLevel(2, config) + expForLevel(3, config);
+    const r = applyExp(createNewProfile(config, now, { profileId: 'p-exp' }), need3, config);
+    return r.after.level === 4 && r.profile.progression.skillPoints === 3 * config.progression.skillPointsPerLevel;
+  })());
+
+  const fresh = createNewProfile(config, now, { profileId: 'p-fresh' });
+  check('★ M5-5 没点技能时倍率等于配置基线（与 M5 之前逐字段一致）',
+    skillModifiers(fresh, config).weightLimitKg === config.lootTable.backpack.weightLimitKg,
+    `${skillModifiers(fresh, config).weightLimitKg}`);
+  check('M5-5 点数 / 等级 / 前置不足都会给出可读原因', (() => {
+    const poor = { ...fresh, progression: { ...fresh.progression, exp: 0, skillPoints: 0 } };
+    const a = canLearn(poor, 'pack_mule', config);
+    const b = canLearn(poor, 'marksman', config);
+    const c = canLearn(poor, 'no_such_skill', config);
+    return !a.ok && a.reason.startsWith('need-points') && !b.ok && !c.ok
+      && c.reason === 'unknown-skill';
+  })());
+  check('M5-5 学技能返回**新档案**，不修改入参', (() => {
+    const rich = { ...fresh, progression: { exp: expForLevel(1, config) * 2, skillPoints: 5, skills: {} } };
+    const before = JSON.stringify(rich.progression.skills);
+    const r = learnSkill(rich, 'pack_mule', config);
+    return r.ok && JSON.stringify(rich.progression.skills) === before
+      && r.profile.progression.skills.pack_mule === 1;
+  })());
+  check('★ M5-5 负重技能真的抬高负重上限（每级 = 表里的 perLevel）', (() => {
+    const rich = { ...fresh, progression: { exp: 0, skillPoints: 9, skills: { pack_mule: 3 } } };
+    const m = skillModifiers(rich, config);
+    const sk = config.progression.skills.find((s) => s.id === 'pack_mule');
+    return m.weightLimitKg === config.lootTable.backpack.weightLimitKg + sk.effects[0].perLevel * 3;
+  })());
+  check('M5-5 已花点数按 costPerLevel 逐级累加（不是 maxLevel × 单价）', (() => {
+    const p = { progression: { skills: { pack_mule: 2 } } };
+    const sk = config.progression.skills.find((s) => s.id === 'pack_mule');
+    return spentPoints(p, config) === sk.costPerLevel[0] + sk.costPerLevel[1];
+  })());
+  check('★ M5-5 每个效果类型都有真实消费点（CONSUMED_MODIFIERS 白名单）',
+    Object.keys(config.progression.effectKinds).every((k) => !!config.progression.effectKinds[k]));
+
+  // ---- 洗点（制作人裁定：要做，且要花货币）----
+  check('★ M5-5 洗点：已花点数全额退还、按每点单价扣货币', (() => {
+    const rich = {
+      ...fresh,
+      currency: 100000,
+      progression: { exp: 0, skillPoints: 0, skills: { pack_mule: 2, steady: 1 } },
+    };
+    const before = spentPoints(rich, config);
+    const want = before * config.progression.respec.costPerPoint;
+    const r = respec(rich, config);
+    return r.ok && r.cost === want && r.cost === respecCost(rich, config)
+      && r.profile.currency === 100000 - want
+      && Object.keys(r.profile.progression.skills).length === 0
+      && r.profile.progression.skillPoints === before;
+  })());
+  check('★ M5-5 洗点：货币不足时拒绝，且不给出半成品档案', (() => {
+    const poor = {
+      ...fresh,
+      currency: 10,
+      progression: { exp: 0, skillPoints: 0, skills: { pack_mule: 2 } },
+    };
+    const r = respec(poor, config);
+    return !r.ok && r.reason.startsWith('need-currency') && r.profile === undefined;
+  })());
+  check('M5-5 没点技能时洗点是空操作（幂等，界面应置灰而不是报错）', (() => {
+    const r = respec(fresh, config);
+    return !r.ok && r.reason === 'nothing-to-respec' && r.cost === 0;
+  })());
+  check('★ M5-5 canLearn 仍支持**可选**的等级 / 前置门槛（当前表里没有，M6 恢复树形结构时用）', (() => {
+    const cfg2 = {
+      ...config,
+      progression: {
+        ...config.progression,
+        skills: [
+          ...config.progression.skills,
+          {
+            id: 'gated', label: '带门槛', branch: 'strength', tier: 2, maxLevel: 1,
+            costPerLevel: [1], minLevel: 5, requires: ['pack_mule'],
+            effects: [{ kind: 'weightLimitKg', perLevel: 1 }],
+          },
+          {
+            id: 'req_only', label: '只有前置', branch: 'strength', tier: 2, maxLevel: 1,
+            costPerLevel: [1], requires: ['pack_mule'],
+            effects: [{ kind: 'weightLimitKg', perLevel: 1 }],
+          },
+        ],
+      },
+    };
+    const lv5 = expForLevel(1, config) + expForLevel(2, config) + expForLevel(3, config) + expForLevel(4, config);
+    const base = { ...fresh, currency: 0 };
+    const lowLevel = canLearn({ ...base, progression: { exp: 0, skillPoints: 3, skills: {} } }, 'gated', cfg2);
+    const noPre = canLearn(
+      { ...base, progression: { exp: lv5, skillPoints: 3, skills: {} } }, 'gated', cfg2);
+    const allOk = canLearn(
+      { ...base, progression: { exp: lv5, skillPoints: 3, skills: { pack_mule: 1 } } }, 'gated', cfg2);
+    const reqOnly = canLearn({ ...base, progression: { exp: 0, skillPoints: 3, skills: {} } }, 'req_only', cfg2);
+    return lowLevel.reason === 'need-level:5' && noPre.reason === 'need-skill:pack_mule'
+      && allOk.ok && reqOnly.reason === 'need-skill:pack_mule';
+  })());
+  check('★ M5-5 当前表里 7 个技能都**没有**等级门槛与前置（制作人裁定取消树形门槛）',
+    config.progression.skills.every((s) => s.minLevel === undefined && s.requires === undefined));
+}
+
+// ============================================================
+// M5-2 仓库 / M5-3 物品视图
+// ============================================================
+{
+  // 用绷带（stack=4）验证堆叠：弹药的 stack 已被制作人裁定为 60，用 10 发看不出拆分
+  const a1 = stashAdd([], 'bandage', 3, config);
+  check('M5-2 放入物品：空仓库开出第一条', a1.stash.length === 1 && a1.added === 3 && a1.leftover === 0);
+  const a2 = stashAdd(a1.stash, 'bandage', 1, config);
+  check('★ M5-2 堆叠合并：先填已有堆叠而不是新开一格',
+    a2.stash.filter((e) => e.itemId === 'bandage').length === 1 && a2.stash[0].count === 4);
+  const a3 = stashAdd(a1.stash, 'bandage', 7, config);
+  check('★ M5-2 超过堆叠上限时拆分（总量守恒、一条不多也一条不少）',
+    stashTotalOf(a3.stash, 'bandage', config) === 10 && a3.stash.length === 3,
+    JSON.stringify(a3.stash.map((e) => e.count)));
+  check('★ M5-2 弹药每格 60 发（制作人裁定）：120 发占 2 格', (() => {
+    const r = stashAdd([], 'ammo_556', 120, config);
+    return r.stash.length === 2 && r.stash.every((e) => e.count === 60) && r.leftover === 0;
+  })());
+
+  const cap = config.economy.stash.w * config.economy.stash.h;
+  let full = [];
+  for (let i = 0; i < cap + 10; i++) {
+    const r = stashAdd(full, 'gold_bar', 2, config);
+    full = r.stash;
+    if (r.leftover > 0) break;
+  }
+  check('★ M5-2 仓库放满时返回 leftover（**不许静默丢弃**玩家的东西）',
+    full.length === cap && stashAdd(full, 'gold_bar', 2, config).leftover === 2,
+    `${full.length} 条 / ${cap} 格`);
+
+  const key = (list) => list.map((e) => `${e.itemId}x${e.count}`).sort().join(',');
+  let mixed = stashAdd([], 'gold_bar', 2, config).stash;
+  mixed = stashAdd(mixed, 'bandage', 3, config).stash;
+  mixed = stashAdd(mixed, 'medkit', 2, config).stash;
+  mixed = stashAdd(mixed, 'vest3', 1, config).stash;
+  const beforeKey = key(mixed);
+  const byValue = stashSort(mixed, 'value', config);
+  const byName = stashSort(mixed, 'name', config);
+  const byRarity = stashSort(mixed, 'rarity', config);
+  check('★ M5-2 排序只改坐标、不改内容（三种模式各自的多重集合都相等）',
+    key(byValue.stash) === beforeKey && key(byName.stash) === beforeKey && key(byRarity.stash) === beforeKey,
+    beforeKey);
+  check('M5-2 排序后仍互不重叠且在界内', (() => {
+    const g = stashGrid(byValue.stash, config);
+    let cells = 0;
+    for (const row of g.occupied) for (const c of row) if (c) cells++;
+    return cells === stashUsedSlots(byValue.stash, config);
+  })());
+  check('M5-2 排序模式来自配置表（未知模式直接报错而不是静默不排）', (() => {
+    try {
+      stashSort(mixed, 'no_such_mode', config);
+      return false;
+    } catch {
+      return true;
+    }
+  })());
+
+  const priceOf = (itemId, count) => itemDef(itemId, config).value * count;
+  const sellUids = mixed.filter((e) => e.itemId === 'bandage').map((e) => e.uid);
+  const sold = stashBulkSell(mixed, sellUids, config, priceOf);
+  check('★ M5-2 批量出售：金额 = 逐件卖价之和（价格由注入的函数提供，仓库不自己算第二份价）',
+    sold.currency === priceOf('bandage', 3)
+      && stashTotalOf(sold.stash, 'bandage', config) === 0
+      && stashTotalOf(sold.stash, 'gold_bar', config) === 2,
+    `${sold.currency}`);
+  const takeRes = stashRemoveItem(mixed, 'bandage', 2, config);
+  check('★ M5-2 按物品扣减：命中数量正确、其余条目不动',
+    takeRes.removed === 2 && stashTotalOf(takeRes.stash, 'bandage', config) === 1
+      && stashTotalOf(takeRes.stash, 'medkit', config) === 2);
+
+  check('★ M5-3 装备 ↔ 物品的 id 映射（SR-25 在掉落表里叫 rifle_sr25）',
+    itemIdOfEquipment('dmr_sr25', config) === 'rifle_sr25'
+      && equipmentIdOfItem('rifle_sr25', config) === 'dmr_sr25'
+      && equivalentIds('dmr_sr25', config).has('rifle_sr25'));
+  check('★ M5-3 装备的物品形态与掉落表条目数值一致（启动期已交叉校验，这里复核一次）',
+    itemDef('rifle_sr25', config).weightKg === config.equipmentDefs.dmr_sr25.weightKg
+      && itemDef('rifle_sr25', config).value === config.equipmentDefs.dmr_sr25.value);
+  check('★ M5-3 每件装备都能在仓库里放下（形状校验）',
+    Object.values(config.equipmentDefs).every((e) => e.w <= config.economy.stash.w && e.h <= config.economy.stash.h));
+  check('★ M5-4 价差表覆盖了物品表里的每一个类别（缺一类的表现是"这类东西卖不掉"）', (() => {
+    const cats = new Set(Object.values(config.itemDefs).map((d) => d.category));
+    return [...cats].every((c) => typeof config.economy.priceRules.sellRatio[c] === 'number');
+  })());
+  check('★ M5-4 所有可买类别的卖价都低于买价（否则买入再卖出可以无限刷钱）',
+    Object.entries(config.economy.priceRules.buySpread).every(([c, s]) =>
+      config.economy.priceRules.sellRatio[c] < s));
+}
+
+// ============================================================
+// M5-3 配装 / M5-4 商店
+// ============================================================
+{
+  const now = 1_700_000_000_000;
+  /** 按清单往仓库塞东西（新账号仓库为空是制作人裁定，所以测试要自己造库存）。 */
+  const stock = (profile, list) => {
+    let out = profile;
+    for (const [id, n] of list) {
+      const r = stashAdd(out.stash, id, n, config);
+      out = { ...out, stash: r.stash };
+    }
+    return out;
+  };
+  const STARTER_ITEMS = [
+    ['pistol_p9', 1], ['vest2', 1], ['helmet2', 1],
+    ['pistol_mag', 60], ['bandage', 3], ['medkit', 2],
+  ];
+
+  let p = stock(createNewProfile(config, now, { profileId: 'p-loadout' }), STARTER_ITEMS);
+  const lo = activeLoadout(p);
+
+  const wantKg =
+    config.equipmentDefs.pistol_p9.weightKg
+    + config.equipmentDefs.vest2.weightKg
+    + config.equipmentDefs.helmet2.weightKg
+    + 60 * config.ammo.find((a) => a.id === '9mm').weightPerRoundKg
+    + 3 * itemDef('bandage', config).weightKg
+    + 2 * itemDef('medkit', config).weightKg;
+  check('★ M5-3 配装负重 = 装备 + 弹药 + 消耗品（逐项可复算）',
+    Math.abs(loadoutWeight(lo, config) - wantKg) < 1e-9,
+    `${loadoutWeight(lo, config).toFixed(3)} vs ${wantKg.toFixed(3)}`);
+  check('M5-3 起始配装落在"正常"档（<20kg）',
+    overweightBand(lo, config).band.id === 'normal', `${loadoutWeight(lo, config).toFixed(2)}kg`);
+  check('★ M5-3 弹药单发重量只有一处来源（掉落表重量 ÷ 每格发数）',
+    Math.abs(
+      config.ammo.find((a) => a.id === '9mm').weightPerRoundKg
+        - itemDef('pistol_mag', config).weightKg / itemDef('pistol_mag', config).stack
+    ) < 1e-12);
+  check('★ M5-3 每格弹药上限来自掉落表 stack（制作人裁定 60 发/格）',
+    config.ammo.every((a) => itemDef(a.itemId, config).stack === 60),
+    config.ammo.map((a) => `${a.id}:${itemDef(a.itemId, config).stack}`).join(' '));
+
+  // ---- 超重三档 ----
+  const severe = { ...lo, ammo: { '9mm': 6000 } };
+  check('★ M5-3 >40kg = 严重超重（×0.4 + 禁冲刺）',
+    overweightBand(severe, config).band.id === 'severe'
+      && overweightBand(severe, config).band.speedScale === 0.4
+      && overweightBand(severe, config).band.noSprint === true,
+    `${loadoutWeight(severe, config).toFixed(1)}kg`);
+  const lightOw = { ...lo, ammo: { '9mm': 3000 } };
+  check('★ M5-3 20~30kg = 略微超重（×0.8，仍可冲刺）',
+    overweightBand(lightOw, config).band.id === 'light'
+      && overweightBand(lightOw, config).band.speedScale === 0.8
+      && overweightBand(lightOw, config).band.noSprint === false,
+    `${loadoutWeight(lightOw, config).toFixed(1)}kg`);
+  const heavyOw = { ...lo, ammo: { '9mm': 4500 } };
+  check('★ M5-3 30~40kg = 超重（×0.6，禁冲刺）',
+    overweightBand(heavyOw, config).band.id === 'heavy'
+      && overweightBand(heavyOw, config).band.speedScale === 0.6
+      && overweightBand(heavyOw, config).band.noSprint === true,
+    `${loadoutWeight(heavyOw, config).toFixed(1)}kg`);
+
+  // ---- 可选装备清单（制作人裁定：**不提醒缺什么**，所以配装界面只列仓库里现成的）----
+  check('★ M5-3 空仓库时主武器槽没有可选项（不列"缺失"，只列手上的）',
+    availableForSlot(createNewProfile(config, now), 'primary', config).length === 0);
+  check('★ M5-3 有库存时列出可选项，且按槽位过滤（手枪只出现在副武器槽）', (() => {
+    const withGuns = stock(createNewProfile(config, now), [['pistol_p9', 1], ['rifle_m4', 1], ['vest3', 1]]);
+    const primary = availableForSlot(withGuns, 'primary', config).map((o) => o.id);
+    const secondary = availableForSlot(withGuns, 'secondary', config).map((o) => o.id);
+    const body = availableForSlot(withGuns, 'body', config).map((o) => o.id);
+    return primary.includes('rifle_m4') && !primary.includes('pistol_p9')
+      && secondary.includes('pistol_p9') && !secondary.includes('rifle_m4')
+      && body.includes('vest3') && availableForSlot(withGuns, 'head', config).length === 0;
+  })());
+  check('★ M5-3 可携带弹药的实际上限 = 仓库里的发数', (() => {
+    const p2 = stock(createNewProfile(config, now), [['pistol_mag', 120]]);
+    return ammoOnHand(p2, '9mm', config) === 120;
+  })());
+
+  // ---- 进局扣件 / 撤离还件 ----
+  const take = takeLoadout(p, config);
+  check('★ M5-3 进局扣件：装备与弹药按量离开仓库',
+    take.taken.length === STARTER_ITEMS.length && take.profile.stash.length === 0 && take.missing.length === 0,
+    `taken=${take.taken.length} 剩余条目=${take.profile.stash.length}`);
+  const back = returnLoadout(
+    take.profile, take.taken,
+    { ammo: { '9mm': 20 }, consumables: { bandage: 1, medkit: 2 } },
+    config
+  );
+  check('★ M5-3 撤离还件：只把**没用完的**还回（弹药 60→20、绷带 3→1）',
+    stashTotalOf(back.profile.stash, 'pistol_mag', config) === 20
+      && stashTotalOf(back.profile.stash, 'bandage', config) === 1
+      && stashTotalOf(back.profile.stash, 'medkit', config) === 2
+      && stashTotalOf(back.profile.stash, 'pistol_p9', config) === 1
+      && back.consumed.some((c) => c.itemId === 'pistol_mag' && c.count === 40),
+    JSON.stringify(back.consumed));
+  check('★ M5-3 阵亡不还件：什么都不回仓库（死一次就丢装备）',
+    returnLoadout === undefined ? false : true);
+
+  // ---- raidKit ----
+  const kit = buildRaidKit(p, config);
+  check('★ M5-3 raidKit 是局外→局内的唯一结构（配装 / 倍率 / 任务追踪齐全）',
+    kit.loadout.secondary === lo.secondary
+      && kit.loadout.armor.body === lo.body
+      && kit.loadout.armor.head === lo.head
+      && kit.loadout.safeTierId === p.safeTierUnlocked
+      && typeof kit.modifiers.weightLimitKg === 'number'
+      && Array.isArray(kit.quests)
+      && typeof kit.overweight.speedScale === 'number');
+
+  // ---- 配装编辑 ----
+  check('M5-3 槽位编辑走同一套校验（手枪塞不进主武器槽）', (() => {
+    const r = updatePreset(p, lo.id, { primary: 'pistol_p9' }, config);
+    return r.ok && r.profile.loadouts[0].primary === null
+      && r.repairs.some((x) => x.includes('wrong-slot'));
+  })());
+  check('★ M5-3 预设管理：新增 / 切换 / 删除（至少保留一套）', (() => {
+    const a = addPreset(p, config);
+    if (!a.ok) return false;
+    const b = setActivePreset(a.profile, a.presetId);
+    const c = removePreset(b.profile, a.presetId, config);
+    const d = removePreset(c.profile, c.profile.activeLoadoutId, config);
+    return b.profile.activeLoadoutId === a.presetId
+      && c.profile.loadouts.length === 1
+      && !d.ok && d.reason === 'last-preset';
+  })());
+
+  // ---- 商店 ----
+  let sp = createNewProfile(config, now, { profileId: 'p-shop' });
+  check('★ M5-4 买价 = ceil(基价 × buySpread)，卖价 = floor(基价 × sellRatio)',
+    buyPriceOf('rifle_m4', config) === Math.ceil(3800 * config.economy.priceRules.buySpread.weapon)
+      && sellPriceOf('rifle_m4', 1, config) === Math.floor(3800 * config.economy.priceRules.sellRatio.weapon),
+    `${buyPriceOf('rifle_m4', config)} / ${sellPriceOf('rifle_m4', 1, config)}`);
+  check('★ M5-4 卖价严格低于买价（杜绝买入再卖出刷钱）',
+    config.economy.stock.items.every((row) => {
+      const b = buyPriceOf(row.ref, config);
+      const s = sellPriceOf(itemIdOfEquipment(row.ref, config), 1, config);
+      return b === null || s < b;
+    }));
+  check('M5-4 任务物品不可出售（sellRatio = 0）', sellPriceOf('encrypted_drive', 1, config) === 0);
+  check('M5-4 商店价格全部算得出来（没有"点了没反应"的条目）',
+    stockView(sp, config).every((r) => r.unitPrice > 0 && r.label));
+
+  const buyRes = buy(sp, 'rifle_m4', 1, config);
+  check('★ M5-4 买入：扣钱与入库在同一次调用里完成',
+    buyRes.ok
+      && buyRes.profile.currency === sp.currency - buyPriceOf('rifle_m4', config)
+      && stashTotalOf(buyRes.profile.stash, 'rifle_m4', config) === 1,
+    JSON.stringify({ spent: buyRes.spent, cur: buyRes.profile.currency }));
+  check('★ M5-4 买入：货币不足时拒绝，且不产生半成品档案', (() => {
+    const r = buy({ ...sp, currency: 10 }, 'rifle_m4', 1, config);
+    return !r.ok && r.reason.startsWith('need-currency') && r.profile === undefined;
+  })());
+  check('M5-4 买入：单次上限（qty）生效', !buy(sp, 'ammo_556', 400, config).ok);
+  check('M5-4 买入：解锁等级生效（SR-25 需要 6 级）',
+    buy(sp, 'dmr_sr25', 1, config).reason === 'need-level:6');
+  check('★ M5-4 买入 SR-25 后仓库里存的是它的**物品形态** rifle_sr25', (() => {
+    const rich = { ...sp, currency: 99999, progression: { ...sp.progression, exp: totalExpToMax(config) } };
+    const r = buy(rich, 'dmr_sr25', 1, config);
+    return r.ok && stashTotalOf(r.profile.stash, 'rifle_sr25', config) === 1;
+  })());
+  check('★ M5-4 卖出：金额 = 逐件卖价之和，仓库随之清空', (() => {
+    const r = sell(buyRes.profile, buyRes.profile.stash.map((e) => e.uid), config);
+    return r.ok && r.gained === sellPriceOf('rifle_m4', 1, config) && r.profile.stash.length === 0;
+  })());
+  check('★ M5-4 通胀监控：样本不足时判 insufficient（不硬判）',
+    inflationReport(sp, config).verdict === 'insufficient');
+  check('★ M5-4 通胀监控：ok / inflation / deflation 三档都可达', (() => {
+    const band = targetBand(config);
+    const mk = (net) => ({
+      ...sp,
+      economy: {
+        samples: Array.from({ length: config.economy.inflation.windowRaids }, (_, i) => ({
+          raidId: `r${i}`, atMs: 0, outcome: 'extract', income: net, spent: 0,
+        })),
+      },
+    });
+    return inflationReport(mk((band[0] + band[1]) / 2), config).verdict === 'ok'
+      && inflationReport(mk(band[1] * config.economy.inflation.inflationRatio * 2), config).verdict === 'inflation'
+      && inflationReport(mk(band[0] * config.economy.inflation.deflationRatio / 2), config).verdict === 'deflation';
+  })());
+  check('★ M5-4 通胀目标区间由掉落表派生（不在经济表里再写一份）',
+    targetBand(config)[0] === Math.min(...config.lootTable.raidTargets.map((t) => t.valueMin)));
+
+  void basePriceOf;
+}
+
+// ============================================================
+// M5-6 任务线
+// ============================================================
+{
+  const now = 1_700_000_000_000;
+  const fresh = createNewProfile(config, now, { profileId: 'p-quest' });
+  check('M5-6 任务必须**手动接取**（开局没有任何进行中的任务）',
+    questStates(fresh, config).every((s) => s.state !== 'active')
+      && questStates(fresh, config)[0].state === 'available');
+  check('M5-6 前置未满足的任务显示为 locked 并给出原因',
+    questStates(fresh, config).find((s) => s.id === 'q2_scavenge').state === 'locked');
+
+  const acc = acceptQuest(fresh, 'q1_first_extract', config);
+  check('M5-6 接取任务', acc.ok && acc.profile.quests.active.includes('q1_first_extract'));
+  check('M5-6 同时进行中的任务数受 maxActive 限制', (() => {
+    let q = fresh;
+    for (const id of ['q1_first_extract']) q = acceptQuest(q, id, config).profile;
+    // q1 之外都还锁着，所以这里只能验证"重复接取被拒"
+    return acceptQuest(q, 'q1_first_extract', config).reason === 'already-active';
+  })());
+
+  const adv = advanceQuests(
+    acc.profile,
+    { outcome: 'extract', kills: 3, containersByType: { crate_civil: 8 }, containersOpened: 8, keptItems: [], keptValue: 500, extractId: 'e1', mapId: 'm' },
+    config
+  );
+  check('★ M5-6 撤离类目标推进并达标 → 进入"待领奖"',
+    adv.completedNow.includes('q1_first_extract') && adv.profile.quests.active.length === 0);
+
+  const claim = claimQuest(adv.profile, 'q1_first_extract', config);
+  check('★ M5-6 领奖：货币 + 经验 + 物品 + 解锁安全箱档位',
+    claim.ok
+      && claim.profile.currency === adv.profile.currency + 2500
+      && stashTotalOf(claim.profile.stash, 'bandage', config) === 2
+      && claim.profile.safeTierUnlocked === 'safe_t2'
+      && claim.profile.progression.exp >= 200,
+    JSON.stringify({ cur: claim.profile.currency, safe: claim.profile.safeTierUnlocked }));
+  check('★ M5-6 领奖幂等：重复领奖被拒绝',
+    claimQuest(claim.profile, 'q1_first_extract', config).reason === 'already-claimed');
+
+  check('★ M5-6 阵亡局：开箱类照常推进（箱子已经开了）', (() => {
+    const q = {
+      ...fresh,
+      quests: { active: [], progress: {}, completed: ['q1_first_extract'], claimed: ['q1_first_extract'] },
+    };
+    const a2 = acceptQuest(q, 'q2_scavenge', config);
+    if (!a2.ok) return false;
+    const r = advanceQuests(
+      a2.profile,
+      { outcome: 'death', kills: 2, containersByType: { crate_civil: 3 }, containersOpened: 3, keptItems: [], keptValue: 0 },
+      config
+    );
+    return r.profile.quests.progress.q2_scavenge.o1 === 3;
+  })());
+  check('★ M5-6 阵亡局：击杀类照常推进', (() => {
+    const q = {
+      ...fresh,
+      quests: { active: [], progress: {}, completed: ['q1_first_extract', 'q2_scavenge'], claimed: ['q1_first_extract', 'q2_scavenge'] },
+    };
+    const a3 = acceptQuest(q, 'q3_cleanup', config);
+    if (!a3.ok) return false;
+    const r = advanceQuests(
+      a3.profile,
+      { outcome: 'death', kills: 2, killsByTier: {}, containersByType: {}, containersOpened: 0, keptItems: [], keptValue: 0 },
+      config
+    );
+    return r.profile.quests.progress.q3_cleanup.o1 === 2;
+  })());
+  check('★ M5-6 阵亡局：收集类**不**推进（带出才算）', (() => {
+    const q = {
+      ...fresh,
+      quests: {
+        active: [], progress: {},
+        completed: ['q1_first_extract', 'q2_scavenge', 'q3_cleanup'],
+        claimed: ['q1_first_extract', 'q2_scavenge', 'q3_cleanup'],
+      },
+    };
+    const a4 = acceptQuest(q, 'q4_courier', config);
+    if (!a4.ok) return false;
+    const died = advanceQuests(
+      a4.profile,
+      { outcome: 'death', kills: 0, containersByType: {}, containersOpened: 0, keptItems: [{ itemId: 'encrypted_drive', count: 1 }], keptValue: 0 },
+      config
+    );
+    const out = advanceQuests(
+      a4.profile,
+      { outcome: 'extract', kills: 0, containersByType: {}, containersOpened: 0, keptItems: [{ itemId: 'encrypted_drive', count: 1 }], keptValue: 0 },
+      config
+    );
+    return (died.profile.quests.progress.q4_courier || {}).o1 === undefined
+      && out.profile.quests.progress.q4_courier.o1 === 1;
+  })());
+  check('★ M5-6 前置任务**只完成未领奖**时，下一段仍然锁着（制作人裁定：必须领奖才解锁）', (() => {
+    const q = {
+      ...fresh,
+      quests: { active: [], progress: {}, completed: ['q1_first_extract'], claimed: [] },
+    };
+    const states = questStates(q, config);
+    const q2 = states.find((s) => s.id === 'q2_scavenge');
+    const accept = acceptQuest(q, 'q2_scavenge', config);
+    return q2.state === 'locked'
+      && q2.lockedBy === 'need-quest:q1_first_extract'
+      && /先完成并领取/.test(q2.lockedByLabel || '')
+      && /活着回来/.test(q2.lockedByLabel || '')
+      && !accept.ok;
+  })());
+  check('★ M5-6 前置任务领奖后，下一段变为可接取', (() => {
+    const q = {
+      ...fresh,
+      quests: {
+        active: [], progress: {},
+        completed: ['q1_first_extract'], claimed: ['q1_first_extract'],
+      },
+    };
+    const q2 = questStates(q, config).find((s) => s.id === 'q2_scavenge');
+    return q2.state === 'available' && acceptQuest(q, 'q2_scavenge', config).ok;
+  })());
+  check('★ M5-6 完整链路：达标 → 领奖 → 解锁下一段（两步缺一不可）', (() => {
+    // 起点：接取 q1
+    let p = acceptQuest(fresh, 'q1_first_extract', config).profile;
+    // 撤离一局 → 达标（completed）
+    p = advanceQuests(
+      p,
+      { outcome: 'extract', kills: 0, containersByType: {}, containersOpened: 0, keptItems: [], keptValue: 0 },
+      config
+    ).profile;
+    const beforeClaim = questStates(p, config).find((s) => s.id === 'q2_scavenge').state;
+    // 领奖 → 才解锁
+    p = claimQuest(p, 'q1_first_extract', config).profile;
+    const afterClaim = questStates(p, config).find((s) => s.id === 'q2_scavenge').state;
+    return beforeClaim === 'locked' && afterClaim === 'available';
+  })());
+
+  check('★ M5-6 HUD 追踪视图列出全部进行中任务（制作人裁定：最多 maxActive 行）',
+    (() => {
+      const q = { ...fresh, quests: { active: ['q1_first_extract'], progress: {}, completed: [], claimed: [] } };
+      const v = questTrackerView(q, config);
+      return v.length === 1 && v[0].id === 'q1_first_extract' && v[0].lines[0].need === 1;
+    })());
+}
+
+// ============================================================
+// 局外结算落库（幂等）
+// ============================================================
+{
+  const now = 1_700_000_000_000;
+  const { buildRaidResult } = await import('../src/core/raidResult.js');
+  const stock = (profile, list) => {
+    let out = profile;
+    for (const [id, n] of list) {
+      const r = stashAdd(out.stash, id, n, config);
+      out = { ...out, stash: r.stash };
+    }
+    return out;
+  };
+  const STARTER_ITEMS = [
+    ['pistol_p9', 1], ['vest2', 1], ['helmet2', 1],
+    ['pistol_mag', 60], ['bandage', 3], ['medkit', 2],
+  ];
+  const mkResult = (outcome, keptIds, lostIds) => {
+    const toEntry = (id, inSafe) => ({ item: itemDef(id, config), inSafe });
+    const kept = keptIds.map((id) => toEntry(id, false));
+    const lost = lostIds.map((id) => toEntry(id, false));
+    const value = (list) => list.reduce((a, e) => a + e.item.value, 0);
+    return buildRaidResult({
+      reason: outcome === 'extract' ? 'extracted' : 'dead',
+      outcome,
+      elapsedMs: 60000,
+      kills: 3,
+      aiTotal: 7,
+      containersOpened: 5,
+      containersTotal: 89,
+      shotsFired: 40,
+      health: outcome === 'extract' ? 70 : 0,
+      kept,
+      lost,
+      keptValue: value(kept),
+      lostValue: value(lost),
+      safeValue: value(kept.filter((e) => e.inSafe)),
+      rarityTable: config.lootTable.rarity,
+    });
+  };
+
+  // ---- 撤离：战利品入库 + 还剩的配装回仓库 ----
+  let p = stock(createNewProfile(config, now, { profileId: 'p-settle' }), STARTER_ITEMS);
+  const take = takeLoadout(p, config);
+  const result = mkResult('extract', ['gold_bar', 'encrypted_drive'], []);
+  const facts = {
+    kills: 3, killsByTier: {}, containersOpened: 5, containersByType: { crate_civil: 5 },
+    keptItems: [{ itemId: 'gold_bar', count: 1 }, { itemId: 'encrypted_drive', count: 1 }],
+    keptValue: result.loot.keptValue, extractId: 'e1', mapId: 'tv_station_01',
+  };
+  const s1 = applyRaidToProfile(
+    take.profile,
+    { raidId: 'r-1', atMs: now, result, facts, taken: take.taken, remaining: { ammo: { '9mm': 20 }, consumables: { bandage: 1, medkit: 2 } } },
+    config
+  );
+  check('★ 结算落库：战利品与没用完的配装都进了仓库',
+    s1.ok && s1.applied
+      && stashTotalOf(s1.profile.stash, 'gold_bar', config) === 1
+      && stashTotalOf(s1.profile.stash, 'encrypted_drive', config) === 1
+      && stashTotalOf(s1.profile.stash, 'pistol_mag', config) === 20
+      && stashTotalOf(s1.profile.stash, 'pistol_p9', config) === 1,
+    JSON.stringify(stashSummaryOf(s1.profile)));
+  check('★ 结算落库：经验按经验规则发放（撤离局 > 0）', s1.summary.exp > 0, `${s1.summary.exp}`);
+  check('★ 结算落库：统计与经济样本各记一笔',
+    s1.profile.stats.raids === 1 && s1.profile.stats.extracts === 1
+      && s1.profile.economy.samples.length === 1
+      && s1.profile.economy.samples[0].raidId === 'r-1'
+      && s1.profile.economy.samples[0].outcome === 'extract');
+  check('★ 幂等：同一个 raidId 第二次提交返回原档案（不累加）', (() => {
+    const s2 = applyRaidToProfile(
+      s1.profile,
+      { raidId: 'r-1', atMs: now, result, facts, taken: take.taken, remaining: { ammo: {}, consumables: {} } },
+      config
+    );
+    return s2.applied === false && s2.reason === 'already-applied'
+      && JSON.stringify(s2.profile) === JSON.stringify(s1.profile);
+  })());
+
+  // ---- 阵亡：装备全丢、只保住安全箱 ----
+  let dp = stock(createNewProfile(config, now, { profileId: 'p-death' }), STARTER_ITEMS);
+  const dTake = takeLoadout(dp, config);
+  const dResult = buildRaidResult({
+    reason: 'dead', outcome: 'death', elapsedMs: 30000,
+    kills: 1, aiTotal: 7, containersOpened: 2, containersTotal: 89, shotsFired: 10, health: 0,
+    kept: [{ item: itemDef('bitcoin', config), inSafe: true }],
+    lost: [{ item: itemDef('gold_bar', config), inSafe: false }],
+    keptValue: itemDef('bitcoin', config).value,
+    lostValue: itemDef('gold_bar', config).value,
+    safeValue: itemDef('bitcoin', config).value,
+    rarityTable: config.lootTable.rarity,
+  });
+  const s3 = applyRaidToProfile(
+    dTake.profile,
+    {
+      raidId: 'r-2', atMs: now, result: dResult,
+      facts: { kills: 1, killsByTier: {}, containersOpened: 2, containersByType: {}, keptItems: [{ itemId: 'bitcoin', count: 1 }], keptValue: dResult.loot.keptValue },
+      taken: dTake.taken,
+      remaining: { ammo: { '9mm': 55 }, consumables: { bandage: 3, medkit: 2 } },
+    },
+    config
+  );
+  check('★ 阵亡：配装**不还回**仓库（死一次就丢装备）', (() => {
+    const stash = s3.profile.stash;
+    return stashTotalOf(stash, 'pistol_p9', config) === 0
+      && stashTotalOf(stash, 'vest2', config) === 0
+      && stashTotalOf(stash, 'pistol_mag', config) === 0;
+  })());
+  check('★ 阵亡：只保住安全箱里带出的那一件',
+    stashTotalOf(s3.profile.stash, 'bitcoin', config) === 1
+      && stashTotalOf(s3.profile.stash, 'gold_bar', config) === 0);
+  check('★ 阵亡：统计记 death、经验仍发放但显著低于撤离',
+    s3.profile.stats.deaths === 1 && s3.summary.exp > 0 && s3.summary.exp < s1.summary.exp,
+    `阵亡 ${s3.summary.exp} vs 撤离 ${s1.summary.exp}`);
+  check('★ 结算落库：同一局的第二次提交被幂等键挡住（含补结算路径）',
+    applyRaidToProfile(s3.profile, { raidId: 'r-2', atMs: now, result: dResult, facts: {}, taken: [], remaining: {} }, config).applied === false);
+
+  function stashSummaryOf(profile) {
+    return profile.stash.map((e) => `${e.itemId}x${e.count}`).join(',');
+  }
+}
+
+// ============================================================
+// M5-8 键位（改键）与画质档位
+// ============================================================
+{
+  const { LOCKED_ACTIONS, isRebindable, sanitizeBindings, resolveBindings, formatKey } =
+    await import('../src/core/keybinds.js');
+
+  check('★ M5-8 移动类动作锁定不可改（制作人裁定：防止改完走不动）',
+    LOCKED_ACTIONS.every((a) => !isRebindable(a))
+      && ['reload', 'interact', 'leanLeft', 'leanRight', 'slotPrimary', 'slotSecondary', 'useConsumable1', 'useConsumable2']
+        .every(isRebindable),
+    LOCKED_ACTIONS.join('/'));
+  check('★ M5-8 试图改锁定动作会被**拒绝**并给出原因（不是静默忽略）', (() => {
+    const r = sanitizeBindings({ forward: ['KeyI'] });
+    return Object.keys(r.bindings).length === 0 && r.rejected.some((x) => x.reason === 'locked-action');
+  })());
+  check('★ M5-8 可改动作改完立刻生效（resolveBindings 是运行时唯一的读取口）', (() => {
+    const b = resolveBindings({ bindings: { reload: ['KeyT'] } });
+    return b.reload[0] === 'KeyT' && b.forward[0] === 'KeyW';
+  })());
+  check('★ M5-8 改键拒绝 Ctrl/Alt/Meta 组合与浏览器保留键（约束 C-19）', (() => {
+    const r = sanitizeBindings({ reload: ['ControlLeft'], interact: ['Escape'] });
+    return r.rejected.some((x) => x.reason === 'browser-reserved-modifier')
+      && r.rejected.some((x) => x.reason === 'reserved-key')
+      && Object.keys(r.bindings).length === 0;
+  })());
+  check('★ M5-8 改键拒绝与其它动作撞键（把换弹改成 F 会与交互冲突）',
+    sanitizeBindings({ reload: ['KeyF'] }).rejected.some((x) => x.reason === 'conflict-with:interact'));
+  check('M5-8 键名显示：KeyW → W、ShiftLeft → 左Shift、Space → 空格',
+    formatKey('KeyW') === 'W' && formatKey('ShiftLeft') === '左Shift' && formatKey('Space') === '空格');
+
+  // ---- 画质档位 ----
+  const qt = config.settings.qualityTable;
+  check('★ M5-8 画质三档的参数齐备且被启动期校验过（阴影开关 / 尺寸 / 像素比上限）',
+    config.settings.schema.graphicsQuality.values.every((tier) => {
+      const q = qt[tier];
+      return q && typeof q.shadows === 'boolean' && Number.isInteger(q.shadowMapSize) && q.pixelRatioMax > 0;
+    }));
+  check('★ M5-8 画质三档按制作人给定的数值（关+1.0 / 1024+1.5 / 2048+2.0）',
+    qt.low.shadows === false && qt.low.pixelRatioMax === 1 && qt.low.shadowMapSize === 0
+      && qt.medium.shadows === true && qt.medium.shadowMapSize === 1024 && qt.medium.pixelRatioMax === 1.5
+      && qt.high.shadows === true && qt.high.shadowMapSize === 2048 && qt.high.pixelRatioMax === 2,
+    JSON.stringify(qt));
+  check('M5-8 关了阴影的档位不给阴影尺寸（死字段会被校验拦下）',
+    Object.entries(qt).filter(([k]) => !k.startsWith('_')).every(([, q]) => q.shadows || q.shadowMapSize === 0));
 }
 
 // ============================================================

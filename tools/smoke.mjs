@@ -21,6 +21,9 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { launchBrowser, describeMode, ROOT as REPO_ROOT } from './lib/browser.mjs';
+// M5-1：大厅上的数值断言需要"从测试侧独立按配置表算一遍期望值"。
+// 只从界面读文本是证明不了"数值来自配置表"的 —— 数字写错了它照样通过。
+import { config } from '../src/config/index.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = REPO_ROOT;
@@ -125,6 +128,36 @@ function group(name) {
   currentGroup = name;
   console.log(`\n—— ${name} ——`);
 }
+
+/**
+ * `--only=<子串>`：只跑 M5 段落里名字匹配的组（制作人裁定 R6）。
+ *
+ * 语义说明（避免误解）：它**跳过整个历史组段落**，而不是"跑完历史组再跑 M5"——
+ * 后者省不下时间，也就失去了"改一行 M5 代码快速验证"的意义。
+ * 不指定 `--only` 时一切照旧（历史组 → M5 段落 → 运行时错误）。
+ * M5 段落自带 loadAndStart + grantTestKit，因此可以独立运行。
+ */
+const ONLY = (() => {
+  // 同时支持 `--only=m5` 与 `--only m5`：前者更常见，漏掉它会让整个开关静默失效
+  const withEq = process.argv.find((a) => a.startsWith('--only='));
+  if (withEq) return withEq.slice('--only='.length) || 'm5';
+  const i = process.argv.indexOf('--only');
+  return i >= 0 ? String(process.argv[i + 1] || 'm5') : null;
+})();
+
+function m5Group(name) {
+  if (!ONLY) {
+    group(name);
+    return true;
+  }
+  if (!name.toLowerCase().includes(ONLY.toLowerCase())) {
+    console.log(`\n—— ${name}（--only=${ONLY} 跳过）——`);
+    return false;
+  }
+  group(name);
+  return true;
+}
+
 function check(name, pass, detail) {
   results.push({ group: currentGroup, name, pass: !!pass, detail: detail ?? '' });
   console.log(`  [${pass ? 'PASS' : 'FAIL'}] ${name}${detail ? '  —— ' + detail : ''}`);
@@ -156,9 +189,31 @@ const call = (fn, ...args) => page.evaluate((f, a) => window.__m2[f](...a), fn, 
 const byPos = (list, x, z, tol = 1.5) =>
   (list || []).find((e) => Math.abs(e.x - x) < tol && Math.abs(e.z - z) < tol) || null;
 
+/**
+ * 真实渲染可见性判定（[M5-BUG-01]）。
+ *
+ * 为什么不能只读 `.hidden`：`hidden` 是 IDL 属性反射，只反映 attribute 有无，与"是否真的
+ *   画出来"无关。author 的 display 规则可以完全盖掉 UA 的 `[hidden]{display:none}`
+ *   （WHATWG HTML 明示："a rule that applies 'display: block' to all elements will cancel
+ *   the effects of the hidden state"）。此时 attribute 仍是 true 却照样渲染 ——
+ *   大厅那条"上局未正常结束"提示常显就是这个原因，而旧断言读 `.hidden` 恰好读不到它。
+ * 为什么不能用 offsetParent：`#screenLobby` 是 position:fixed 的 .screen，
+ *   固定定位元素的 offsetParent 恒为 null，会把"可见"误判成"不可见"。
+ * 为什么用 getClientRects().length：它反映"元素是否生成了布局盒"。
+ *   display:none（无论来自自身还是被祖先吞掉）都不生成盒 → 0；可见则 > 0。
+ * 元素不存在时**显式抛错**，绝不静默返回 false —— 否则选择器改名会变成"永远不可见"的
+ *   假绿灯，而这正是当初那批断言全绿的原因。
+ */
+async function isVisible(selector) {
+  return page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) throw new Error(`真实可见性判定：找不到元素 ${sel}`);
+    return el.getClientRects().length > 0;
+  }, selector);
+}
+
 const pauseRecoveries = [];
-async function ensureRunning(tag) {
-  const s = await snap();
+async function ensureRunning(tag) {  const s = await snap();
   if (s.flow !== 'raid') return false;
   if (!s.paused) return true;
   pauseRecoveries.push({ tag, at: new Date().toISOString() });
@@ -171,8 +226,28 @@ async function ensureRunning(tag) {
   }
 }
 
-async function waitForEnd(timeoutMs) {
-  const t0 = Date.now();
+/**
+ * 从大厅开一局，并**确保指针锁定拿到**（M5 组用它，替代裸 page.click('#btnStart')）。
+ *
+ * 为什么需要它（实测踩过）：Chrome 在 `exitPointerLock()` 之后约 1 秒内会**拒绝**
+ * 新的指针锁定请求。局外→局内的闭环每次回大厅都会 exitLock，于是"回大厅后立刻再进战区"
+ * 会让锁定请求被静默拒绝 → 游戏进入**暂停态** → 局内时间不推进。
+ * 症状是"撤离倒计时卡在 0.5 秒"（局内 `paused=true`、`remainingMs` 几乎不减），
+ * 非常容易被误判成产品缺陷。**这是浏览器行为，不是游戏的问题** —— 真实玩家点按钮的
+ * 间隔远大于 1 秒，且产品侧本来就有"未锁定即暂停"的正确行为。
+ */
+async function startRaidFromLobby() {
+  await sleep(1200); // 给浏览器留出指针锁定的冷却时间
+  await page.click('#btnStart');
+  await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 10000 });
+  try {
+    await page.waitForFunction(() => document.pointerLockElement !== null, { timeout: 4000 });
+  } catch {
+    await ensureRunning('开始一局');
+  }
+}
+
+async function waitForEnd(timeoutMs) {  const t0 = Date.now();
   while (Date.now() - t0 < timeoutMs) {
     const s = await snap();
     if (s.flow === 'ended') return true;
@@ -190,6 +265,10 @@ async function waitForEnd(timeoutMs) {
 async function loadAndStart() {
   await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
   await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+  // ★ M5：制作人裁定新账号**仓库为空**（装备要自己买）—— 赤手空拳进战区会让
+  //   绝大多数断言（开火 / 切枪 / 护甲）失去前提。因此测试显式注入一套富配装：
+  //   这一步是**测试的准备动作**，产品路径一行不改（玩家自己买）。
+  await page.evaluate(() => window.__m2.grantTestKit());
   await page.click('#btnStart');
   await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 10000 });
   try {
@@ -199,7 +278,15 @@ async function loadAndStart() {
   }
 }
 
-try {
+/**
+ * 历史组（M0 ~ M5-1）。
+ *
+ * 之所以抽成函数：`--only=m5` 要能**只跑 M5 段落**，而不是"跑完历史组再跑 M5"
+ * —— 后者省不下时间，也就失去了"改一行 M5 代码快速验证"的意义。
+ * 抽成函数是零风险改动（体不动、只换外层），M5 段落自带 loadAndStart，
+ * 因此不依赖历史组建立的状态。
+ */
+async function runLegacyGroups() {
   // ============================================================
   group('① 加载与状态机');
   await loadAndStart();
@@ -242,9 +329,17 @@ try {
       !!mm && mm.left < 200 && mm.top < 200, mm ? `left=${Math.round(mm.left)} top=${Math.round(mm.top)}` : '无位置');
     check('M4-6：小地图标注了当前所在层',
       !!mm && /第\s*[12]\s*层/.test(mm.label), mm ? `标注"${mm.label}"` : '无标注');
-    // [M4-TEMP-4] 任务追踪占位（任务线属 M5-6）
-    check('M4-6：任务追踪已显示（当前为占位值，见 M4-TEMP-4）',
-      !!mm && mm.quest.length > 0, mm ? `显示"${mm.quest}"` : '无任务行');
+    // ★ M5-6 销账 [M4-TEMP-4]：任务追踪不再是占位值 —— 它显示的是进局时的
+    //   raidKit.quests（core/quests.js 的纯函数产物）。没有进行中任务时显示"任务 —"。
+    {
+      const active = await page.evaluate(() => window.__m2.profile().quests.active.length);
+      check('M5-6：任务追踪已接线（不再是占位值）',
+        !!mm && mm.quest.length > 0,
+        mm ? `显示"${mm.quest}" · 进行中 ${active} 个` : '无任务行');
+      check('★ M5-6：没有进行中任务时，追踪显示"任务 —"而不是假的 0/0',
+        active > 0 || mm.quest.includes('任务 —'),
+        `进行中 ${active} 个 · 显示"${mm.quest}"`);
+    }
   }
 
   // ============================================================
@@ -825,11 +920,10 @@ try {
     await page.reload({ waitUntil: 'load' });
     await page.waitForFunction(() => typeof window.__m2 !== 'undefined', { timeout: 15000 });
 
-    const noticeShown = await page.evaluate(
-      () => !document.getElementById('interruptedNotice').hidden
-    );
+    // 口径：查**真实渲染**，不是 `.hidden` attribute（见 isVisible 的说明）。
+    const noticeShown = await isVisible('#interruptedNotice');
     check('★ 中途刷新后重进，能看到"上局未正常结束"提示（不是静默丢弃）',
-      noticeShown === true, `提示可见=${noticeShown}`);
+      noticeShown === true, `提示真实可见=${noticeShown}`);
 
     await page.evaluate(() => document.getElementById('interruptedNotice').click());
     await sleep(300);
@@ -860,11 +954,22 @@ try {
     // 幂等：结算过一次后再刷新，不该再弹（否则会重复发放/重复打扰）
     await page.reload({ waitUntil: 'load' });
     await page.waitForFunction(() => typeof window.__m2 !== 'undefined', { timeout: 15000 });
-    const again = await page.evaluate(
-      () => !document.getElementById('interruptedNotice').hidden
-    );
+    // 口径：查**真实渲染**（这条在 M5-BUG-01 修复前是红的 —— 缺陷让提示恒可见）
+    const again = await isVisible('#interruptedNotice');
     check('★ 幂等：结算过一次后再刷新不再提示（不会重复结算）',
-      again === false, `再次提示=${again}`);
+      again === false, `提示真实可见=${again}`);
+
+    // [M5-BUG-01] 再加一条"不占位"：只断言"不可见"还不够 —— 本缺陷的实际观感是那条带
+    // 虚线下边框的行**占据了一行高度**。用布局盒口径钉死：既不生成盒，也不贡献高度。
+    // 放在这里最稳：该点刚结算过并 reload，**保证没有待结算快照**。
+    const noticeBox = await page.evaluate(() => {
+      const el = document.getElementById('interruptedNotice');
+      if (!el) throw new Error('找不到 #interruptedNotice');
+      return { rects: el.getClientRects().length, h: el.getBoundingClientRect().height };
+    });
+    check('大厅无待结算战局时，这一栏不出现且不占位（无布局盒 / 高度为 0）',
+      noticeBox.rects === 0 && noticeBox.h === 0,
+      `rects=${noticeBox.rects} height=${noticeBox.h}`);
   }
 
   // ============================================================
@@ -890,7 +995,7 @@ try {
     if (e4) {
       check('开局（0 杀）未开放，且给出"还需几名"',
         e4.open === false && e4.remainingKills === 3,
-        `open=${e4.open} remainingKills=${e4.remainingKills}`);
+        `open=${e4.open} remainingKills=${e4.remainingKills} kills=${s0.kills} aiAlive=${s0.aiAlive} rule=${e4.rule}`);
 
       await page.evaluate(({ x, z }) => window.__m2.teleport(x, z, 1), { x: e4.x, z: e4.z });
       await sleep(1200);
@@ -959,8 +1064,7 @@ try {
     const oldRaidId = oldCp ? JSON.parse(oldCp).raidId : null;
 
     // ★ 关键动作：**不点提示**，直接开新局
-    await page.click('#btnStart');
-    await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 10000 });
+    await startRaidFromLobby();
     await sleep(500);
     const res = await page.evaluate(() => window.__m2.snapshot().raidResult);
     check('★ 不点提示直接开新局，上局仍被补结算（不再静默丢档）',
@@ -980,8 +1084,24 @@ try {
     check('★ 新局开局立刻就有快照（覆盖"开局几秒内被强杀"这个丢档窗口）',
       !!newCp && JSON.parse(newCp).elapsedMs < 3000 && JSON.parse(newCp).items.length === 0,
       newCp ? `elapsedMs=${JSON.parse(newCp).elapsedMs} items=${JSON.parse(newCp).items.length}` : '没有快照');
-    const noticeAfter = await page.evaluate(() => !document.getElementById('interruptedNotice').hidden);
-    check('补结算后提示已收起（不会一直挂着）', noticeAfter === false, `提示=${noticeAfter}`);
+    // ---- 补结算之后：**回到大厅**时这条提示不该再出现（"不会一直挂着"的真实口径）----
+    //
+    // ★ 为什么不能就地量：此刻大厅整体是 display:none（刚开新局），祖先的 display 会让
+    //   getClientRects() 恒为 0 —— 那量的是祖先，不是这条提示，断言会变成恒真。
+    //   （这正是我第一版改写的错误：它比原来的 attribute 口径更弱。）
+    // 改为走完一次真正的「结束本局 → 返回大厅」，在**大厅可见**的前提下量 ——
+    // 这才是玩家实际看到的东西。注意修复后"收起"是**惰性**的：由 showLobby() 从快照推导，
+    // 不再在结算那一刻立刻写 attribute；所以只有在这里量才有意义。
+    await call('abandonRaid');
+    await sleep(300);
+    await call('returnToLobby');
+    await sleep(300);
+    const noticeAfter = await isVisible('#interruptedNotice');
+    const lobbyBack = await page.evaluate(() =>
+      document.getElementById('screenLobby').classList.contains('on'));
+    check('★ 补结算后回到大厅，提示不再出现（不会一直挂着）',
+      lobbyBack === true && noticeAfter === false,
+      `大厅可见=${lobbyBack} 提示真实可见=${noticeAfter}`);
   }
 
   // ============================================================
@@ -1044,6 +1164,12 @@ try {
       `${sprint.player.speed.toFixed(2)} ≤ 7.5`);
 
     // ---- 落地缓冲：跳起落下应产生相机下沉 ----
+    // [M5-BUG-02] ★ 已知缺陷（测试侧，本次刻意未修）：landingDip 是**只活几十毫秒**的瞬态，
+    //   而下面这个采样循环的周期约 60~90ms（snap 往返 + sleep(50)），能否采到那一帧**全凭相位**。
+    //   探针实测：同一位置、同一份代码连跳 10 次，命中率 8/10 —— 会随机假红。
+    //   它测的 core/movement.js 与 gameplay/player.js 与 M5-BUG-01 无关，是被那次改动
+    //   顺带改动的采样相位"照出来"的。修法见 docs/M5-TEMP-REGISTRY.md §5.2。
+    //   ★ 不要用"放宽阈值"来消掉它 —— 那是把假红改成假绿。
     await sleep(700);
     const dipBefore = (await snap()).player.landingDip;
     const landingsBefore = (await snap()).player.landings;
@@ -1483,6 +1609,698 @@ try {
     check('撤离结算带出了二层搜到的战利品',
       done.flow === 'ended' && looted.loot.inventory >= 1,
       `背包 ${looted.loot.inventory} 件 / 估值 ${looted.loot.value}`);
+  }
+
+  // ============================================================
+  group('M5-1 主大厅与局内世界重建');
+  {
+    // ★ 这一组守的是 M5-1 的核心交付：**局外入口 + 闭环**。
+    //   闭环的定义是"结算 → 回大厅 → 再进战区，全程不刷新页面"，
+    //   所以第一件事是证明"没有发生刷新" —— 见下面的 __m5Token 哨兵。
+
+    // ---- ① 打开页面直接落在大厅，且此刻没有局内世界 ----
+    await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    await page.evaluate(() => {
+      window.__m5Token = Math.random().toString(36).slice(2);
+    });
+    const token0 = await page.evaluate(() => window.__m5Token);
+
+    const lobbyView = await page.evaluate(() => {
+      const s = document.getElementById('screenLobby');
+      const hud = document.getElementById('hud');
+      const body = document.getElementById('lobbyBody');
+      return {
+        lobbyOn: !!s && s.classList.contains('on'),
+        hudOn: hud.classList.contains('on'),
+        hasStart: !!document.getElementById('btnStart'),
+        body: body ? body.innerText : '',
+      };
+    });
+    const s0 = await snap();
+    check('打开页面直接进入主大厅（不再是"点击即开始"的开始页）',
+      lobbyView.lobbyOn && lobbyView.hasStart, `lobbyOn=${lobbyView.lobbyOn}`);
+    check('局外不显示局内 HUD，单局计时未开始',
+      !lobbyView.hudOn && s0.flow === 'lobby' && s0.remainingMs === config.raid.timeLimitMs,
+      `hudOn=${lobbyView.hudOn} flow=${s0.flow} remaining=${s0.remainingMs}`);
+    check('局外**尚未创建**局内世界（3D 世界延迟到进入战区才建）',
+      s0.world.alive === false && s0.player === null && s0.ai.length === 0,
+      `alive=${s0.world.alive} player=${s0.player} ai=${s0.ai.length}`);
+    check('局外时调试接口仍安全可读（端到端会反复轮询它等 raid 状态）',
+      s0.world.builds === 0 && s0.world.disposals === 0,
+      `builds=${s0.world.builds} disposals=${s0.world.disposals}`);
+
+    // ---- ② 大厅上的每个数字都来自配置表 ----
+    // 从测试侧**独立算一遍**期望文本，再要求界面上出现它。
+    {
+      const total = Math.round(config.raid.timeLimitMs / 1000);
+      const expectTime = `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+      check('大厅显示的单局时限与配置表一致',
+        lobbyView.body.includes(expectTime), `期望 ${expectTime}`);
+      check('大厅显示的地图名与地图表一致',
+        lobbyView.body.includes(config.map.label), config.map.label);
+      check('大厅显示的撤离点数量与地图表一致',
+        lobbyView.body.includes(`共 ${config.extract.zones.length} 个`),
+        `共 ${config.extract.zones.length} 个`);
+      const enemyTotal = (config.map.aiSpawns || []).reduce((a, s) => a + s.count, 0);
+      check('大厅显示的敌方总数 = 地图表各分区配额之和',
+        lobbyView.body.includes(`${enemyTotal} 名`), `${enemyTotal} 名`);
+      // ★ M5-3：简报显示的是**玩家当前配装**（档案里的 activeLoadout）。
+      //   注意不能用 raidKit()：局外它必须是 null（局内世界未创建），
+      //   而这一组整组都在局外。
+      const curPrimary = await page.evaluate(() => {
+        const p = window.__m2.profile();
+        return p.loadout ? p.loadout.primary : null;
+      });
+      check('大厅显示的主武器名与**当前配装**一致（M5-3 后不再是写死的起始配装）',
+        curPrimary
+          ? lobbyView.body.includes(config.weapons.find((w) => w.id === curPrimary).label)
+          : lobbyView.body.includes('无'),
+        curPrimary || '（无主武器）');
+      const killsGate = config.extract.zones.find((z) => z.openRule && z.openRule.type === 'killsAfter');
+      check('条件撤离点的规则文案带上了规则自身的数值（不是写死的）',
+        !!killsGate && lobbyView.body.includes(`${killsGate.openRule.kills} 名敌人`),
+        killsGate ? `${killsGate.openRule.kills} 名敌人` : '当前地图没有击杀类条件点');
+    }
+
+    // ---- ③ 分层约束：局外界面不得依赖局内实现（静态检查）----
+    // "今天没 import"不等于"明天也不会 import"，所以用源码检查把它钉住。
+    {
+      const src = fs.readFileSync(path.join(ROOT, 'src/ui/lobby.js'), 'utf8');
+      const imports = src.split('\n').filter((l) => l.trim().startsWith('import'));
+      const bad = imports.filter((l) => /\.\.?\/(gameplay|level|render|audio)\//.test(l));
+      check('★ 局外界面不依赖局内模块（gameplay / level / render / audio）',
+        bad.length === 0, bad.join(' | ') || `import 行 ${imports.length} 条，无越界`);
+    }
+
+    // ---- ④ 进入战区：此刻才创建局内世界 ----
+    await startRaidFromLobby();
+    await sleep(400);
+    const r1 = await snap();
+    const raid1Id = r1.raidId;
+    check('★ 进入战区时才创建局内世界（builds 0 → 1）',
+      r1.world.alive === true && r1.world.builds === 1 && r1.world.disposals === 0,
+      `alive=${r1.world.alive} builds=${r1.world.builds}`);
+    check('进入战区后大厅关闭、HUD 打开',
+      (await page.evaluate(() => !document.getElementById('screenLobby').classList.contains('on')))
+      && (await page.evaluate(() => document.getElementById('hud').classList.contains('on'))));
+    check('新局的地图与 AI 数量与配置表一致（大厅简报不是另算的一份）',
+      r1.level.W === config.map.grid.w && r1.ai.length > 0,
+      `W=${r1.level.W} AI=${r1.ai.length}`);
+
+    // ---- ⑤ 设置项生效：灵敏度（倍率来自配置表）----
+    {
+      await call('teleportToSafeSpot');
+      await call('resetAim', 0);
+      await sleep(300);
+      // 探针口径：maxMouseRad = 鼠标位移(px) × 有效灵敏度（player.js 内唯一一处相乘）
+      const probe = async () => {
+        await call('resetViewProbe');
+        await page.evaluate((d) => window.__m2.injectMouseMove(d, 0), 40);
+        await sleep(200);
+        const s = await snap();
+        return { rad: s.player.viewProbe.maxMouseRad, yaw: (Math.abs(s.player.yaw) * 180) / Math.PI };
+      };
+      await call('setSetting', 'mouseSens', 'normal');
+      await sleep(200);
+      const normal = await probe();
+      await call('setSetting', 'mouseSens', 'veryHigh');
+      await sleep(200);
+      const fast = await probe();
+      const wantRatio = config.settings.mouseSensLevels.veryHigh / config.settings.mouseSensLevels.normal;
+      const gotRatio = normal.rad > 0 ? fast.rad / normal.rad : 0;
+      check('★ 灵敏度档位生效：视角转速按配置表倍率变化',
+        normal.rad > 0 && Math.abs(gotRatio - wantRatio) < 0.2,
+        `实测 ${gotRatio.toFixed(2)}× / 配置 ${wantRatio}×（rad ${normal.rad} → ${fast.rad}）`);
+      // 复原：改了全局状态的测试必须复原，否则后面的组在测垃圾
+      await call('setSetting', 'mouseSens', 'normal');
+    }
+
+    // ---- ⑥ 设置项生效：主音量（增益 = 配置基线 × 档位倍率）----
+    {
+      const base = config.audio.masterGain;
+      // 容差口径（这条曾经误报过）：master.gain 是 Web Audio 的 AudioParam，它的 value
+      // 按 **float32** 存储 —— 写进去 0.35，读回来是 0.3499999940395355。
+      // 原先用 1e-9 判等，比 float32 在 0.5 量级的量化步长（约 3e-8）还小一个数量级，
+      // 于是"精度量化"被误报成"倍率接错了"。容差取 1e-6：比量化步长大一个数量级，
+      // 但远小于任何可闻差异，也远小于"倍率接错"会产生的偏差（那是 0.4/0.6/1.5 量级）。
+      const F32_EPS = 1e-6;
+      const levelRatio = config.settings.volumeLevels.high / config.settings.volumeLevels.normal;
+      await call('setSetting', 'masterVolume', 'normal');
+      const gNormal = (await snap()).audio.gain;
+      await call('setSetting', 'masterVolume', 'off');
+      const gOff = (await snap()).audio.gain;
+      await call('setSetting', 'masterVolume', 'high');
+      const gHigh = (await snap()).audio.gain;
+      check('★ 主音量档位生效：总线增益 = 配置基线 × 档位倍率',
+        Math.abs(gNormal - base) < F32_EPS
+        && gOff === 0
+        && Math.abs(gHigh - base * levelRatio) < F32_EPS,
+        `标准 ${gNormal} / 静音 ${gOff} / 高 ${gHigh}（基线 ${base}，期望高 ${base * levelRatio}）`);
+      check('★ 高低两档的**比值**等于配置表的倍率之比（与基线无关，倍率接错必然露）',
+        gNormal > 0 && Math.abs(gHigh / gNormal - levelRatio) < F32_EPS,
+        `实测 ${(gHigh / gNormal).toFixed(6)}× / 配置 ${levelRatio}×`);
+      check('静音档位真的把增益打到 0（不是"很小"）', gOff === 0, `${gOff}`);
+      await call('setSetting', 'masterVolume', 'normal');
+    }
+
+    // ---- ⑦ 结束一局 → 结算 → 返回大厅（**不刷新页面**）----
+    // 先让第一局的计时明显走掉一截（≥1s）。这不是"等稳定"，而是为了让 ⑧ 里的
+    // "计时归零"**可观测**：如果新局接着上一局的计时继续跑，它的剩余时间只可能比
+    // 这里更少；只有真的重置了才会变多。若两局都在满格附近，那条断言就退化成
+    // "约等于满格"，抓不到"计时残留"这种缺陷。
+    await sleep(1200);
+    await call('abandonRaid');
+    await sleep(300);
+    const ended = await snap();
+    check('夹具成立：一局已结束并进入结算页',
+      ended.flow === 'ended' && ended.endReason === 'abandoned'
+      && (await page.evaluate(() => document.getElementById('screenEnd').classList.contains('on'))),
+      `flow=${ended.flow} reason=${ended.endReason}`);
+
+    await page.click('#btnRestart');
+    await sleep(500);
+    const back = await snap();
+    const backView = await page.evaluate(() => ({
+      lobbyOn: document.getElementById('screenLobby').classList.contains('on'),
+      endOn: document.getElementById('screenEnd').classList.contains('on'),
+      hudOn: document.getElementById('hud').classList.contains('on'),
+      token: window.__m5Token,
+    }));
+    check('★ 结算页「返回大厅」回到大厅（不是刷新页面重来）',
+      backView.lobbyOn && !backView.endOn && !backView.hudOn,
+      `lobby=${backView.lobbyOn} end=${backView.endOn} hud=${backView.hudOn}`);
+    check('★ 全程**没有刷新页面**（页面级哨兵还在，这是"闭环"的直接证据）',
+      backView.token === token0 && !!token0,
+      backView.token === token0 ? '哨兵未丢失' : `哨兵被清（发生过刷新）：${backView.token}`);
+    check('★ 回到大厅时局内世界被**销毁**（disposals 0 → 1，不再是"只建不拆"）',
+      back.world.alive === false && back.world.disposals === 1 && back.world.builds === 1,
+      `alive=${back.world.alive} builds=${back.world.builds} disposals=${back.world.disposals}`);
+    check('回到大厅后流程回到 lobby，且仍能读到上一局的结束原因',
+      back.flow === 'lobby' && back.endReason === 'abandoned',
+      `flow=${back.flow} endReason=${back.endReason}`);
+    check('回大厅后局内状态已清空（不会把上一局的背包/生命带进大厅）',
+      back.player === null && back.loot === null && back.ai.length === 0);
+
+    // ---- ⑧ 再进战区：必须是一局**全新**的 ----
+    await startRaidFromLobby();
+    await sleep(400);
+    const r2 = await snap();
+    check('★ 从大厅再进战区：世界被重建（builds 1 → 2）',
+      r2.world.alive === true && r2.world.builds === 2 && r2.world.disposals === 1,
+      `builds=${r2.world.builds} disposals=${r2.world.disposals}`);
+    check('★ 拿到的是**新的一局**（raidId 已更换，不是复用上一局的世界）',
+      !!r2.raidId && r2.raidId !== raid1Id, `${raid1Id} → ${r2.raidId}`);
+    // 计时口径（这条曾经误报过）：RAID 态的 remainingMs = 时限 − 已过时间，所以它
+    // **不可能**等于整局时限 —— 快照本身就要花掉几百毫秒。原先断言"等于时限"，
+    // 等于假设了"快照零耗时"。现在改断言两件真正有意义的事：
+    //   ① 比上一局结束时**更大** —— 只有重置才会变多，"接着上一局跑"只会更少；
+    //   ② 距离满格不超过 10 秒 —— 确实是"从头开始"，而不是被重置成某个奇怪的数。
+    const burned = config.raid.timeLimitMs - ended.remainingMs;
+    const freshLeft = config.raid.timeLimitMs - r2.remainingMs;
+    check('新局是干净的：容器全部未开、AI 全员存活、背包为空、计时归零',
+      r2.loot.opened === 0 && r2.aiAlive === r2.ai.length && r2.loot.inventory === 0
+      && r2.remainingMs > ended.remainingMs + 800
+      && freshLeft < 10000,
+      `opened=${r2.loot.opened} aiAlive=${r2.aiAlive}/${r2.ai.length} bag=${r2.loot.inventory}`
+      + ` remaining=${r2.remainingMs}（上一局烧掉 ${burned}ms，新局仅 ${freshLeft}ms）`);
+    check('新局的战斗统计已归零（跨局累加量必须复位）',
+      r2.combat.shotsFired === 0 && r2.combat.kills === 0,
+      `shots=${r2.combat.shotsFired} kills=${r2.combat.kills}`);
+    check('新局玩家回到出生点（与上一局开局时的落点逐坐标一致）',
+      Math.abs(r2.player.x - r1.player.x) < 1e-6
+      && Math.abs(r2.player.z - r1.player.z) < 1e-6
+      && r2.player.alive === true && r2.player.health === r1.player.maxHealth,
+      `(${r2.player.x.toFixed(2)}, ${r2.player.z.toFixed(2)}) vs (${r1.player.x.toFixed(2)}, ${r1.player.z.toFixed(2)})，health=${r2.player.health}`);
+
+    // ---- ⑨ 设置跨局保留 ----
+    {
+      await call('setSetting', 'mouseSens', 'low');
+      const persisted = await page.evaluate(() => localStorage.getItem('h5extract.settings.v1'));
+      const parsed = persisted ? JSON.parse(persisted) : null;
+      check('设置改动落盘，且结构与配置表的 schema 一致',
+        !!parsed
+        && Object.keys(parsed).sort().join(',')
+          === Object.keys(config.settings.schema).filter((k) => !k.startsWith('_')).sort().join(','),
+        persisted || '没有落盘');
+      check('改动后的档位在下一局仍然生效',
+        (await snap()).settings.mouseSens === 'low',
+        (await snap()).settings.mouseSens);
+      // 复原成默认档，避免影响后续组
+      await call('setSetting', 'mouseSens', config.settings.schema.mouseSens.default);
+    }
+
+    // ---- ⑩ 回归：闭环之后，M4 的断线补结算仍然成立 ----
+    // 闭环最容易破坏的恰恰是它旁边的旧功能：以前"上局中断"发生在
+    // "页面重新加载"这个天然干净的时机，现在页面可能已经跑过好几局。
+    {
+      await call('teleportToContainer', 0);
+      await page.keyboard.down('KeyF');
+      await sleep(4000);
+      await page.keyboard.up('KeyF');
+      await sleep(400);
+      const before = await snap();
+      await page.reload({ waitUntil: 'load' });
+      await page.waitForFunction(() => typeof window.__m2 !== 'undefined', { timeout: 15000 });
+      // 口径：查**真实渲染**，不是 `.hidden` attribute（见 isVisible 的说明）。
+      const notice = await isVisible('#interruptedNotice');
+      const lobbyAfterReload = await page.evaluate(() =>
+        document.getElementById('screenLobby').classList.contains('on'));
+      check('刷新后仍落在**大厅**（不再是开始页），且上局中断提示可见',
+        notice && lobbyAfterReload, `notice=${notice} lobby=${lobbyAfterReload}`);
+      await page.evaluate(() => document.getElementById('interruptedNotice').click());
+      await sleep(300);
+      const settle = await snap();
+      check('★ 闭环之后 M4 的补结算仍然成立（刷新 → 提示 → 点击 → 按未撤离结算）',
+        !!settle.raidResult && settle.raidResult.reason === 'disconnected',
+        settle.raidResult ? `reason=${settle.raidResult.reason} kept=${settle.raidResult.loot.keptValue}` : '没有结算');
+      void before;
+    }
+  }
+
+}
+
+/**
+ * M5 段落：局外系统（仓库 / 配装 / 商店 / 技能 / 任务 / 存档）的端到端验证。
+ *
+ * 它自带 prepare（loadAndStart + grantTestKit），因此可以：
+ *   · 并入全量跑（放在历史组之后）
+ *   · 被 `--only=m5` 单独触发
+ */
+async function runM5Groups() {
+  if (m5Group('M5-2/M5-3/M5-4/M5-5/M5-6 局外面板与档案')) {
+    await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+
+    // ---- ① 大厅状态条与五个面板：能开、有内容、数字与纯函数一致 ----
+    {
+      const statsText = await page.evaluate(() => document.getElementById('lobbyStats').innerText);
+      check('★ M5 大厅顶部状态条显示档案读数（销 M5-TEMP-1）',
+        /等级/.test(statsText) && /货币/.test(statsText) && /仓库/.test(statsText),
+        statsText.replace(/\s+/g, ' ').slice(0, 80));
+
+      const tabs = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('#lobbyTabs .tab')).map((t) => t.dataset.tab)
+      );
+      check('★ M5 大厅有五个局外面板入口（销 M5-TEMP-3）',
+        ['loadout', 'stash', 'shop', 'skills', 'quests'].every((t) => tabs.includes(t)),
+        tabs.join('/'));
+
+      const bodies = {};
+      for (const tab of ['loadout', 'stash', 'shop', 'skills', 'quests']) {
+        await page.click(`#lobbyTabs .tab[data-tab="${tab}"]`);
+        await sleep(60);
+        bodies[tab] = await page.evaluate(
+          (t) => {
+            const id = `tab${t[0].toUpperCase()}${t.slice(1)}`;
+            const node = document.getElementById(id);
+            return {
+              on: node.classList.contains('on'),
+              text: node.innerText.replace(/\s+/g, ' ').trim(),
+            };
+          },
+          tab
+        );
+      }
+      check('★ M5 五个面板分别可切换且都画出了内容（不是空壳）',
+        Object.entries(bodies).every(([, v]) => v.on && v.text.length > 0),
+        Object.entries(bodies).map(([k, v]) => `${k}:${v.text.length}`).join(' '));
+      const views = await page.evaluate(() => window.__m2.lobby().views);
+      check('M5 仓库面板显示的估值 = lobbyView 的产物（同一份数字）',
+        bodies.stash.text.includes(String(views.stash.summary.value)),
+        `面板含 ${views.stash.summary.value}`);
+      check('M5 商店面板显示的货币 = 档案货币',
+        bodies.shop.text.includes(String(views.shop.currency)),
+        `面板含 ${views.shop.currency}`);
+    }
+
+    // ---- ② 存档异常三态（M5 硬性要求：必须实测）----
+    {
+      // 夹具：注入一套装备并保存，让"档案确实有内容"成为可观测的前提
+      await page.evaluate(() => window.__m2.grantTestKit());
+      const before = await page.evaluate(() => window.__m2.profile().view.stash.items);
+      check('夹具成立：档案里有东西可丢（否则"不丢档"无从验证）', before > 0, `${before} 件`);
+
+      // ① 损坏：写入坏 JSON → reload
+      await page.evaluate(() => window.__m2.writeRawProfile('{"version":1,"stash":['));
+      await page.reload({ waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+      const broken = await page.evaluate(() => ({
+        profile: window.__m2.profile(),
+        lobbyOn: document.getElementById('screenLobby').classList.contains('on'),
+      }));
+      check('★ 存档损坏：页面不崩、仍能进大厅、给出可用档案',
+        broken.lobbyOn && broken.profile.view.currency > 0,
+        `currency=${broken.profile.view.currency}`);
+      check('★ 存档损坏：坏文本被**隔离留证**（不是静默删除）',
+        broken.profile.storage.quarantineBytes > 0 && !!broken.profile.storage.quarantine,
+        JSON.stringify(broken.profile.storage.quarantine));
+
+      // ② 被清空：清掉全部键 → reload
+      await page.evaluate(() => window.__m2.clearProfile());
+      const cleared = await page.evaluate(() => window.__m2.profile());
+      check('★ 存档被清空：给出全新档案（等级 1 / 空仓库）且不崩',
+        cleared.view.level === 1 && cleared.view.stash.items === 0,
+        `Lv${cleared.view.level} · ${cleared.view.stash.items} 件`);
+      check('★ 存档被清空：第一次加载记账为 empty（修复必须可观测）',
+        cleared.repairs.includes('empty'), cleared.repairs.join(',') || '无修复记录');
+      await page.reload({ waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+      const cleared2 = await page.evaluate(() => window.__m2.profile());
+      // 注意口径：第一次加载已经把新档写回去了，所以**这一**次加载读到的是一份
+      // 合法档案、repairs 自然为空 —— 那不是缺陷，而是"修复已落地"。这里要验的是
+      // "清空不会留下半坏状态"，而不是"每次加载都报 repairs"。
+      check('★ 存档被清空后重进：仍是全新档案，且不会留下半坏状态',
+        cleared2.view.level === 1 && cleared2.view.stash.items === 0 && cleared2.source === 'main',
+        `Lv${cleared2.view.level} · ${cleared2.view.stash.items} 件 · source=${cleared2.source} · repairs=${cleared2.repairs.length}`);
+
+      // ③ 版本回退：写入"未来版本"的档案 → reload
+      const future = JSON.stringify({ version: 99, currency: 123456, stash: [], progression: { exp: 0 } });
+      await page.evaluate((t) => window.__m2.writeRawProfile(t), future);
+      await page.reload({ waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+      const rebased = await page.evaluate(() => window.__m2.profile());
+      check('★ 版本回退：拒绝解释未来版本，另起新档且不崩',
+        rebased.view.version === 1 && rebased.view.currency === config.economy.starterCurrency,
+        `v${rebased.view.version} currency=${rebased.view.currency}`);
+      check('★ 版本回退：原始文本仍留在隔离键里（人工可恢复）',
+        rebased.storage.quarantineBytes > 0 && /version-ahead/.test(rebased.storage.quarantine.reason || ''),
+        JSON.stringify(rebased.storage.quarantine));
+      check('★ 版本回退：**没有**把未来版本的数据当成当前版本写回去',
+        rebased.view.currency !== 123456, `currency=${rebased.view.currency}`);
+    }
+
+    // ---- ③ 商店买卖：扣钱与入库同一次完成 ----
+    {
+      await page.evaluate(() => window.__m2.grantTestKit());
+      const before = await page.evaluate(() => window.__m2.profile());
+      await page.click('#lobbyTabs .tab[data-tab="shop"]');
+      await sleep(60);
+      const buyBtn = await page.$('#tabShop .mini[data-act="shopBuy"][data-ref="rifle_m4"]');
+      check('夹具成立：商店里有"买 M4"按钮', !!buyBtn);
+      if (buyBtn) {
+        await buyBtn.click();
+        await sleep(120);
+        const after = await page.evaluate(() => window.__m2.profile());
+        check('★ M5-4 买入：货币减少且仓库里出现该物品（同一次调用完成）',
+          after.view.currency < before.view.currency
+            && after.view.stash.items > before.view.stash.items,
+          `货币 ${before.view.currency} → ${after.view.currency} · 仓库 ${before.view.stash.items} → ${after.view.stash.items}`);
+      }
+    }
+  }
+
+  // ---- ④ 配装进局一致性 / ⑤ 技能生效 / ⑥ 画质 / ⑦ 改键 / ⑧ 结算页 ----
+  if (m5Group('M5-3/M5-5/M5-8 配装进局·技能生效·画质·改键·结算页')) {
+    await page.evaluate(() => window.__m2.grantTestKit());
+    // ---- ④ 局内用的就是局外配的（销 M5-TEMP-2 的直接证据）----
+    await page.click('#lobbyTabs .tab[data-tab="loadout"]');
+    await sleep(80);
+    await page.select('#tabLoadout select[data-act-change="slotSelect"][data-slot="primary"]', 'rifle_m4');
+    await sleep(150);
+    const lo1 = await page.evaluate(() => window.__m2.profile().loadout);
+    check('夹具成立：大厅把主武器改成 M4', lo1.primary === 'rifle_m4', `primary=${lo1.primary}`);
+
+    await startRaidFromLobby();
+    const s1 = await snap();
+    const kit1 = await page.evaluate(() => window.__m2.raidKit());
+    check('★ M5-3 局内主武器 = 局外配装（不再是写死的 startLoadout）',
+      s1.weapon.id === 'rifle_m4' && kit1.loadout.primary === 'rifle_m4',
+      `局内 ${s1.weapon.id} · kit ${kit1.loadout.primary}`);
+    check('★ M5-3 局内护甲 = 局外配装（含档位）',
+      s1.player.armor.body.id === kit1.loadout.armor.body,
+      `局内 ${s1.player.armor.body.id} vs kit ${kit1.loadout.armor.body}`);
+    const cal1 = s1.weapon.id === 'rifle_m4' ? '5.56' : '9mm';
+    check('★ M5-3 弹药储备 = 配装里的发数（按口径从仓库取走）',
+      s1.weapon.reserve === kit1.loadout.ammo[cal1],
+      `reserve=${s1.weapon.reserve} 期望 ${kit1.loadout.ammo[cal1]}`);
+    const taken = await page.evaluate(() => window.__m2.raidTaken());
+    check('★ M5-3 进局扣件清单里有主武器与弹药（撤离要把没用完的还回来）',
+      Array.isArray(taken) && taken.some((t) => t.itemId === 'rifle_m4') && taken.length >= 3,
+      `${taken ? taken.length : 0} 项`);
+
+    // 回大厅：必须先结束这一局（`returnToLobby` 现在也会兜底结算，但显式 abandon
+    // 才是玩家的真实路径 —— 而且它会把配装扣掉，因此下面要重新备货）
+    await page.evaluate(() => window.__m2.abandonRaid());
+    await waitForEnd(20000);
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
+
+    // 换枪再进局 → 局内随之改变（证明"配装只有一份数据"）。
+    // 注意选**主武器槽**里的枪（shotgun_m590 是 slot:1）；smg_v9 是 slot:2，
+    // 它出现在副武器槽 —— 界面按槽位过滤，这本身就是一条要被守住的规则。
+    await page.evaluate(() => window.__m2.grantTestKit());
+    await page.click('#lobbyTabs .tab[data-tab="loadout"]');
+    await sleep(80);
+    await page.select('#tabLoadout select[data-act-change="slotSelect"][data-slot="primary"]', 'shotgun_m590');
+    await sleep(150);
+    const lo2 = await page.evaluate(() => window.__m2.profile().loadout);
+    check('夹具成立：大厅把主武器换成霰弹枪', lo2.primary === 'shotgun_m590', `primary=${lo2.primary}`);
+    await startRaidFromLobby();
+    const s2 = await snap();
+    check('★ M5-3 换一把枪后，局内主武器随之改变（没有第二份配装数据）',
+      s2.weapon.id === 'shotgun_m590', `weapon=${s2.weapon.id}`);
+
+    // ---- ⑤ 技能效果真实生效（M5-5 的核心要求）----
+    const baseLimit = s2.loot.bag.limitKg;
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
+    const granted = await page.evaluate(() => window.__m2.grantExp(20000));
+    check('夹具成立：给经验后拿到技能点', granted.skillPoints > 0, JSON.stringify(granted));
+    await page.click('#lobbyTabs .tab[data-tab="skills"]');
+    await sleep(80);
+    const learnBtn = await page.$('#tabSkills .mini[data-act="skillLearn"][data-id="pack_mule"]');
+    check('夹具成立：技能面板里有"学习负重训练"按钮', !!learnBtn);
+    if (learnBtn) {
+      await learnBtn.click();
+      await sleep(150);
+      await startRaidFromLobby();
+      const boosted = (await snap()).loot.bag.limitKg;
+      check('★ M5-5 负重技能**真的**抬高了局内背包上限（不是只改了界面数字）',
+        boosted > baseLimit, `${baseLimit} → ${boosted} kg`);
+      await page.evaluate(() => window.__m2.returnToLobby());
+      await sleep(200);
+    }
+
+    // ---- ⑥ 画质档位真的装到渲染器上 ----
+    await page.evaluate(() => window.__m2.setSetting('graphicsQuality', 'low'));
+    await sleep(120);
+    const qLow = (await snap()).quality;
+    check('★ M5-8 画质低档：阴影关 + 像素比 1.0',
+      qLow.shadows === false && qLow.pixelRatio === 1, JSON.stringify(qLow));
+    await page.evaluate(() => window.__m2.setSetting('graphicsQuality', 'high'));
+    await sleep(120);
+    const qHigh = (await snap()).quality;
+    check('★ M5-8 画质高档：阴影开 + 尺寸 2048（尺寸变更必须真的重建 shadow map）',
+      qHigh.shadows === true && qHigh.shadowMapSize === 2048, JSON.stringify(qHigh));
+    await page.evaluate(() => window.__m2.setSetting('graphicsQuality', 'medium'));
+
+    // ---- ⑦ 改键立即生效，非法键被拒 ----
+    await page.evaluate(() => window.__m2.setSetting('bindings', { reload: ['KeyT'] }));
+    await sleep(80);
+    check('★ M5-8 改键：换弹改到 T 后**立即生效**（不需要重进游戏）',
+      (await snap()).bindings.reload[0] === 'KeyT', JSON.stringify((await snap()).bindings.reload));
+    await page.evaluate(() => window.__m2.setSetting('bindings', { forward: ['KeyI'] }));
+    await sleep(80);
+    check('★ M5-8 改键：移动类被拒绝（前进仍是 W，玩家不会改到自己走不动）',
+      (await snap()).bindings.forward[0] === 'KeyW', JSON.stringify((await snap()).bindings.forward));
+    await page.evaluate(() => window.__m2.setSetting('bindings', { reload: ['ControlLeft'] }));
+    await sleep(80);
+    const bRej = (await snap()).bindings.reload[0];
+    // 口径说明：`bindings` 是**整表覆盖**（界面每次提交完整的覆盖表），
+    // 因此"只提交一个非法项"的结果是这一项被拒、该动作回落默认 ——
+    // 断言要验的是"非法值绝不可能生效"，而不是"上一个合法值被保留"。
+    check('★ M5-8 改键：Ctrl 组合被拒绝（约束 C-19），非法值不会生效',
+      bRej !== 'ControlLeft', `reload=${bRej}（被拒后回落默认）`);
+    await page.evaluate(() => window.__m2.setSetting('bindings', {}));
+
+    // ---- ⑦b 设置面板本身（M5-8：独立模块 + 改键 UI，销 M5-TEMP-4）----
+    await page.click('#btnSettings');
+    await sleep(150);
+    const sp = await page.evaluate(() => {
+      const body = document.getElementById('settingsBody');
+      return {
+        on: document.getElementById('screenSettings').classList.contains('on'),
+        text: body.innerText.replace(/\s+/g, ' '),
+        segs: body.querySelectorAll('.seg[data-group]').length,
+        rebind: body.querySelectorAll('[data-rebind]').length,
+        locked: (body.innerText.match(/不可改/g) || []).length,
+      };
+    });
+    check('★ M5-8 设置面板由独立模块渲染（销 M5-TEMP-4：面板已离开局内 hud）',
+      sp.on && sp.segs >= 8 && sp.rebind > 0,
+      `档位 ${sp.segs} 组 · 可改键 ${sp.rebind} 项 · 面板可见=${sp.on}`);
+    check('★ M5-8 设置面板标出"移动类固定不可改"（制作人裁定 R3）',
+      sp.locked >= 4, `锁定 ${sp.locked} 项`);
+    check('M5-8 设置面板列出画质与触屏项（它们来自配置表的 schema，不是手写 HTML）',
+      /画质档位/.test(sp.text) && /触屏布局/.test(sp.text),
+      sp.text.slice(0, 40));
+
+    await page.click('#settingsBody .seg[data-group="graphicsQuality"][data-value="low"]');
+    await sleep(180);
+    check('★ M5-8 从面板改画质：立即生效（不是"存下来等下次"）',
+      (await snap()).quality.shadows === false, JSON.stringify((await snap()).quality));
+
+    await page.click('#settingsBody [data-rebind="reload"]');
+    await sleep(100);
+    const capturing = await page.evaluate(() => document.getElementById('settingsBody').innerText.includes('按键中'));
+    check('夹具成立：点"改键"后进入等待按键态', capturing);
+    await page.keyboard.press('KeyT');
+    await sleep(180);
+    check('★ M5-8 改键 UI：点击后按新键即生效',
+      (await snap()).bindings.reload[0] === 'KeyT', JSON.stringify((await snap()).bindings.reload));
+
+    await page.click('#btnSettingsReset');
+    await sleep(180);
+    const afterReset = await snap();
+    check('★ M5-8 恢复默认：画质与键位都回到配置表默认值（销 M1-TEMP-17）',
+      afterReset.quality.shadowMapSize === config.settings.qualityTable.medium.shadowMapSize
+        && afterReset.bindings.reload[0] === 'KeyR',
+      `shadow=${afterReset.quality.shadowMapSize} reload=${afterReset.bindings.reload[0]}`);
+    await page.click('#btnSettingsClose');
+    await sleep(150);
+    check('M5-8 设置面板的"返回"回到大厅（面板关闭）',
+      await page.evaluate(() => !document.getElementById('screenSettings').classList.contains('on')
+        && document.getElementById('screenLobby').classList.contains('on')));
+
+    // ---- ⑧ 结算页显示真实的局外信息（销 M4-TEMP-3）----
+    await startRaidFromLobby();
+    await page.evaluate(() => window.__m2.abandonRaid());
+    await waitForEnd(20000);
+    const endBody = await page.evaluate(() => document.getElementById('endBody').innerText);
+    const summary = await page.evaluate(() => window.__m2.lastRaidSummary());
+    check('★ M5 结算页显示**真实经验**（不再是占位的 +0）',
+      !!summary && summary.exp > 0 && endBody.includes(`+${summary.exp}`),
+      `exp=${summary ? summary.exp : 'null'}`);
+    check('★ M5 结算页显示等级与技能点（升级反馈）',
+      /等级/.test(endBody), endBody.replace(/\s+/g, ' ').slice(0, 70));
+    check('★ M5 结算页显示"消耗 / 损失"（阵亡时整套行装都丢）',
+      /消耗|损失/.test(endBody), endBody.replace(/\s+/g, ' ').slice(0, 70));
+    check('★ 幂等：结算落库后档案里记下了这一局的 raidId',
+      !!summary && (await page.evaluate(() => window.__m2.profile().lastRaidId)) === summary.raidId,
+      summary ? summary.raidId : 'null');
+  }
+
+  // ---- ⑨ 任务链：**完成并领奖**之后才解锁下一段（制作人裁定）----
+  if (m5Group('M5-6 任务链需领奖后才解锁下一段')) {
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
+    await page.evaluate(() => window.__m2.grantTestKit());
+
+    await page.click('#lobbyTabs .tab[data-tab="quests"]');
+    await sleep(120);
+    const acceptBtn = await page.$('#tabQuests .mini[data-act="questAccept"][data-id="q1_first_extract"]');
+    check('夹具成立：任务面板上有第一段任务的"接受"按钮', !!acceptBtn);
+    if (acceptBtn) {
+      await acceptBtn.click();
+      await sleep(150);
+      const active = await page.evaluate(() => window.__m2.profile().quests.active);
+      check('★ M5-6 手动接取第一段任务（不自动接）',
+        active.includes('q1_first_extract'), JSON.stringify(active));
+
+      // 打一局并成功撤离（q1 的目标就是"成功撤离"）
+      await page.click('#lobbyTabs .tab[data-tab="brief"]');
+      await startRaidFromLobby();
+      // 必须选一个**已开放**的撤离点：teleportToExtract() 取的是第一个点，
+      // 而时间门槛点在半场之前是灰的（站上去不计时）。这是夹具口径，不是产品问题。
+      const zone = await page.evaluate(() => {
+        const open = window.__m2.snapshot().extract.find((z) => z.open);
+        return open ? { x: open.x, z: open.z, floor: open.floor, rule: open.rule } : null;
+      });
+      check('夹具成立：存在已开放的撤离点（否则无法完成"成功撤离"）',
+        !!zone, zone ? `第 ${zone.floor} 层 · ${zone.rule}` : '无');
+      if (zone) await page.evaluate((zn) => window.__m2.teleport(zn.x, zn.z, zn.floor), zone);
+      const t0 = Date.now();
+      let extracted = false;
+      let lastS = null;
+      let maxProgress = 0;
+      let maxDist = 0;
+      let recoveries = 0;
+      while (Date.now() - t0 < 45000) {
+        // ★ 关键：指针锁定请求可能被浏览器冷却拒绝（上一次 exitLock 之后约 1 秒内），
+        //   此时游戏处于**暂停**态 —— 局内逻辑（含撤离倒计时）**不推进**。
+        //   不处理它就会把"暂停"误判成"撤离卡住"。ensureRunning 会点画布把锁定拿回来。
+        if (await ensureRunning('M5-6 任务链撤离')) recoveries++;
+        await page.evaluate(() => window.__m2.healPlayer(9999));
+        const s = await snap();
+        lastS = s;
+        if (zone && s.player) {
+          maxDist = Math.max(maxDist, Math.hypot(s.player.x - zone.x, s.player.z - zone.z));
+        }
+        maxProgress = Math.max(maxProgress, ...s.extract.map((z) => z.progress));
+        if (s.flow === 'ended') {
+          extracted = s.endReason === 'extracted';
+          break;
+        }
+        await sleep(400);
+      }
+      check('夹具成立：完成一局成功撤离（任务链要靠它推进）', extracted,
+        lastS
+          ? `flow=${lastS.flow} reason=${lastS.endReason} hp=${lastS.player ? lastS.player.health : 'n/a'} ` +
+            `maxProgress=${maxProgress} maxDist=${maxDist.toFixed(2)} 恢复锁定=${recoveries} ` +
+            `y=${lastS.player ? lastS.player.y : '?'} paused=${lastS.paused} rem=${lastS.remainingMs} ` +
+            `prog=[${lastS.extract.map((z) => Math.round(z.progress)).join(',')}] ${JSON.stringify(zone)}`
+          : '无快照');
+      await page.evaluate(() => window.__m2.returnToLobby());
+      await sleep(250);
+
+      await page.click('#lobbyTabs .tab[data-tab="quests"]');
+      await sleep(150);
+      const st1 = await page.evaluate(() => ({
+        text: document.getElementById('tabQuests').innerText.replace(/\s+/g, ' '),
+        quests: window.__m2.profile().quests,
+        states: window.__m2.lobby().views.quests.list.map((q) => ({
+          id: q.id, state: q.state, lockedBy: q.lockedBy, lockedByLabel: q.lockedByLabel,
+        })),
+      }));
+      check('★ M5-6 撤离成功后第一段任务变为"可领奖"（完成但未领奖）',
+        st1.quests.completed.includes('q1_first_extract')
+          && !st1.quests.claimed.includes('q1_first_extract'),
+        JSON.stringify({ completed: st1.quests.completed, claimed: st1.quests.claimed }));
+
+      const q2 = st1.states.find((s) => s.id === 'q2_scavenge');
+      check('★ M5-6 只完成未领奖时，下一段**仍然锁着**（制作人裁定：必须领奖才解锁）',
+        !!q2 && q2.state === 'locked' && q2.lockedBy === 'need-quest:q1_first_extract',
+        JSON.stringify(q2));
+      check('M5-6 锁定原因带上前置任务的**名字**（不是 id）',
+        !!q2 && /先完成并领取/.test(q2.lockedByLabel || '') && /活着回来/.test(q2.lockedByLabel || ''),
+        q2 ? q2.lockedByLabel : '无');
+      check('M5-6 面板上确实显示了这句锁定原因',
+        /先完成并领取/.test(st1.text), st1.text.slice(0, 70));
+
+      const claimBtn = await page.$('#tabQuests .mini[data-act="questClaim"][data-id="q1_first_extract"]');
+      check('夹具成立：任务面板上有"领奖"按钮', !!claimBtn);
+      if (claimBtn) {
+        await claimBtn.click();
+        await sleep(250);
+        const st2 = await page.evaluate(() => ({
+          claimed: window.__m2.profile().quests.claimed,
+          states: window.__m2.lobby().views.quests.list.map((q) => ({ id: q.id, state: q.state })),
+          safeTier: window.__m2.profile().safeTierUnlocked,
+        }));
+        check('★ M5-6 领奖后：奖励到账（货币 / 经验 / 安全箱档位解锁）',
+          st2.claimed.includes('q1_first_extract')
+            && st2.safeTier === config.lootTable.safeContainer.tiers[1].id,
+          `claimed=${st2.claimed.join(',')} safe=${st2.safeTier}`);
+        check('★ M5-6 领奖后，下一段变为"可接取"（这就是"领奖才解锁"的实现）',
+          st2.states.find((s) => s.id === 'q2_scavenge').state === 'available',
+          JSON.stringify(st2.states.find((s) => s.id === 'q2_scavenge')));
+        const accept2 = await page.$('#tabQuests .mini[data-act="questAccept"][data-id="q2_scavenge"]');
+        check('M5-6 下一段的"接受"按钮真的出现了', !!accept2);
+      }
+    }
+  }
+}
+
+// ============================================================
+try {
+  // `--only=m5`：只跑 M5 段落（自带 prepare，不依赖历史组的状态）。
+  // 不指定时按原顺序：历史组 → M5 段落 → 运行时错误。
+  if (ONLY) {
+    await runM5Groups();
+  } else {
+    await runLegacyGroups();
+    await runM5Groups();
   }
 
   // ============================================================

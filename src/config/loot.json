@@ -48,7 +48,7 @@
       "dropSoundTier": 4
     }
   ],
-  "_itemsComment": "§2.2 的物资分类：武器/弹药/护甲/医疗/消耗品/任务物品/纯价值。stack=每格堆叠上限；weightKg=单件重量（M3-5 负重使用）；vol=占格数。",
+  "_itemsComment": "§2.2 的物资分类：武器/弹药/护甲/医疗/消耗品/任务物品/纯价值。stack=每格堆叠上限；weightKg=单件重量（M3-5 负重使用）；vol=占格数。★ M5-3（制作人裁定）：**弹药的 stack 统一为 60 —— 一格最多 60 发**。于是仓库里 '1 件弹药 = 1 格 = 最多 60 发'，重量按 发数 × (weightKg / stack) 计，这就是弹药的**唯一**重量来源（此前 weapons.json 里另有一份 weightPerRoundKg，已删除）。",
   "items": [
     {
       "id": "canned_food",
@@ -69,7 +69,20 @@
       "rarity": "common",
       "value": 110,
       "weightKg": 0.3,
-      "stack": 5,
+      "stack": 60,
+      "w": 1,
+      "h": 1,
+      "vol": 1
+    },
+    {
+      "_comment": "★ M5-3 新增（制作人裁定）：霰弹原先**没有对应的物品条目**，于是霰弹枪既无法从仓库配弹、负重也算不出来 —— 那把枪实际不可用。补上这一条，并让它进掉落池（代价：common 档多一个物品，价值均值略降）。",
+      "id": "ammo_12ga",
+      "label": "12 号霰弹",
+      "category": "ammo",
+      "rarity": "common",
+      "value": 120,
+      "weightKg": 0.6,
+      "stack": 60,
       "w": 1,
       "h": 1,
       "vol": 1
@@ -93,7 +106,7 @@
       "rarity": "common",
       "value": 150,
       "weightKg": 0.4,
-      "stack": 3,
+      "stack": 60,
       "w": 1,
       "h": 1,
       "vol": 1
@@ -129,7 +142,7 @@
       "rarity": "uncommon",
       "value": 380,
       "weightKg": 0.4,
-      "stack": 5,
+      "stack": 60,
       "w": 1,
       "h": 1,
       "vol": 1
@@ -177,7 +190,7 @@
       "rarity": "rare",
       "value": 900,
       "weightKg": 0.4,
-      "stack": 5,
+      "stack": 60,
       "w": 1,
       "h": 1,
       "vol": 1

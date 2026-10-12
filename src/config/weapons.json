@@ -1,5 +1,7 @@
 {
   "_comment": "M2 武器数值表。硬性要求：后坐力曲线、开镜时间、扩散恢复速率等手感参数必须可量化并写在此处，禁止散落在逻辑代码中。所有伤害为『未计算护甲与距离衰减』的基础值。",
+  "_M5FieldsNote": "M5-3/M5-4：每把武器补齐『重量 / 估值 / 商店基价 / 物品形态』四项 —— 《流程文档》§8.2 明确要求武器表含重量与价格。它们在 M5 之前不存在（那时没有仓库与商店）。lootItemId 是『这把武器在掉落表里的物品条目 id』：只有 SR-25（loot.json 的 rifle_sr25）有，启动期会校验两张表的重量/估值/形状逐字段一致；其余武器在仓库里的物品形态由本表生成（武器不必同时是战利品，掉落池因此一字未改）。",
+  "_startLoadoutMoved": "原 startLoadout 段已迁至 src/config/equipment.json 的 starterLoadout（M5-3 起配装只有一份真值）。此处不再保留副本 —— 两份迟早分叉。",
   "weapons": [
     {
       "id": "pistol_p9",
@@ -66,7 +68,12 @@
       },
       "range": 120,
       "pellets": 1,
-      "adsMoveSpeedScale": 0.62
+      "adsMoveSpeedScale": 0.62,
+      "weightKg": 0.9,
+      "value": 900,
+      "price": 1200,
+      "item": { "w": 2, "h": 2 },
+      "lootItemId": null
     },
     {
       "id": "smg_v9",
@@ -141,7 +148,12 @@
       },
       "range": 120,
       "pellets": 1,
-      "adsMoveSpeedScale": 0.66
+      "adsMoveSpeedScale": 0.66,
+      "weightKg": 2.6,
+      "value": 1800,
+      "price": 2600,
+      "item": { "w": 2, "h": 3 },
+      "lootItemId": null
     },
     {
       "id": "rifle_m4",
@@ -232,7 +244,12 @@
       },
       "range": 220,
       "pellets": 1,
-      "adsMoveSpeedScale": 0.5
+      "adsMoveSpeedScale": 0.5,
+      "weightKg": 3.4,
+      "value": 2600,
+      "price": 3800,
+      "item": { "w": 2, "h": 4 },
+      "lootItemId": null
     },
     {
       "id": "shotgun_m590",
@@ -291,7 +308,12 @@
       },
       "range": 60,
       "pellets": 9,
-      "adsMoveSpeedScale": 0.55
+      "adsMoveSpeedScale": 0.55,
+      "weightKg": 3.8,
+      "value": 2000,
+      "price": 3000,
+      "item": { "w": 2, "h": 4 },
+      "lootItemId": null
     },
     {
       "id": "dmr_sr25",
@@ -354,46 +376,45 @@
       },
       "range": 300,
       "pellets": 1,
-      "adsMoveSpeedScale": 0.42
+      "adsMoveSpeedScale": 0.42,
+      "weightKg": 4.6,
+      "value": 3200,
+      "price": 5200,
+      "item": { "w": 2, "h": 4 },
+      "lootItemId": "rifle_sr25"
     }
   ],
+  "_ammoNote": "★ M5-3（制作人裁定）：口径表**不定义重量** —— 弹药的负重与仓库库存都以掉落表的物品重量为准（每格 60 发，单发重量 = 物品 weightKg / stack）。这里只声明『这个口径对应哪个物品条目』（lootItemId），启动期会校验它存在、且属于 ammo 类别。此前这里有一份 weightPerRoundKg，与掉落表构成同一件事的两份真值，已删除。",
   "ammo": [
     {
       "id": "9mm",
       "label": "9mm 手枪弹",
       "damageScale": 1,
-      "armorPenetration": 1
+      "armorPenetration": 1,
+      "lootItemId": "pistol_mag"
     },
     {
       "id": "5.56",
       "label": "5.56mm 步枪弹",
       "damageScale": 1,
-      "armorPenetration": 2
+      "armorPenetration": 2,
+      "lootItemId": "ammo_556"
     },
     {
       "id": "7.62",
       "label": "7.62mm 步枪弹",
       "damageScale": 1,
-      "armorPenetration": 3
+      "armorPenetration": 3,
+      "lootItemId": "ammo_762"
     },
     {
       "id": "12ga",
       "label": "12 号霰弹",
       "damageScale": 1,
-      "armorPenetration": 1
+      "armorPenetration": 1,
+      "lootItemId": "ammo_12ga"
     }
   ],
-  "startLoadout": {
-    "_comment": "M2 开局固定携带，用于让战斗循环可反复跑；真正的配装系统属 M5",
-    "primary": "rifle_m4",
-    "secondary": "pistol_p9",
-    "reserveByAmmo": {
-      "9mm": 60,
-      "5.56": 120,
-      "7.62": 40,
-      "12ga": 24
-    }
-  },
   "_designTargets": {
     "_comment": "手感设计目标，**按武器类别分别设定**。tools/ttk.mjs 据此判定并报告偏差，是『手感主观』的对策依据。",
     "_whyPerClass": "首版用了单一全局区间（0.32~0.62s），工具立刻报出 6 项『未达标』—— 但那些全是类别差异（霰弹枪、精确射手步枪的 TTK 本来就该与步枪不同），不是缺陷。一个把正常差异也报成失败的报表，会让人很快不再看它。",

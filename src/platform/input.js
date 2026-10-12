@@ -6,6 +6,24 @@
 //             M2 重写清单：改为动作语义映射层（前后左右/开火/换弹/交互），
 //             为后续按键自定义与手柄预留，且业务逻辑不得直接读按键码。
 // 平台范围依据：M0-TECH-01 —— 目标平台仅 PC 浏览器，故不处理触屏。
+//
+// ★ M5-8：键位表与改键校验已迁至 src/core/keybinds.js（那里是唯一真值）。
+//   本文件改为从它取默认绑定，并在设置变更后重新解析生效绑定。
+//   原因：改键需要输入层、设置界面、审计工具三处共用同一份键位知识，
+//   写三份必然分叉（审计通过但游戏里冲突）。
+
+import {
+  ACTIONS,
+  DEFAULT_BINDINGS,
+  MOUSE_BINDINGS,
+  FORBIDDEN_GAMEPLAY_MODIFIERS,
+  TOGGLEABLE_ACTIONS,
+  resolveBindings,
+} from '../core/keybinds.js';
+
+// 兼容性再导出：审计工具与单测此前从本文件取这几个常量。
+// 保留出口可以让那些检查一行不改地继续工作，而真值已经只有一份。
+export { DEFAULT_BINDINGS, MOUSE_BINDINGS, FORBIDDEN_GAMEPLAY_MODIFIERS, TOGGLEABLE_ACTIONS, ACTIONS };
 
 /**
  * M1 默认按键绑定。
@@ -26,53 +44,17 @@
  *
  * 历史缺陷（真实发生）：蹲下曾绑定 Ctrl，于"按住 Ctrl 前进"= Ctrl+W
  * 直接关闭页面，在 QQ 浏览器等 Chromium 系浏览器上可复现。
- * 已改为 KeyC。回归防护见 tools/audit-keybindings.mjs（静态审计，CI 可跑）。
+ * 已改为 KeyC。回归防护见 tools/audit-keybindings.mjs（静态审计，CI 可跑），
+ * 而**运行时**的防护是 core/keybinds.js 的 sanitizeBindings（改键时直接拒绝）。
  */
-export const DEFAULT_BINDINGS = Object.freeze({
-  forward: Object.freeze(['KeyW']),
-  back: Object.freeze(['KeyS']),
-  left: Object.freeze(['KeyA']),
-  right: Object.freeze(['KeyD']),
-  sprint: Object.freeze(['ShiftLeft', 'ShiftRight']),
-  crouch: Object.freeze(['KeyC']),
-  jump: Object.freeze(['Space']),
-  reload: Object.freeze(['KeyR']),
-  // 交互（搜索容器）用 F。
-  // 历史缺陷：它曾是 KeyE，与 leanRight 撞键 —— 右探头和搜刮同时被触发。
-  // 这个冲突是**静态审计原本抓不到的**（审计当时只查 Ctrl/Alt/Meta 规则），
-  // 现已补上"同一按键不得绑定到多个动作"的检查，见 tools/audit-keybindings.mjs。
-  interact: Object.freeze(['KeyF']),
-  leanLeft: Object.freeze(['KeyQ']),
-  leanRight: Object.freeze(['KeyE']),
-  // ---- M2 新增。M1 已确认的绑定一个都没动，这里是纯新增。----
-  // 约束依据：M2 禁止改动 M1 已确认的输入映射方案；新增键必须一并进审计（C-18/C-21）。
-  slotPrimary: Object.freeze(['Digit1']),
-  slotSecondary: Object.freeze(['Digit2']),
-  useConsumable1: Object.freeze(['Digit3']),
-  useConsumable2: Object.freeze(['Digit4']),
-  // 开镜用鼠标右键，不走键盘（因此不出现在 keydown 集合里）
-});
-
-/** 鼠标按键绑定（与键盘分开维护，但同样受审计约束） */
-export const MOUSE_BINDINGS = Object.freeze({
-  fire: 0,
-  ads: 2,
-});
-
-/**
- * 哪些动作支持"按住 / 切换"两种模式（可由设置页切换）。
- * 注意 leanLeft/leanRight 刻意不在其中：探头在 FPS 里必须是按住式的，
- * 否则玩家会处于"忘了自己在探头"的状态而持续暴露身体。
- */
-export const TOGGLEABLE_ACTIONS = Object.freeze(['sprint', 'crouch']);
-
-/** 浏览器保留的组合键修饰符：任何游戏动作绑定到它们都视为违规 */
-export const FORBIDDEN_GAMEPLAY_MODIFIERS = Object.freeze([
-  'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight',
-]);
 
 export function createInput(domElement, cfg, settings) {
   const keys = new Set();
+  // ★ M5-8：生效绑定（默认 + 玩家覆盖）。设置变更后由 main.js 调 syncSettings 重建，
+  //   而不是每次查询都重新解析 —— 一次 resolveBindings 要遍历全部动作，
+  //   而动作查询每帧会被调用几十次。
+  let currentSettings = settings;
+  let bindings = resolveBindings(currentSettings);
   const state = {
     // 鼠标累计增量，消费后清零
     mouseDX: 0,
@@ -222,7 +204,19 @@ export function createInput(domElement, cfg, settings) {
   return {
     state,
     /** 当前设置（按住/切换模式）。由 main.js 在设置页变更时同步过来 */
-    settings,
+    get settings() {
+      return currentSettings;
+    },
+    /**
+     * 设置变更后重建生效绑定（M5-8）。
+     * 改键必须**立刻生效**：若要求"重进游戏才生效"，玩家会以为改键失败。
+     */
+    syncSettings(next) {
+      currentSettings = next;
+      bindings = resolveBindings(currentSettings);
+    },
+    /** 当前生效的键位表（供界面显示"实际生效的是什么"，避免与默认表分叉） */
+    bindingsOf: () => bindings,
 
     /**
      * 每帧最开始调用一次：处理"切换"模式的边沿，并清空边沿缓冲。
@@ -232,7 +226,7 @@ export function createInput(domElement, cfg, settings) {
       // 先把本帧边沿快照下来，再清空 justPressed
       const snapshotEdges = Array.from(justPressed);
       for (const action of TOGGLEABLE_ACTIONS) {
-        const codes = DEFAULT_BINDINGS[action];
+        const codes = bindings[action];
         const down = anyDown(codes);
         let edge = false;
         for (const c of codes) {
@@ -241,7 +235,7 @@ export function createInput(domElement, cfg, settings) {
             break;
           }
         }
-        const mode = settings[action + 'Mode'];
+        const mode = currentSettings[action + 'Mode'];
         if (mode === 'toggle') {
           if (edge) toggleOn[action] = !toggleOn[action];
           activeState[action] = toggleOn[action];
@@ -268,7 +262,7 @@ export function createInput(domElement, cfg, settings) {
      * 不适用于持续动作：移动、开镜、探头、搜索。
      */
     pressedAction(action) {
-      const codes = DEFAULT_BINDINGS[action];
+      const codes = bindings[action];
       if (!codes) return false;
       for (const c of codes) if (frameEdges.has(c)) return true;
       return false;
@@ -317,16 +311,16 @@ export function createInput(domElement, cfg, settings) {
     // 动作查询。仍直接读按键码（见 [M1-TEMP-1]），但按键集合统一来自
     // DEFAULT_BINDINGS，避免键位散落在多处而漏改。
     // sprint / crouch 已改走 beginFrame() 解析后的状态，以支持"按住/切换"。
-    forward: () => anyDown(DEFAULT_BINDINGS.forward),
-    back: () => anyDown(DEFAULT_BINDINGS.back),
-    left: () => anyDown(DEFAULT_BINDINGS.left),
-    right: () => anyDown(DEFAULT_BINDINGS.right),
-    jump: () => anyDown(DEFAULT_BINDINGS.jump),
-    reload: () => anyDown(DEFAULT_BINDINGS.reload),
-    interact: () => anyDown(DEFAULT_BINDINGS.interact),
+    forward: () => anyDown(bindings.forward),
+    back: () => anyDown(bindings.back),
+    left: () => anyDown(bindings.left),
+    right: () => anyDown(bindings.right),
+    jump: () => anyDown(bindings.jump),
+    reload: () => anyDown(bindings.reload),
+    interact: () => anyDown(bindings.interact),
     // 探头固定为按住式，见 TOGGLEABLE_ACTIONS 的说明
-    leanLeft: () => anyDown(DEFAULT_BINDINGS.leanLeft),
-    leanRight: () => anyDown(DEFAULT_BINDINGS.leanRight),
+    leanLeft: () => anyDown(bindings.leanLeft),
+    leanRight: () => anyDown(bindings.leanRight),
 
     // ---- M2 新增动作 ----
     ads: () => state.adsHeld,
@@ -335,10 +329,10 @@ export function createInput(domElement, cfg, settings) {
      * （规则本体在 loot.json 的 interruptRules，这里只提供事实）。
      */
     firing: () => state.fireHeld,
-    slotPrimary: () => anyDown(DEFAULT_BINDINGS.slotPrimary),
-    slotSecondary: () => anyDown(DEFAULT_BINDINGS.slotSecondary),
-    useConsumable1: () => anyDown(DEFAULT_BINDINGS.useConsumable1),
-    useConsumable2: () => anyDown(DEFAULT_BINDINGS.useConsumable2),
+    slotPrimary: () => anyDown(bindings.slotPrimary),
+    slotSecondary: () => anyDown(bindings.slotSecondary),
+    useConsumable1: () => anyDown(bindings.useConsumable1),
+    useConsumable2: () => anyDown(bindings.useConsumable2),
     /** 消费滚轮增量（正=向下滚） */
     consumeWheel() {
       const d = state.wheelDelta;

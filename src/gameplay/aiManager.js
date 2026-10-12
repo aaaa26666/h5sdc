@@ -189,5 +189,14 @@ export function createAiManager({ cfg, level, scene, scheduler, player }) {
       }
       return best ? { ai: best, distance: bd } : null;
     },
+
+    /**
+     * M5-1：局末释放全部 AI 的渲染资源。
+     * **必须在摘掉局内子树之前调用** —— AI 死亡时会把自己的 mesh 从场景摘掉，
+     * 那些 mesh 已经不在子树里，光靠遍历子树会漏掉它们（泄漏随击杀数增长）。
+     */
+    dispose() {
+      for (const a of ais) a.dispose();
+    },
   };
 }

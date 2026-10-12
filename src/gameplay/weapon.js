@@ -45,12 +45,24 @@ function raySphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, r) {
   return t >= 0 ? t : tca + thc;
 }
 
-export function createWeaponSystem({ cfg, level, player, rng, emit }) {
+export function createWeaponSystem({ cfg, level, player, rng, emit, kit }) {
   const zoneOrder = cfg.hitZoneNames; // ['head','chest','stomach','limb']
 
   // ---- 装备与弹药 ----
-  const loadout = [cfg.startLoadout.primary, cfg.startLoadout.secondary];
-  const reserve = { ...cfg.startLoadout.reserveByAmmo };
+  // ★ M5-3：从 raidKit 取（销 M5-TEMP-2）。此前读的是 weapons.json 里写死的
+  //   startLoadout，于是"玩家在大厅换了枪，进局还是旧枪"。
+  //   缺省分支（没有 kit）保留给纯逻辑单测，它等价于配置表的起始配装 ——
+  //   有断言守着"两条路径在默认配装下逐字段一致"。
+  const lo = kit ? kit.loadout : {
+    primary: cfg.startLoadout.primary,
+    secondary: cfg.startLoadout.secondary,
+    ammo: cfg.startLoadout.reserveByAmmo,
+  };
+  const loadout = [lo.primary, lo.secondary].filter(Boolean);
+  const reserve = { ...lo.ammo };
+  // M5-5：据枪/精度技能改变后坐力与扩散（倍率由 core/progression.js 聚合）
+  const recoilScale = kit ? kit.modifiers.recoilScale : 1;
+  const spreadScale = kit ? kit.modifiers.spreadScale : 1;
 
   const states = loadout.map((id) => {
     const def = weaponById(id);
@@ -63,7 +75,7 @@ export function createWeaponSystem({ cfg, level, player, rng, emit }) {
       reloading: false,
       reloadEndAt: 0,
       reloadWasTactical: false,
-      spread: def.hipSpreadDeg,
+      spread: def.hipSpreadDeg * spreadScale,
     };
   });
 
@@ -96,7 +108,7 @@ export function createWeaponSystem({ cfg, level, player, rng, emit }) {
     if (cur.reloading) {
       cur.reloading = false; // 切枪打断换弹（M2 的简化处理，不退还已装填的子弹）
     }
-    cur.spread = baseSpread(cur.def, adsT > 0.5);
+    cur.spread = baseSpread(cur.def, adsT > 0.5) * spreadScale;
     activeIndex = index;
     adsT = 0; // 切枪后退镜
     stats.swaps++;
@@ -200,13 +212,16 @@ export function createWeaponSystem({ cfg, level, player, rng, emit }) {
     stats.shotsFired++;
 
     // ---- 后坐力：加到 player 的临时偏移上（不污染玩家的瞄准）----
+    // M5-5：据枪稳定技能按 recoilScale 缩放后坐力（1 = 无加成）
     const rc = recoilAt(wdef, Math.max(0, wdef.magazineSize - s.magazine - 1), adsT > 0.5, rng);
-    player.addRecoil(rc.yawDeg * DEG, rc.pitchDeg * DEG);
+    player.addRecoil(rc.yawDeg * DEG * recoilScale, rc.pitchDeg * DEG * recoilScale);
     lastShotAt = nowMs;
 
     // ---- 扩散：开火后扩大 ----
+    // 注意：累积值（s.spread）本身不缩放，缩放的是**这一次实际用的扩散角** ——
+    // 若连累积值一起缩，扩散上限与恢复速率的相对关系会被破坏（手感会变得说不清）。
     const moving = Math.hypot(player.state.vel.x, player.state.vel.z) > 0.6;
-    const spreadForShot = s.spread;
+    const spreadForShot = s.spread * spreadScale;
     s.spread = spreadOnShot(wdef, s.spread, adsT > 0.5, moving);
 
     // ---- 逐弹丸解算 ----

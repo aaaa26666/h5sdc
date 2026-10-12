@@ -20,11 +20,15 @@ export function createInventory(cfg, opts = {}) {
   const bpDef = table.backpack;
   const safeDef = table.safeContainer;
   const excluded = safeDef.excludeCategories || [];
+  // ★ M5-5：负重上限与安全箱档位来自 raidKit。
+  //   modifiers.weightLimitKg 已经是**绝对值**（= 掉落表基线 + 技能加成），
+  //   因此这里不再做加法 —— 加法的唯一位置是 core/progression.js 的 skillModifiers。
+  const kit = opts.kit || null;
 
   const grid = createGrid(bpDef.w, bpDef.h);
-  const weightLimitKg = bpDef.weightLimitKg;
+  const weightLimitKg = kit ? kit.modifiers.weightLimitKg : bpDef.weightLimitKg;
 
-  const tierId = opts.safeTierId || safeDef.tiers[0].id;
+  const tierId = (kit && kit.loadout.safeTierId) || opts.safeTierId || safeDef.tiers[0].id;
   const tier = safeDef.tiers.find((t) => t.id === tierId) || safeDef.tiers[0];
   const safeGrid = createGrid(tier.w, tier.h);
 
