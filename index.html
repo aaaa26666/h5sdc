@@ -105,6 +105,58 @@
       /* 主大厅（M5-1）：内容比结算页长（战区简报 + 可折叠的操作说明），
          所以给它更宽并允许纵向滚动 —— 小屏上不能靠"内容很少"侥幸不溢出。 */
       .card.lobby { width: min(780px, 94vw); max-height: 92vh; overflow: auto; }
+      /* ★ [M6-BUG-03] 结算页也要能装下"很长的一局"。
+         body 是 overflow:hidden，而结算明细随战利品条数增长（带出 / 损失 / 存入仓库逐件列出，
+         再加上稀有度、经验、任务、消耗统计），卡片此前**没有 max-height / overflow** ——
+         超出视口的部分直接看不到，"返回大厅"按钮也会被顶出屏幕，玩家只能刷新页面。
+         做法不是"整张卡片滚"（那样按钮仍会被滚出视野），而是三段式：
+         **标题固定 / 明细区滚动 / 按钮固定** —— 出口永远在屏幕内。
+
+         ★ M6-UI-01：结算页改为**分段式**（对齐《三角洲行动》）：
+           第 1 段 = 撤离详情 / 本局收益 / 任务完成情况（只讲"这一局怎么样"）；
+           第 2 段 = 撤离携带物品的详情（逐件清单）。
+         为什么要分段，而不是把清单继续堆在同一页：
+           内容量随战利品条数**无上限增长**，一页塞不下就只剩"滚"，而玩家最需要先看到的
+           三件事（撤离结果、收益、任务）会被埋进几十行物品里 —— 上一版就是这样，
+           一局带出 40 件时开场看到的是物品清单的**中段**（见 results/end-screen-long-before.png）。
+           分段后：结论在一屏内讲完，清单是"想看才点进去"的第二屏。 */
+      .card.end { display: flex; flex-direction: column; max-height: 92vh; width: min(680px, 94vw); }
+      .end-head { flex: none; }
+      .end-head h1 { font-size: 22px; }
+      .end-head h2 { margin-bottom: 10px; }
+      /* 步骤指示：让玩家知道"还有一屏"，而不是以为结算就这么多 */
+      .end-steps { display: flex; gap: 8px; margin-bottom: 14px; }
+      .end-step { padding: 2px 12px; border-radius: 999px; font-size: 12px; color: var(--dim);
+        border: 1px solid rgba(120,160,180,.25); }
+      .end-step.on { color: var(--ink); border-color: rgba(140,200,225,.7); background: rgba(80,150,190,.18); }
+      /* 两段共用这一个滚动容器；切换段时由 JS 把 scrollTop 归零（否则第 2 段会继承滚动位置） */
+      #endPages { flex: 0 1 auto; min-height: 0; overflow-y: auto;
+        overscroll-behavior: contain; padding-right: 8px; scrollbar-width: thin; }
+      #endPages::-webkit-scrollbar { width: 8px; }
+      #endPages::-webkit-scrollbar-thumb { background: rgba(120,160,180,.35); border-radius: 4px; }
+      .end-page { display: none; }
+      .end-page.on { display: block; }
+      /* 分段：每段一个小标题（左侧竖线），段与段之间留白 —— 不靠空行分隔 */
+      .sec { margin-bottom: 16px; }
+      .sec:last-child { margin-bottom: 4px; }
+      .sec-title { font-size: 12px; letter-spacing: .12em; color: var(--dim);
+        border-left: 3px solid rgba(140,200,225,.55); padding-left: 8px; margin-bottom: 6px; }
+      /* 统计网格：第 1 段的"撤离详情 / 本局收益"都是"标签 → 数字"的短行，
+         排成两列才能在**一屏内**把三段结论讲完（单列时 800px 高的窗口要滚一下，
+         而这一滚恰好会把「任务完成情况」推进盲区 —— 那正是分段要解决的问题）。 */
+      .grid2 { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
+      .grid2 .row { padding: 4px 0; }
+      /* 底部：左"第 N / 2 步"、右按钮组（右下角） */
+      .end-foot { flex: none; display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; margin-top: 14px; }
+      .end-foot .btns { margin-top: 0; }
+      .end-foot .btn { margin-top: 0; }
+      .btn.primary { background: rgba(80,150,190,.30); border-color: rgba(140,200,225,.85); }
+      .btn.ghost { background: transparent; border-color: rgba(140,200,225,.22); color: var(--dim); }
+      /* 按钮只属于它所在的那一段：第 1 段是「下一步」，第 2 段才是「上一步 / 返回大厅」。
+         用 data-step 而不是 JS 逐个切 style —— 显示规则写在 CSS 里，界面状态只有一个来源。 */
+      .card.end[data-step="1"] #btnEndBack, .card.end[data-step="1"] #btnRestart { display: none; }
+      .card.end[data-step="2"] #btnEndNext { display: none; }
       .card.lobby .li { padding-left: 12px; line-height: 1.5; }
       .card.lobby details { margin-top: 10px; }
       .card p { margin: 6px 0; }
@@ -264,7 +316,9 @@
           <div class="row"><span class="k">跳跃</span><span>Space</span></div>
           <div class="row"><span class="k">左右探头</span><span>Q / E（按住；射击从探头位置出膛）</span></div>
           <div class="row"><span class="k">搜索容器</span><span>靠近后按住 F</span></div>
-          <div class="row"><span class="k">医疗</span><span>3 绷带 · 4 急救包（受击会打断）</span></div>
+          <!-- [M6-BUG-01] 绷带的规则必须写出来："未满血即可用"（恢复 18），
+               否则玩家在满血时按 3 只会看到"没反应"，把它当成坏了。 -->
+          <div class="row"><span class="k">医疗</span><span>3 绷带（未满血即可用，回 18）· 4 急救包（回 65；使用中受击会打断）</span></div>
           <div class="row"><span class="warn">注意</span><span class="warn">请勿使用 Ctrl 组合键（浏览器保留，无法拦截）</span></div>
           <div class="row"><span class="k">撤离</span><span>走进撤离区（绿=可用，灰=未开放）并停留 10 秒</span></div>
           <div class="row"><span class="k">暂停 / 设置</span><span>Esc 解锁指针后可打开设置</span></div>
@@ -332,14 +386,66 @@
       </div>
     </div>
 
+    <!-- 结算页（M6-UI-01 起为**分段式**，对齐《三角洲行动》的结算流程）：
+         第 1 段 = 撤离详情 / 本局收益 / 任务完成情况；右下角「下一步」→ 第 2 段；
+         第 2 段 = 撤离携带物品的详情；右下角「返回大厅」回大厅。
+         结构与样式见上面 .card.end / .end-page / .end-foot 的注释：
+         卡头（标题 + 步骤指示）固定、明细区滚动、按钮固定在屏幕内。 -->
     <div class="screen" id="screenEnd">
-      <div class="card">
-        <h1 id="endTitle">结算</h1>
-        <h2 id="endSubtitle"></h2>
-        <div id="endBody"></div>
-        <!-- M5-1：这里是**返回大厅**，不再是整页刷新。
-             刷新也能"回到大厅"，但会重建整个页面 —— 那样局外系统每局都要重建一次。 -->
-        <div class="btn" id="btnRestart">返回大厅</div>
+      <div class="card end" data-step="1">
+        <div class="end-head">
+          <h1 id="endTitle">结算</h1>
+          <h2 id="endSubtitle"></h2>
+          <div class="end-steps" id="endSteps">
+            <span class="end-step on" data-step="1">① 本局结算</span>
+            <span class="end-step" data-step="2">② 携带物品</span>
+          </div>
+        </div>
+
+        <!-- 两段共用这一个滚动容器；段内容是 JS 填的（hud.showResult） -->
+        <div id="endPages">
+          <section class="end-page on" id="endPage1">
+            <div class="sec">
+              <div class="sec-title">撤离详情</div>
+              <div id="endBasic"></div>
+            </div>
+            <div class="sec">
+              <div class="sec-title">本局收益</div>
+              <div id="endGain"></div>
+            </div>
+            <div class="sec">
+              <div class="sec-title">任务完成情况</div>
+              <div id="endQuest"></div>
+            </div>
+          </section>
+
+          <section class="end-page" id="endPage2">
+            <div class="sec">
+              <div class="sec-title" id="endItemsTitle">带出的物品</div>
+              <div id="endItems"></div>
+            </div>
+            <div class="sec">
+              <div class="sec-title" id="endLostTitle">损失的物品</div>
+              <div id="endLost"></div>
+            </div>
+            <div class="sec">
+              <div class="sec-title">入库明细</div>
+              <div id="endStash"></div>
+            </div>
+          </section>
+        </div>
+
+        <!-- 右下角：第 1 段只有「下一步」，第 2 段才是「上一步 / 返回大厅」
+             （显隐由 .card.end[data-step] 的 CSS 决定，不由 JS 逐个切 style）。
+             M5-1：「返回大厅」不是整页刷新 —— 刷新也能回大厅，但会重建整个页面。 -->
+        <div class="end-foot">
+          <div class="muted" id="endStepHint">第 1 / 2 步 · 本局结算</div>
+          <div class="btns">
+            <div class="btn ghost" id="btnEndBack">上一步</div>
+            <div class="btn primary" id="btnEndNext">下一步</div>
+            <div class="btn primary" id="btnRestart">返回大厅</div>
+          </div>
+        </div>
       </div>
     </div>
 

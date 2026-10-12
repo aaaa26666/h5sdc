@@ -95,7 +95,7 @@
       "label": "绷带",
       "healAmount": 18,
       "useMs": 1400,
-      "maxHealthCap": 45,
+      "maxHealthCap": 100,
       "stopOnDamage": true
     },
     {

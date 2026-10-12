@@ -25,7 +25,7 @@ import {
   applySpread,
 } from '../src/core/ballistics.js';
 import { pickUpdateTier, jitteredDeadline } from '../src/core/navgrid.js';
-import { createVitals, heal, canHealWith } from '../src/gameplay/vitals.js';
+import { createVitals, heal, canHealWith, useProgressRatio } from '../src/gameplay/vitals.js';
 import {
   accelerate, airAccelerate, applyFriction,
   createJumpState, queueJump, consumeJump,
@@ -391,10 +391,62 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 
     v.health = 50;
     const v0 = { ...v, health: 50 };
-    check('canHealWith：血量高于上限时为 false',
-      canHealWith(v0, { maxHealthCap: 45 }) === false);
-    v0.health = 20;
-    check('canHealWith：血量低于上限时为 true', canHealWith(v0, { maxHealthCap: 45 }) === true);
+    check('canHealWith：血量已高于该药可治上限时为 false（用了也没有收益）',
+      canHealWith(v0, { maxHealthCap: 45, healAmount: 18 }) === false);
+    check('canHealWith：血量低于上限时为 true',
+      canHealWith({ maxHealth: 100, health: 20 }, { maxHealthCap: 45, healAmount: 18 }) === true);
+    check('canHealWith：healAmount 缺失时不会误判为可用（不浪费道具）',
+      canHealWith({ maxHealth: 100, health: 20 }, { maxHealthCap: 45 }) === false);
+
+    // ★ [M6-BUG-01] 用**真实配置**守住"绷带未满血即可用"。
+    // 回归的现象：按 3 完全没反应 —— 当时绷带把 maxHealthCap:45 当准入门槛，
+    // 于是血量 ≥45（满血 100、受伤到 60）时一按就静默失败，玩家只会认为绷带坏了。
+    const bandageDef = config.consumables.find((c) => c.id === 'bandage');
+    const medkitDef = config.consumables.find((c) => c.id === 'medkit');
+    const at = (hp) => ({ maxHealth: 100, health: hp });
+    check('绷带在 60 血时可用（回归：按 3 无法使用绷带）',
+      canHealWith(at(60), bandageDef) === true);
+    check('绷带在 99 血时可用（只回 1 点也是玩家自己的选择）',
+      canHealWith(at(99), bandageDef) === true);
+    check('绷带在满血 100 时被拒绝（不浪费道具）', canHealWith(at(100), bandageDef) === false);
+    check('急救包在 99 血时可用、满血时被拒绝',
+      canHealWith(at(99), medkitDef) === true && canHealWith(at(100), medkitDef) === false);
+    check('绷带的可用判据与 heal() 的落点一致（同一只口径，不会分叉）',
+      bandageDef.maxHealthCap >= config.playerVitals.maxHealth, `cap=${bandageDef.maxHealthCap}`);
+
+    const vb = createVitals({ maxHealth: 100, armorBySlot: { head: 'none', body: 'none' }, cfg: config });
+    vb.health = 60;
+    const hb = heal(vb, bandageDef.healAmount, bandageDef.maxHealthCap);
+    check('60 血用绷带 → 78 血（恢复 18，不再被 45 上限截断）',
+      vb.health === 78 && hb === 18, `health=${vb.health} healed=${hb}`);
+  }
+
+  // ---- 医疗读条：时钟口径（[M6-BUG-02]）----
+  // 真实现象：按 4 用急救包时读条异常 —— 本局暂停过之后，进度条一按下去就不是 0。
+  {
+    check('读条：起始 0、半程 0.5、到点 1',
+      useProgressRatio(1000, 3000, 1000) === 0 &&
+        Math.abs(useProgressRatio(1000, 3000, 2500) - 0.5) < 1e-9 &&
+        useProgressRatio(1000, 3000, 4000) === 1);
+    check('读条：任何输入都不产生 NaN / 负数 / 超 1',
+      useProgressRatio(1000, 3000, 99999) === 1 &&
+        useProgressRatio(1000, 3000, 500) === 0 &&
+        useProgressRatio(1000, 0, 2000) === 0 &&
+        useProgressRatio(NaN, 3000, 2000) === 0 &&
+        useProgressRatio(1000, 3000, NaN) === 0);
+
+    // 现场复现：本局先暂停 2 秒，然后按 4 用急救包（3000ms）。
+    const pausedTotalMs = 2000;
+    const rawNow0 = 100000;
+    const clock = (raw) => raw - pausedTotalMs; // raidClock：扣掉暂停时长
+    const startedAt = clock(rawNow0);           // useConsumable 写入的必须是局内时钟
+    const wrong = useProgressRatio(startedAt, 3000, rawNow0);       // 传原始帧时间戳（旧缺陷）
+    const right = useProgressRatio(startedAt, 3000, clock(rawNow0)); // 传局内时钟（修复后）
+    check('读条：把原始帧时间戳传进去会带上"暂停时长/总时长"的偏移（旧缺陷可复现）',
+      Math.abs(wrong - 2000 / 3000) < 1e-9, `wrong=${wrong.toFixed(3)}`);
+    check('读条：传入局内时钟则从 0 开始（修复后）', right === 0, `right=${right}`);
+    check('读条：300ms 后为 0.1（与暂停时长无关）',
+      Math.abs(useProgressRatio(startedAt, 3000, clock(rawNow0 + 300)) - 0.1) < 1e-9);
   }
 
   check('第一发视为瞬时命中（TTK = (发数-1)×间隔）',

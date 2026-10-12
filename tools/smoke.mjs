@@ -778,10 +778,9 @@ async function runLegacyGroups() {
     const beforeHeal = await snap();
     const medkitsBefore = beforeHeal.consumables.medkit;
 
-    // 用急救包（上限 100）而不是绷带（上限 45）：
-    // 绷带在血量高于 45 时按设计**不产生效果**（见 player.useConsumable），
-    // 这里若用绷带就会测成"没回血"，那是设计正确而非缺陷。
-    // 绷带的"高于上限不生效"已由单测覆盖。
+    // 这里用急救包而不是绷带，是为了**一次把血拉满**（回 65，上限 100）：
+    // 紧接着的"满血时按 3 不消耗绷带"需要"生命已满"这个前提。
+    // （绷带本身"未满血即可用、满血被拒"的完整回归见 M5 段的 [M6 医疗回归] 组。）
     await page.keyboard.press('Digit4');
     await sleep(250);
     const using = await snap();
@@ -798,16 +797,19 @@ async function runLegacyGroups() {
     check('消耗品数量减少', healed.consumables.medkit === medkitsBefore - 1,
       `急救包 ${medkitsBefore} → ${healed.consumables.medkit}`);
 
-    // 顺带验证：血量已高于绷带上限时，按 3 不应消耗绷带
-    if (healed.player.health > 45) {
-      const b0 = healed.consumables.bandage;
-      await page.keyboard.press('Digit3');
-      await sleep(400);
-      const noop = await snap();
-      check('血量高于绷带上限时使用绷带会被拒绝（不浪费）',
-        noop.consumables.bandage === b0 && noop.player.using === false,
-        `绷带 ${b0} → ${noop.consumables.bandage}, using=${noop.player.using}`);
-    }
+    // ★ [M6-BUG-01] 绷带的判据已从"血量低于其上限 45"改为"未满血即可用"。
+    //   这里只守**满血不浪费**这一面（先用夹具回满血，不再依赖"急救包刚好回满"）；
+    //   "60 血按 3 能用绷带"的正面回归在 M5 段落的 [M6 医疗回归] 组里，可 --only 单独跑。
+    await call('healPlayer', 9999);
+    await sleep(150);
+    const fullHp = await snap();
+    const b0 = fullHp.consumables.bandage;
+    await page.keyboard.press('Digit3');
+    await sleep(400);
+    const noop = await snap();
+    check('满血时按 3 会被拒绝且不消耗绷带（不浪费）',
+      noop.consumables.bandage === b0 && noop.player.using === false,
+      `绷带 ${b0} → ${noop.consumables.bandage}, using=${noop.player.using}（生命 ${fullHp.player.health}）`);
   }
 
   // ============================================================
@@ -939,13 +941,15 @@ async function runLegacyGroups() {
     //   只查 `raidResult` 不够：那个对象是纯函数产物，**即使一个字都没画到界面上**
     //   它照样是有的 —— 我改 M4-BUG-02 时就一度让这条路径只结算、不显示，
     //   而当时所有断言仍然全绿。这条断言就是为了让"结算页真的画出来了"成为事实。
-    //   结算正文写在 `#screenEnd` 里的 `#endBody`（见 index.html）。
+    //   M6-UI-01 起结算页是**分段式**：结算正文在第 1 段 `#endPage1`（见 index.html）。
     const endShown = await page.evaluate(
       () => document.getElementById('screenEnd').classList.contains('on')
     );
     const endText = await page.evaluate(() => {
-      const b = document.getElementById('endBody');
-      return b ? b.textContent.replace(/\s+/g, ' ').trim() : '';
+      // 两段都读（textContent 不看显隐）——"画出来了"的判据是**内容存在**，
+      // 而"第几段可见"由下面 [M6-UI-01] 那组专门断言。
+      const pages = [document.getElementById('endPage1'), document.getElementById('endPage2')];
+      return pages.map((b) => (b ? b.textContent : '')).join(' ').replace(/\s+/g, ' ').trim();
     });
     check('★ 点击提示后结算页真的画出内容（不是"只结算、不显示"）',
       endShown === true && endText.length > 0 && endText.includes(String(beforeSafe)),
@@ -1778,6 +1782,42 @@ async function runLegacyGroups() {
       && (await page.evaluate(() => document.getElementById('screenEnd').classList.contains('on'))),
       `flow=${ended.flow} reason=${ended.endReason}`);
 
+    // ★ M6-UI-01：结算页是**两段式**，出口在第 2 段的右下角 ——
+    //   所以这里必须走玩家真实路径：第 1 段 →「下一步」→ 第 2 段 →「返回大厅」。
+    //   原来直接点 `#btnRestart` 的写法在新结构下会失败（它在第 1 段是隐藏的），
+    //   而"按钮藏起来了测试还点得到"这件事本身也不该被允许。
+    const step1 = await page.evaluate(() => ({
+      step: document.querySelector('#screenEnd .card.end').dataset.step,
+      nextShown: document.getElementById('btnEndNext').getClientRects().length > 0,
+      restartShown: document.getElementById('btnRestart').getClientRects().length > 0,
+      page1Shown: document.getElementById('endPage1').getClientRects().length > 0,
+      page2Shown: document.getElementById('endPage2').getClientRects().length > 0,
+    }));
+    check('★ [M6-UI-01] 结算页第 1 段只有「下一步」，明细段与「返回大厅」都还没出现',
+      step1.step === '1' && step1.nextShown && !step1.restartShown && step1.page1Shown && !step1.page2Shown,
+      JSON.stringify(step1));
+    await page.click('#btnEndNext');
+    await sleep(150);
+    const step2 = await page.evaluate(() => ({
+      step: document.querySelector('#screenEnd .card.end').dataset.step,
+      nextShown: document.getElementById('btnEndNext').getClientRects().length > 0,
+      restartShown: document.getElementById('btnRestart').getClientRects().length > 0,
+      page1Shown: document.getElementById('endPage1').getClientRects().length > 0,
+      page2Shown: document.getElementById('endPage2').getClientRects().length > 0,
+      hint: document.getElementById('endStepHint').textContent,
+    }));
+    check('★ [M6-UI-01] 点「下一步」切到第 2 段（携带物品），右下角换成「返回大厅」',
+      step2.step === '2' && step2.restartShown && !step2.nextShown && step2.page2Shown && !step2.page1Shown,
+      JSON.stringify(step2));
+    await page.click('#btnEndBack');
+    await sleep(150);
+    const backStep = await page.evaluate(
+      () => document.querySelector('#screenEnd .card.end').dataset.step
+    );
+    check('M6-UI-01 「上一步」能回到第 1 段（不会把玩家困在清单页）', backStep === '1', `step=${backStep}`);
+    await page.click('#btnEndNext');
+    await sleep(150);
+
     await page.click('#btnRestart');
     await sleep(500);
     const back = await snap();
@@ -2012,6 +2052,12 @@ async function runM5Groups() {
 
   // ---- ④ 配装进局一致性 / ⑤ 技能生效 / ⑥ 画质 / ⑦ 改键 / ⑧ 结算页 ----
   if (m5Group('M5-3/M5-5/M5-8 配装进局·技能生效·画质·改键·结算页')) {
+    // 自带页面加载：`--only=结算页` 这类只跑本组的调用会跳过前面的 goto，
+    // 页面此时还停在 about:blank（`window.__m2` 不存在）。组内自足才能被单独回归。
+    if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
+      await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    }
     await page.evaluate(() => window.__m2.grantTestKit());
     // ---- ④ 局内用的就是局外配的（销 M5-TEMP-2 的直接证据）----
     await page.click('#lobbyTabs .tab[data-tab="loadout"]');
@@ -2167,7 +2213,24 @@ async function runM5Groups() {
     await startRaidFromLobby();
     await page.evaluate(() => window.__m2.abandonRaid());
     await waitForEnd(20000);
-    const endBody = await page.evaluate(() => document.getElementById('endBody').innerText);
+    // M6-UI-01：结算页是两段式，第 1 段 = 撤离详情 / 本局收益 / 任务完成情况。
+    // 这里用 textContent 读**内容**（不看显隐）；"哪一段可见 + 按钮"由下面 [M6-UI-01] 那组断言。
+    const endContent = await page.evaluate(() => {
+      const grab = (id) => {
+        const n = document.getElementById(id);
+        return n ? n.textContent.replace(/\s+/g, ' ').trim() : '';
+      };
+      return {
+        page1: grab('endPage1'),
+        basic: grab('endBasic'),
+        gain: grab('endGain'),
+        quest: grab('endQuest'),
+        items: grab('endItems'),
+        stash: grab('endStash'),
+        titles: Array.from(document.querySelectorAll('#endPage1 .sec-title')).map((n) => n.textContent),
+      };
+    });
+    const endBody = endContent.page1;
     const summary = await page.evaluate(() => window.__m2.lastRaidSummary());
     check('★ M5 结算页显示**真实经验**（不再是占位的 +0）',
       !!summary && summary.exp > 0 && endBody.includes(`+${summary.exp}`),
@@ -2179,10 +2242,70 @@ async function runM5Groups() {
     check('★ 幂等：结算落库后档案里记下了这一局的 raidId',
       !!summary && (await page.evaluate(() => window.__m2.profile().lastRaidId)) === summary.raidId,
       summary ? summary.raidId : 'null');
+
+    // ---- ⑧a [M6-UI-01] 第 1 段必须就是那三段，且各段都有实质内容 ----
+    check('★ [M6-UI-01] 第 1 段就是三段：撤离详情 / 本局收益 / 任务完成情况',
+      endContent.titles.join('|') === '撤离详情|本局收益|任务完成情况',
+      endContent.titles.join('|'));
+    check('★ [M6-UI-01] 「撤离详情」有本局战绩（用时 / 击杀 / 容器 / 开火 / 剩余生命）',
+      ['单局用时', '击杀敌人', '开启容器', '开火次数', '剩余生命'].every((k) => endContent.basic.includes(k)),
+      endContent.basic.slice(0, 100));
+    check('★ [M6-UI-01] 「本局收益」有收益口径（带出估值 / 保险箱保住 / 保住比例 / 经验）',
+      ['带出估值', '保险箱保住', '物资保住比例', '经验'].every((k) => endContent.gain.includes(k)),
+      endContent.gain.slice(0, 100));
+    check('★ [M6-UI-01] 「任务完成情况」有内容（没有进度时也必须明说，不能空着）',
+      endContent.quest.length > 0, endContent.quest.slice(0, 100));
+    check('★ [M6-UI-01] 逐件清单在第 2 段，第 1 段不堆清单（否则结论又会被埋起来）',
+      endContent.items.length > 0 && !/带出的物品（/.test(endContent.page1),
+      `第 2 段物品正文 ${endContent.items.length} 字`);
+
+    // ---- ⑧b [M6-BUG-03] 结算页再长也不许超出屏幕 ----
+    // 真实现象：战利品多的时候，逐件明细会把卡片撑到视口之外，而 body 是 overflow:hidden ——
+    // 超出部分**根本看不到**，"返回大厅"按钮同时被顶出屏幕，玩家只能刷新页面。
+    // M6-UI-01 之后逐件明细在第 2 段，所以这条断言要**先切到第 2 段**再撑满它：
+    // 只断言 CSS 里写了 max-height 是证明不了"按钮真的在屏幕内"的。
+    await page.click('#btnEndNext');
+    await sleep(150);
+    const over = await page.evaluate(() => {
+      const screen = document.getElementById('screenEnd');
+      const pages = document.getElementById('endPages');
+      const items = document.getElementById('endItems');
+      const btn = document.getElementById('btnRestart');
+      const card = screen.querySelector('.card.end');
+      const wasOn = screen.classList.contains('on');
+      const keep = items.innerHTML;
+      screen.classList.add('on');
+      items.innerHTML = Array.from({ length: 80 }, (_, i) =>
+        `<div class="row"><span class="k">明细 ${i}</span><span>${i * 137}</span></div>`).join('');
+      const cb = card.getBoundingClientRect();
+      const bb = btn.getBoundingClientRect();
+      const out = {
+        step: card.dataset.step,
+        cardTop: Math.round(cb.top),
+        cardBottom: Math.round(cb.bottom),
+        btnBottom: Math.round(bb.bottom),
+        vh: window.innerHeight,
+        scrollable: pages.scrollHeight > pages.clientHeight + 1,
+        overflowY: getComputedStyle(pages).overflowY,
+      };
+      items.innerHTML = keep;
+      if (!wasOn) screen.classList.remove('on');
+      return out;
+    });
+    check('★ [M6-BUG-03] 结算明细超长时卡片仍在视口内（不再被裁掉）',
+      over.cardTop >= -1 && over.cardBottom <= over.vh + 1, JSON.stringify(over));
+    check('★ [M6-BUG-03] 结算明细超长时"返回大厅"按钮仍在屏幕内（玩家不会卡死在结算页）',
+      over.btnBottom <= over.vh + 1, `btnBottom=${over.btnBottom} vh=${over.vh}`);
+    check('★ [M6-BUG-03] 结算明细区自身可滚动（内容看得全，而不是被裁掉）',
+      over.scrollable && over.overflowY === 'auto', JSON.stringify(over));
   }
 
   // ---- ⑨ 任务链：**完成并领奖**之后才解锁下一段（制作人裁定）----
   if (m5Group('M5-6 任务链需领奖后才解锁下一段')) {
+    if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
+      await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    }
     await page.evaluate(() => window.__m2.returnToLobby());
     await sleep(200);
     await page.evaluate(() => window.__m2.grantTestKit());
@@ -2289,6 +2412,113 @@ async function runM5Groups() {
         check('M5-6 下一段的"接受"按钮真的出现了', !!accept2);
       }
     }
+  }
+
+  // ============================================================
+  // [M6-BUG-01][M6-BUG-02] 医疗回归：绷带"未满血即可用" + 读条与局内时钟同口径
+  //
+  // 为什么单独成组：原来的"⑤ M2-5 医疗与消耗品"在**历史段落**里，整段会被 `--only` 跳过；
+  // 而这一组自带进局准备，因此可以 `node tools/smoke.mjs --only=医疗` 单独快速回归。
+  if (m5Group('M6 医疗回归（绷带 3 / 急救包 4 / 读条）')) {
+    // 本组**自带页面加载**：`--only=医疗` 会跳过整个历史段落，没人做过 goto，
+    // 页面此时还停在 about:blank（`window.__m2` 不存在）。组内自足才能被单独快速回归。
+    if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
+      await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    }
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
+    await page.evaluate(() => window.__m2.grantTestKit());
+    await startRaidFromLobby();
+    await call('teleportToSafeSpot');   // 治疗必须在安全位置测：受击会打断
+    await call('grantConsumables', 1, 1); // 备足道具，避免"没绷带"污染断言
+    await sleep(300);
+
+    // ---- ⓪ [M6-BUG-02] 的现场条件：让本局**真的暂停一次**再恢复 ----
+    // 旧实现（读条用原始帧时间戳、计时用局内时钟）只有在 `pausedTotalMs > 0` 时才露馅：
+    // 偏移量恰好是"暂停时长 / 读条总时长"。暂停 1.5 秒对绷带（1400ms）而言足以让旧实现
+    // **一按就满格**。所以这一组必须先制造一次暂停，否则"读条正确"只是碰巧成立。
+    // 用真实路径恢复（暂停卡片上的「继续游戏」），而不是 `page.click('canvas')` ——
+    // 暂停时画布被 #screenPause 盖住，点画布属于"点了个寂寞"。
+    let pausedMs = 0;
+    try {
+      await page.evaluate(() => document.exitPointerLock());
+      await page.waitForFunction(() => window.__m2.snapshot().paused === true, { timeout: 5000 });
+      const tPause = Date.now();
+      await sleep(1500);
+      await page.click('#btnResume');
+      await page.waitForFunction(() => window.__m2.snapshot().paused === false, { timeout: 8000 });
+      pausedMs = Date.now() - tPause;
+    } catch {
+      // 浏览器指针锁定有冷却（exitPointerLock 后约 1 秒内拒绝重新申请），
+      // 恢复失败时**不把夹具问题算成产品缺陷**：记一笔，让断言退化成"在无暂停下也正确"。
+      pauseRecoveries.push({ tag: 'M6 医疗回归：制造一次暂停', at: new Date().toISOString() });
+    }
+    console.log(`  · 夹具：本局累计暂停约 ${pausedMs}ms（[M6-BUG-02] 的偏移量 = 暂停时长 / 读条时长）`);
+
+    // ---- ① 绷带：60 血（高于旧上限 45，又不是满血）按 3 必须能用 ----
+    await call('setHealth', 60);
+    await sleep(150);
+    const b60 = await snap();
+    check('夹具成立：生命被设为 60（高于绷带旧上限 45、也不是满血）',
+      Math.abs(b60.player.health - 60) < 0.01, `health=${b60.player.health}`);
+    await page.keyboard.press('Digit3');
+    await sleep(250);
+    const usingB = await snap();
+    check('★ [M6-BUG-01] 60 血按 3 能用绷带（回归：按 3 无法使用绷带）',
+      usingB.player.using === true && usingB.consumables.bandage === b60.consumables.bandage - 1,
+      `using=${usingB.player.using} 绷带 ${b60.consumables.bandage} → ${usingB.consumables.bandage}`);
+    // 读条口径：1400ms 的绷带在约 250ms 时应约 0.18。
+    // 旧缺陷（把原始帧时间戳传进 useProgress）会在本局暂停过之后带偏移 —— 可能一按就接近/等于 1。
+    check('★ [M6-BUG-02] 绷带读条与已过时间成正比（不是一按就满）',
+      usingB.player.useProgress > 0.02 && usingB.player.useProgress < 0.6,
+      `progress=${usingB.player.useProgress}（250ms/1400ms≈0.18）`);
+    await sleep(350);
+    const usingB2 = await snap();
+    check('★ [M6-BUG-02] 绷带读条单调递增（或被受击打断，两者都合法）',
+      usingB2.player.using === false || usingB2.player.useProgress > usingB.player.useProgress,
+      `${usingB.player.useProgress} → ${usingB2.player.useProgress}`);
+    await page.waitForFunction(() => window.__m2.snapshot().player.using === false, { timeout: 8000 });
+    await sleep(150);
+    const healedB = await snap();
+    check('★ [M6-BUG-01] 绷带回血 18 点（60 → 78，不再被 45 上限截断）',
+      Math.abs(healedB.player.health - 78) < 0.01, `health=${healedB.player.health}`);
+
+    // ---- ② 急救包：读条同样按"已过的局内时间"走（3000ms 在 300ms 时约 0.1）----
+    await call('setHealth', 40);
+    await sleep(150);
+    const m40 = await snap();
+    await page.keyboard.press('Digit4');
+    await sleep(300);
+    const usingM = await snap();
+    check('★ 按 4 能用急救包并消耗一个',
+      usingM.player.using === true && usingM.consumables.medkit === m40.consumables.medkit - 1,
+      `using=${usingM.player.using} 急救包 ${m40.consumables.medkit} → ${usingM.consumables.medkit}`);
+    check('★ [M6-BUG-02] 急救包读条与已过时间成正比（300ms/3000ms≈0.1，不是一按就满）',
+      usingM.player.useProgress > 0.02 && usingM.player.useProgress < 0.4,
+      `progress=${usingM.player.useProgress}`);
+    await page.waitForFunction(() => window.__m2.snapshot().player.using === false, { timeout: 8000 });
+    await sleep(150);
+    const healedM = await snap();
+    check('★ 急救包回血 65 点并停在生命上限（40 → 100）',
+      Math.abs(healedM.player.health - 100) < 0.01, `health=${healedM.player.health}`);
+
+    // ---- ③ 满血时按 3 被拒绝，而且**说得出原因**（静默无反应是"绷带坏了"误判的来源）----
+    const full0 = await snap();
+    await page.keyboard.press('Digit3');
+    await sleep(300);
+    const full1 = await snap();
+    check('★ [M6-BUG-01] 满血时按 3 被拒绝且不消耗绷带（不浪费）',
+      full1.player.using === false && full1.consumables.bandage === full0.consumables.bandage,
+      `using=${full1.player.using} 绷带 ${full0.consumables.bandage} → ${full1.consumables.bandage}`);
+    const whyToast = await page.evaluate(() => document.getElementById('toast').textContent);
+    check('★ [M6-BUG-01] 拒绝使用时给出了原因（不再是静默无反应）',
+      /绷带/.test(whyToast), `toast="${whyToast}"`);
+
+    await page.evaluate(() => window.__m2.abandonRaid());
+    await waitForEnd(20000);
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
   }
 }
 

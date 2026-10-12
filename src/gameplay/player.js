@@ -15,7 +15,7 @@
 //     前提是关卡中要有可踩的低矮几何 —— 见 level.js 顶部的范围声明。
 import * as THREE from 'three';
 import { movementBasis, wishDirection, viewForward } from '../core/direction.js';
-import { createVitals, applyHit, heal, canHealWith } from './vitals.js';
+import { createVitals, applyHit, heal, canHealWith, useProgressRatio } from './vitals.js';
 import {
   accelerate,
   airAccelerate,
@@ -98,6 +98,7 @@ export function createPlayer(cfg, level, opts = {}) {
     shotsFired: 0,
     // 医疗
     usingItem: null,
+    useStartedAt: 0,
     useEndAt: 0,
     useTotalMs: 0,
     lastDamageAt: -1e9,
@@ -296,22 +297,34 @@ export function createPlayer(cfg, level, opts = {}) {
   }
 
   // ---- 医疗 ----
+  /**
+   * 开始使用消耗品。
+   * @param itemDef 消耗品定义（combat.json 的 consumables 条目）
+   * @param nowMs **局内时钟**（raidClock）。它必须与 `tickConsumable` / `useProgress`
+   *        收到的是同一只时钟 —— 见 vitals.useProgressRatio 的 [M6-BUG-02] 说明。
+   */
   function useConsumable(itemDef, nowMs) {
     if (!itemDef) return false;
     if (player.usingItem) return false;
-    // 已达该消耗品能治到的上限时直接拒绝 —— 否则玩家会白白消耗一个绷带
+    // 无法真的回血时直接拒绝（满血、或该药已到自身能治到的上限）——
+    // 否则玩家会白白消耗一个绷带。见 vitals.canHealWith 的 [M6-BUG-01]。
     if (!canHealWith(vitals, itemDef)) return false;
     player.usingItem = itemDef;
     // M5-5：战地医疗技能缩短动作耗时（healScale > 1 = 更快）。
     // 进度条读的是 useTotalMs，因此它与真正结束的时刻必然一致。
-    const useMs = itemDef.useMs / healScale;
+    // 倍率若被配置写坏（0 / NaN）会让 useMs 变成 Infinity / NaN —— 读条与结束时刻一起失控，
+    // 这里兜底回配置基线：**读条的总时长必须是有限的、可解释的**。
+    const scaled = itemDef.useMs / healScale;
+    const useMs = Number.isFinite(scaled) && scaled > 0 ? scaled : itemDef.useMs;
     player.useTotalMs = useMs;
+    player.useStartedAt = nowMs;
     player.useEndAt = nowMs + useMs;
     return true;
   }
 
   function cancelUse() {
     player.usingItem = null;
+    player.useStartedAt = 0;
     player.useEndAt = 0;
     player.useTotalMs = 0;
   }
@@ -610,10 +623,13 @@ export function createPlayer(cfg, level, opts = {}) {
     get health() {
       return vitals.health;
     },
-    useProgress: (nowMs) => {
-      if (!player.usingItem) return 0;
-      return Math.min(1, 1 - (player.useEndAt - nowMs) / player.useTotalMs);
-    },
+    /**
+     * 医疗读条进度（0~1）。
+     * @param nowMs **局内时钟**（raidClock）—— 与 useConsumable 的入参必须是同一只时钟，
+     *        传原始帧时间戳会让读条带上"本局累计暂停时长"的偏移（[M6-BUG-02]）。
+     */
+    useProgress: (nowMs) =>
+      player.usingItem ? useProgressRatio(player.useStartedAt, player.useTotalMs, nowMs) : 0,
     isUsing: () => !!player.usingItem,
   };
 }

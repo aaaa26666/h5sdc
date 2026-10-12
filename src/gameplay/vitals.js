@@ -86,10 +86,39 @@ export function heal(vitals, amount, cap) {
   return +(vitals.health - before).toFixed(2);
 }
 
-/** 该消耗品此刻能否产生效果（用于"别让玩家浪费一个绷带"） */
+/**
+ * 该消耗品此刻能否**真的回血**（用于"别让玩家浪费一个绷带"）。
+ *
+ * 判据是"这次使用能恢复的血量 > 0"，而不是"血量低于该药上限"。
+ * 两者的差别在 [M6-BUG-01] 里是**致命**的：绷带曾把 `maxHealthCap: 45` 当成准入门槛，
+ * 于是血量 ≥45 时按 3 完全无反应 —— 满血 100 用不了、受伤到 60 也用不了，
+ * 玩家只会得出"绷带坏了"的结论（只有掉到 45 以下才生效，而这在正常对局里很少发生）。
+ * 现在口径统一为：**未满血就能用；满血（或该药已到自身能治到的上限）才拒绝**。
+ * 这样它与 `heal()` 的 ceiling 是同一个判据，配置改动不会让两者分叉。
+ */
 export function canHealWith(vitals, itemDef) {
-  const ceiling = Math.min(vitals.maxHealth, itemDef.maxHealthCap);
-  return vitals.health < ceiling;
+  if (!itemDef) return false;
+  const ceiling = Math.min(vitals.maxHealth, itemDef.maxHealthCap ?? vitals.maxHealth);
+  const amount = Number.isFinite(itemDef.healAmount) ? itemDef.healAmount : 0;
+  // heal() 的落点：min(ceiling, health + amount)。只有落点高于当前血量才值得消耗一个道具。
+  return Math.min(ceiling, vitals.health + amount) > vitals.health;
+}
+
+/**
+ * 医疗动作读条进度（纯函数，0~1，可单测）。
+ *
+ * ★ [M6-BUG-02] 为什么必须把它抽出来：`startedAt` 与 `nowMs` **必须来自同一只时钟**。
+ *   原实现里 `useEndAt` 是按**局内时钟**（raidClock：扣掉暂停时长）算的，
+ *   而 HUD 却把**原始帧时间戳**传进 `useProgress()` —— 于是只要本局暂停过一次，
+ *   读条就会带着"已暂停时长 / 总时长"的偏移量开场：急救包（3000ms）在暂停 2 秒后
+ *   一按下去就显示 67%，暂停更久则直接满格。抽成纯函数后这条口径可以被断言守住。
+ */
+export function useProgressRatio(startedAt, totalMs, nowMs) {
+  if (!Number.isFinite(startedAt) || !Number.isFinite(nowMs)) return 0;
+  if (!Number.isFinite(totalMs) || totalMs <= 0) return 0;
+  const r = (nowMs - startedAt) / totalMs;
+  if (!(r > 0)) return 0;
+  return r > 1 ? 1 : r;
 }
 
 /** 护甲修复/更换（M2 暂只用于调试与后续扩展，不做维修系统） */

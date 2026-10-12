@@ -111,7 +111,9 @@ scene.add(sun.target);
 //
 // 下面这些对象**跨局存活**：渲染器、场景、相机、灯光、HUD、小地图、输入、
 // 音频、设置、流程状态机。它们不随"进入/离开战区"生灭。
-const hud = createHud();
+// ★ M6-UI-01：hud 现在要读配置 —— 结算页的「任务完成情况」与「入库明细」需要把
+//   核心层给的 id 显示成**任务名 / 物品名**（核心层只给 id，见 ui/hud.js 的注释）。
+const hud = createHud(cfg);
 // M5-1：主大厅。启动后玩家先看到它，而不是"点击即开始"的开始页。
 const lobby = createLobby();
 // M5：局外进度（档案）。它是**唯一**的持久化真值：货币、仓库、等级、技能、任务、统计。
@@ -579,7 +581,12 @@ function raidClock(nowMs) {
 }
 
 function raidView(nowMs) {
-  const t = flow.timing(raidClock(nowMs));
+  // ★ [M6-BUG-02] 局内一切都必须用**同一只时钟**：raidClock 扣掉了暂停时长。
+  //   读条进度曾经把原始帧时间戳传进 player.useProgress()，与 useConsumable 写入的
+  //   局内时钟不是同一只 —— 只要本局暂停过一次，读条就会带着"暂停时长/总时长"的
+  //   偏移开场（急救包最明显：暂停 2 秒后一按下去就 67%，暂停更久直接满格）。
+  const clock = raidClock(nowMs);
+  const t = flow.timing(clock);
   const w = weaponSys.active();
   return {
     health: player.vitals.health,
@@ -610,8 +617,16 @@ function raidView(nowMs) {
     extractInZone: false,
     extractProgress: 0,
     prompt: '',
-    useProgress: player.useProgress(nowMs),
-    consumableText: `3 绷带(${consumables.bandage}) · 4 急救包(${consumables.medkit})`,
+    useProgress: player.useProgress(clock),
+    // 读条的显隐由"是否正在使用"决定，而不是"进度是否 > 0"：
+    // 起始那一帧进度恰好是 0，用进度判显隐会让进度条晚一帧才出现（[M6-BUG-02] 的伴生现象）。
+    useActive: player.isUsing(),
+    consumableText:
+      `3 绷带(${consumables.bandage}) · 4 急救包(${consumables.medkit})` +
+      // ★ [M6-BUG-01] 满血时把"两件医疗品此刻都用不了"**常驻**写在 HUD 上：
+      //   满血拒绝是设计（不浪费道具），但玩家必须看得出这是设计而不是坏了 ——
+      //   只靠按键时弹一次提示，他很容易错过（尤其顺序按 3、4 都没反应时）。
+      (player.vitals.health >= player.vitals.maxHealth ? ' · 生命已满' : ''),
   };
 }
 
@@ -628,6 +643,43 @@ let lastFrameAt = 0;
 // M3-3：搜索的"受击打断"需要一个本帧事实，不能让 loot 自己去查战斗系统。
 // 它是帧级信号，每帧开头清零，只有真的挨了打才置位。
 let damagedThisFrame = false;
+
+/**
+ * 使用消耗品（3 绷带 / 4 急救包）。
+ *
+ * ★ [M6-BUG-01] 存在的理由：这套判定原先散在两段 `if` 里，**失败时完全静默** ——
+ *   "按 3 没反应"既可能是没绷带了、满血了、也可能正用着急救包，玩家无从区分，
+ *   于是最自然的结论就是"绷带坏了"（真凶其实是当时把绷带上限 45 当成了使用门槛）。
+ *   现在把判定收成一处，并且**每一个拒绝分支都说出原因**，让"没生效"永远可解释。
+ *
+ * @param actionKey 动作 id（键位来自 core/keybinds.js，不在本文件硬写按键码）
+ * @param id        消耗品 id
+ * @param label     中文名（提示用）
+ * @param nowMs     **局内时钟**（raidClock）—— 与读条、与 tickConsumable 同一只时钟
+ * @returns 是否真的开始了使用
+ */
+function tryUseConsumable(actionKey, id, label, nowMs) {
+  if (!input.pressedAction(actionKey)) return false;
+  const owned = consumables ? consumables[id] || 0 : 0;
+  if (owned <= 0) {
+    hud.toast(`没有${label}了`, true);
+    return false;
+  }
+  if (player.isUsing()) {
+    const cur = player.state.usingItem;
+    hud.toast(`正在使用${cur ? cur.label : '其它医疗品'}，无法同时使用${label}`);
+    return false;
+  }
+  if (!player.useConsumable(consumableDef(id), nowMs)) {
+    // 走到这里只剩一种可能：这次使用无法真的回血（满血 / 已到该药能治到的上限）。
+    // 不消耗道具 —— 但也必须让玩家知道，否则又变成"按了没反应"。
+    hud.toast(`${label}此刻无法生效（生命已满或已到可治上限）`);
+    return false;
+  }
+  consumables[id] = owned - 1;
+  audio.consume();
+  return true;
+}
 
 function frame(nowMs) {
   requestAnimationFrame(frame);
@@ -656,19 +708,10 @@ function frame(nowMs) {
     player.update(dt, input, t);
 
     // ---- 消耗品使用（3 绷带 / 4 急救包）----
-    // 用边沿触发：轻点一次就该生效，电平式会在快速点按时漏掉
-    if (input.pressedAction('useConsumable1') && consumables.bandage > 0) {
-      if (player.useConsumable(consumableDef('bandage'), t)) {
-        consumables.bandage--;
-        audio.consume();
-      }
-    }
-    if (input.pressedAction('useConsumable2') && consumables.medkit > 0) {
-      if (player.useConsumable(consumableDef('medkit'), t)) {
-        consumables.medkit--;
-        audio.consume();
-      }
-    }
+    // 用边沿触发：轻点一次就该生效，电平式会在快速点按时漏掉。
+    // 规则本体收在 tryUseConsumable 里：**失败也要给出原因**。
+    tryUseConsumable('useConsumable1', 'bandage', '绷带', t);
+    tryUseConsumable('useConsumable2', 'medkit', '急救包', t);
     const done = player.tickConsumable(t);
     if (done) hud.toast(`使用 ${done.item.label}，恢复 ${done.healed} 点生命`);
 
@@ -1616,6 +1659,9 @@ if (import.meta.env.DEV) {
             body: { id: player.vitals.armor.body.id, durability: +player.vitals.armor.body.durability.toFixed(1) },
           },
           using: player.isUsing(),
+          // ★ [M6-BUG-02] 读条的可观测面：进度必须与 using 同步出现、单调递增到 1。
+          //   端到端断言靠它验证"按 4 的读条异常"不再复发（此前它带着暂停时长的偏移）。
+          useProgress: +player.useProgress(raidClock(performance.now())).toFixed(4),
           // ---- 移动手感（M1-TEMP-2/3 的可观测面）----
           // 这些字段存在的意义：手感参数错了肉眼很难发现，但"速度是不是瞬间到顶"
           // "台阶有没有抬上去"都是可断言的事实。
@@ -2149,6 +2195,17 @@ if (import.meta.env.DEV) {
     healPlayer(amount = 9999) {
       player.vitals.health = Math.min(player.vitals.maxHealth, player.vitals.health + amount);
       player.state.alive = true;
+    },
+    /**
+     * 把生命**设为**指定值（测试夹具）。
+     * 为什么需要它：`healPlayer` 只会加血，而 [M6-BUG-01] 的现场恰恰是"未满血、但高于
+     * 绷带旧上限 45"这个血量区间（例如 60）—— 没有这个夹具，端到端就无法在真实血量上
+     * 验证"按 3 能用绷带"，只能退化成读代码。
+     */
+    setHealth(hp) {
+      player.vitals.health = Math.max(0, Math.min(player.vitals.maxHealth, Number(hp) || 0));
+      player.state.alive = player.vitals.health > 0;
+      return player.vitals.health;
     },
     grantConsumables(bandage, medkit) {
       consumables.bandage += bandage;
