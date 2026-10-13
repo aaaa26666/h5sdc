@@ -145,6 +145,16 @@ export function createLobby() {
       const armor = b.loadout.armor;
       const armorText = armor ? `${armor.label}（等级 ${armor.class}，耐久 ${armor.durability}）` : '无';
 
+      // ★ M6：背包与弹挂现在**决定局内容量**，因此报的是"所装备的那一只"，
+      //   并说明自带弹药药品占掉多少格 —— 否则"12 格"会让玩家以为全都能装战利品。
+      const pk = b.pack;
+      const carryText = `${pk.backpack.label || '兜底'} ${pk.backpack.w}×${pk.backpack.h}（${pk.backpack.slots} 格 · ${pk.backpack.totalWeightLimitKg} kg）`
+        + (pk.rig ? ` ；弹挂 ${pk.rig.label} ${pk.rig.w}×${pk.rig.h}` : '')
+        + (pk.kitSlots ? ` ；自带占 ${pk.kitSlots} 格` : '');
+      const overflowText = pk.overflow && pk.overflow.length
+        ? `<div class="muted li warn">· 装不下（不会带进战区）：${pk.overflow.map((o) => `${o.itemId} ×${o.count}`).join('、')}</div>`
+        : '';
+
       el.body.innerHTML =
         row('战区', `${b.map.label}（${b.map.floors} 层）`) +
         row('单局时限', fmtDuration(b.raid.timeLimitMs)) +
@@ -160,7 +170,8 @@ export function createLobby() {
         row('备弹', ammoText) +
         row('护甲', armorText) +
         row('医疗', consumableText) +
-        row('背包', `${b.pack.backpack.w}×${b.pack.backpack.h}（${b.pack.backpack.slots} 格 · ${b.pack.backpack.weightLimitKg} kg）`) +
+        row('携行', carryText) +
+        overflowText +
         row('安全箱', `${b.pack.safe.label}（${b.pack.safe.w}×${b.pack.safe.h}，阵亡时箱内物品保留）`);
     },
   };

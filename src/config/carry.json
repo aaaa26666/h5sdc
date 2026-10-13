@@ -1,0 +1,108 @@
+{
+  "_comment": "M6 携行具表（唯一真值）：背包与弹挂。它们决定**局内能装多少**，因此是装备而不是装饰。",
+  "_scopeNote": "本表只管携行具的**容量与携带属性**。物品在仓库里的估值/重量/形状由 buildItemViews 从这里派生（与其他装备同一条路径），不在掉落表里另留副本 —— 除非某一只背包同时是战利品（那时用 lootItemId 显式声明，并由启动期交叉校验逐字段比对）。",
+  "backpacks": [
+    {
+      "id": "bp_small",
+      "label": "轻型背包",
+      "capacityW": 5,
+      "capacityH": 4,
+      "weightLimitKg": 10,
+      "weightKg": 1.1,
+      "value": 600,
+      "price": 900,
+      "item": {
+        "w": 2,
+        "h": 2
+      },
+      "lootItemId": null,
+      "slots": 20,
+      "_m6Note": "★ M6 由 4×3 调成 5×4：容量的**下限**被兜底背包顶上去了（见 defaults 的说明），若不动它，'轻型背包'与'没背包'会只差一个负重上限。现在的梯度是 12/20/30/42 格 × 6/10/22/30 kg，每一档都同时给格子与负重。"
+    },
+    {
+      "id": "bp_medium",
+      "label": "标准背包",
+      "_referenceNote": "★ 这是**参考装载**：tools/validate-loot-tables.mjs 的经济模拟按它装包，既有校准因此不被破坏。改动它的容量会直接移动「贪（全图）」的中位收益。",
+      "capacityW": 6,
+      "capacityH": 5,
+      "weightLimitKg": 22,
+      "weightKg": 2.2,
+      "value": 1400,
+      "price": 2100,
+      "item": {
+        "w": 2,
+        "h": 3
+      },
+      "lootItemId": null,
+      "slots": 30
+    },
+    {
+      "id": "bp_large",
+      "label": "突击背包",
+      "capacityW": 7,
+      "capacityH": 6,
+      "weightLimitKg": 30,
+      "weightKg": 3.6,
+      "value": 3200,
+      "price": 4800,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null,
+      "slots": 42
+    }
+  ],
+  "rigs": [
+    {
+      "id": "rig_light",
+      "label": "轻型弹挂",
+      "capacityW": 4,
+      "capacityH": 2,
+      "_note": "弹挂只放弹匣与药品，不放长枪与护甲 —— 这是它存在的理由（把'马上要用'的东西与'背回去卖'的东西分开）。",
+      "accepts": [
+        "ammo",
+        "medical",
+        "consumable"
+      ],
+      "weightKg": 0.8,
+      "value": 700,
+      "price": 1050,
+      "item": {
+        "w": 2,
+        "h": 2
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "rig_heavy",
+      "label": "战术弹挂",
+      "capacityW": 5,
+      "capacityH": 3,
+      "accepts": [
+        "ammo",
+        "medical",
+        "consumable"
+      ],
+      "weightKg": 1.6,
+      "value": 1800,
+      "price": 2700,
+      "item": {
+        "w": 3,
+        "h": 2
+      },
+      "lootItemId": null
+    }
+  ],
+  "defaults": {
+    "_comment": "玩家**未装备背包**时的兜底容量。刻意比任何一只真背包都小：没背包就该装得少，这是取舍而不是惩罚。",
+    "_vsReferenceNote": "注意它与 bp_medium（参考装载）是两回事：参考装载是**校验器**用来做经济模拟的口径，不是玩家默认拿到的容量。",
+    "_m6Note": "★ M6 由 3×2 调成 4×3。这是一次**被逼出来的**改动，理由是可算的：M6 起弹药与药品要占背包格，起始配装（急救包 2×1×1 格 + 绷带 1 格 + 弹药 1 格 = 4 格）在 3×2 里只剩 2 格给战利品 —— 而 3×2 当年是在'携行件不占格'的前提下定的（那时 6 格全是战利品格）。只剩 2 格意味着新账号第一局几乎捡不了东西，而'搜'正是这个玩法的核心动作。启动期有断言守着这条下限（见 config/index.js 的 validateCarry）。",
+    "backpack": {
+      "w": 4,
+      "h": 3,
+      "weightLimitKg": 6
+    }
+  },
+  "_slotsNote": "每只背包**显式声明 slots**，并由 tools/validate-loot-tables.mjs 核对它等于 capacityW×capacityH。刻意不把 slots 写成派生值 —— 那样\"声明格数与容量一致\"这条检查就永远为真，等于没有检查。"
+}

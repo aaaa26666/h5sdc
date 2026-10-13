@@ -302,6 +302,30 @@
       "w": 1,
       "h": 1,
       "vol": 1
+    },
+    {
+      "id": "rifle_ak762",
+      "label": "AK-762 突击步枪",
+      "category": "weapon",
+      "rarity": "epic",
+      "value": 3100,
+      "weightKg": 3.7,
+      "stack": 1,
+      "w": 2,
+      "h": 4,
+      "vol": 8
+    },
+    {
+      "id": "helmet4",
+      "label": "四级头盔",
+      "category": "armor",
+      "rarity": "epic",
+      "value": 2600,
+      "weightKg": 2.4,
+      "stack": 1,
+      "w": 2,
+      "h": 2,
+      "vol": 4
     }
   ],
   "_containersComment": "§2.2 容器分级：普通箱/军用箱/保险箱/钥匙房。searchMs 为满进度耗时；interruptRule 见 interruptRules，规则写在表里而不是逻辑里。",
@@ -405,13 +429,10 @@
   "_targetsComment": "单局收益目标区间（DoD ②）。**以'能带走的'为准，不是'地上的'** —— 见 backpack 容量约束。由 validate-loot-tables.mjs 校验。survivalRate 是设计意图，待试玩校验。",
   "_backpackComment": "M3-5 的背包容量目标。它同时是收益模型的约束：容量装不下时玩家必须按价值密度取舍，这才是'搜'的核心 —— 地面上有多少不是收益，能带走多少才是。",
   "backpack": {
-    "_comment": "背包改为**二维网格**：物品有形状，装包是排放而不是计数。\"带什么/丢什么\"因此成为真取舍。",
-    "w": 6,
-    "h": 5,
-    "_slots": 30,
-    "weightLimitKg": 22,
-    "_weightNote": "22kg 是战利品净容量，不含身上装备（护甲约 4kg + 步枪约 4.6kg + 弹药等约 10kg）。M3-5 落地时需与\"角色总负重上限\"区分开。",
-    "_resizeNote": "由 6x4(24) 调整为 6x5(30)：加入形状约束后二维排放会留空隙，同样格数装到的价值下降约 18%，导致正常档中位收益跌出设计目标区间。调整方向是\"改参数满足意图\"，不是\"改意图迁就参数\"。"
+    "_comment": "★ M6：这里**不再写容量数字** —— 它改为引用携行具表（carry.json）里的某只背包。",
+    "_whyNote": "原先 w/h/weightLimitKg 写在这里，而 M6 起背包成为可装备物 —— 同一组数字若在两处各写一份，迟早分叉（改了 carry.json 而忘了这里，表现是\"面板说 6x5、局内却是 4x3\"）。现在的唯一真值是 carry.json.backpacks，本文件只声明\"按哪只背包做经济模拟\"。",
+    "referenceId": "bp_medium",
+    "_referenceNote": "校验器（validate-loot-tables）按这只背包装包做蒙特卡洛。改动它的容量会直接移动「贪（全图）」的中位收益 —— 当年 6x4→6x5 就是为了把它压回目标区间。"
   },
   "raidTargets": [
     {
@@ -504,5 +525,78 @@
       "armor"
     ],
     "_excludeNote": "安全箱**装不下武器与护甲**。这是防\"零风险刷保险\"的关键限制：若什么都能装，满级 3x4=12 格正好等于\"速撤\"玩法的携带量，死亡就几乎没有惩罚，搜打撤的核心张力消失。现实中这也是通行做法 —— 保险箱装的是小件贵重品，不是步枪和防弹衣。"
+  },
+  "_m6_1Note": "M6-1：掉落池新增 1 把武器（rifle_ak762 / epic）。★ 初始方案是 ak762 + g28 两把，但实测「贪（全图）」中位收益从 23580 掉到 21100（−10.5%）、跌破目标下限 22000。扫描后确认**拖累主因是体积**（2x4 占 8 格，挤掉多件小件 → 被迫留下 28%→32%）：同一把枪放 epic 只降 770，放 legendary 降 1540。故收敛为只加 epic 一把（中位 22810，余量 3.7%）。若要再加一把，优先 2x2 的小体积（pistol_mk23 / rare → 中位 23280），不要加第二把长枪。",
+  "corpseByTier": {
+    "scav": {
+      "itemsMin": 0,
+      "itemsMax": 1,
+      "rarityWeights": {
+        "common": 70,
+        "uncommon": 25,
+        "rare": 5,
+        "epic": 0,
+        "legendary": 0
+      }
+    },
+    "guard": {
+      "itemsMin": 1,
+      "itemsMax": 2,
+      "rarityWeights": {
+        "common": 55,
+        "uncommon": 32,
+        "rare": 11,
+        "epic": 2,
+        "legendary": 0
+      }
+    },
+    "elite": {
+      "itemsMin": 1,
+      "itemsMax": 2,
+      "rarityWeights": {
+        "common": 35,
+        "uncommon": 35,
+        "rare": 22,
+        "epic": 7,
+        "legendary": 1
+      }
+    },
+    "heavy": {
+      "itemsMin": 1,
+      "itemsMax": 2,
+      "rarityWeights": {
+        "common": 30,
+        "uncommon": 35,
+        "rare": 25,
+        "epic": 9,
+        "legendary": 1
+      }
+    },
+    "sniper": {
+      "itemsMin": 1,
+      "itemsMax": 2,
+      "rarityWeights": {
+        "common": 40,
+        "uncommon": 32,
+        "rare": 20,
+        "epic": 7,
+        "legendary": 1
+      }
+    },
+    "boss": {
+      "itemsMin": 3,
+      "itemsMax": 4,
+      "rarityWeights": {
+        "common": 0,
+        "uncommon": 25,
+        "rare": 35,
+        "epic": 30,
+        "legendary": 10
+      }
+    },
+    "_comment": "M6-2 AI 尸体掉落表。形状与 containers 一致，因此 pickRarity/indexByRarity 直接可用（算法同源）。★ 件数刻意保守：一局有 15 名普通 AI + 1 Boss，若每人掉 3~4 件，总量会远超背包 30 格容量 —— 那样做不是\"收益变多\"，而是\"地上全是拿不走的东西\"。Boss 的 3~4 件是刻意的：它是唯一的例外，也是击杀它的理由。★★ 未测：tools/validate-loot-tables.mjs 的 raidTargets 模拟**不包含尸体**，因此它看不见这次新增的收益来源 —— 收益影响需在实现尸体系统后用实际局长数据复核。",
+    "searchMs": 1800,
+    "interruptRule": "keep_partial",
+    "_searchNote": "搜尸体比搜箱子快（1800ms < 民用箱 2500ms）：尸体是\"打完立刻摸\"的动作，拖长会打断搜刮节奏。打断用 keep_partial —— 搜一半被打断不该全丢，那会让人干脆不搜。"
   }
 }

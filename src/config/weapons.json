@@ -72,7 +72,385 @@
       "weightKg": 0.9,
       "value": 900,
       "price": 1200,
-      "item": { "w": 2, "h": 2 },
+      "item": {
+        "w": 2,
+        "h": 2
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "pistol_p12",
+      "label": "P12 重手枪",
+      "class": "pistol",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "semi",
+      "fireIntervalMs": 210,
+      "magazineSize": 12,
+      "reloadMs": 3660,
+      "reloadTacticalMs": 2464,
+      "adsMs": 180,
+      "adsFovDeg": 58,
+      "hipSpreadDeg": 2.6,
+      "adsSpreadDeg": 0.45,
+      "spreadPerShotDeg": 0.42,
+      "maxSpreadDeg": 5.2,
+      "spreadRecoveryPerSec": 7.21,
+      "moveSpreadScale": 1.5,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.855
+          ],
+          [
+            0.205,
+            0.969
+          ],
+          [
+            -0.251,
+            0.912
+          ],
+          [
+            0.342,
+            0.798
+          ],
+          [
+            -0.296,
+            0.821
+          ],
+          [
+            0.251,
+            0.775
+          ]
+        ],
+        "recoveryPerSec": 7.89,
+        "adsScale": 0.8,
+        "randomYawDeg": 0.12,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 68,
+        "chest": 39,
+        "stomach": 35,
+        "limb": 27
+      },
+      "falloff": {
+        "startM": 18,
+        "endM": 55,
+        "minScale": 0.5
+      },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.62,
+      "weightKg": 1.2,
+      "value": 1650,
+      "price": 2393,
+      "item": {
+        "w": 2,
+        "h": 2
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "pistol_g17",
+      "label": "G17 轻手枪",
+      "class": "pistol",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "semi",
+      "fireIntervalMs": 90,
+      "magazineSize": 17,
+      "reloadMs": 2445,
+      "reloadTacticalMs": 1664,
+      "adsMs": 135,
+      "adsFovDeg": 58,
+      "hipSpreadDeg": 2.6,
+      "adsSpreadDeg": 0.45,
+      "spreadPerShotDeg": 0.42,
+      "maxSpreadDeg": 5.2,
+      "spreadRecoveryPerSec": 10.46,
+      "moveSpreadScale": 1.5,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.657
+          ],
+          [
+            0.158,
+            0.744
+          ],
+          [
+            -0.193,
+            0.7
+          ],
+          [
+            0.263,
+            0.613
+          ],
+          [
+            -0.228,
+            0.63
+          ],
+          [
+            0.193,
+            0.595
+          ]
+        ],
+        "recoveryPerSec": 10.28,
+        "adsScale": 0.8,
+        "randomYawDeg": 0.12,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 52,
+        "chest": 23,
+        "stomach": 21,
+        "limb": 16
+      },
+      "falloff": {
+        "startM": 18,
+        "endM": 55,
+        "minScale": 0.5
+      },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.62,
+      "weightKg": 0.75,
+      "value": 800,
+      "price": 1160,
+      "item": {
+        "w": 2,
+        "h": 2
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "pistol_rsh",
+      "label": "RSH 转轮手枪",
+      "class": "pistol",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "semi",
+      "fireIntervalMs": 320,
+      "magazineSize": 6,
+      "reloadMs": 4710,
+      "reloadTacticalMs": 3152,
+      "adsMs": 200,
+      "adsFovDeg": 58,
+      "hipSpreadDeg": 2.6,
+      "adsSpreadDeg": 0.45,
+      "spreadPerShotDeg": 0.42,
+      "maxSpreadDeg": 5.2,
+      "spreadRecoveryPerSec": 6.4,
+      "moveSpreadScale": 1.5,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            1.052
+          ],
+          [
+            0.252,
+            1.192
+          ],
+          [
+            -0.309,
+            1.122
+          ],
+          [
+            0.421,
+            0.982
+          ],
+          [
+            -0.365,
+            1.01
+          ],
+          [
+            0.309,
+            0.954
+          ]
+        ],
+        "recoveryPerSec": 6.42,
+        "adsScale": 0.8,
+        "randomYawDeg": 0.12,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 103,
+        "chest": 59,
+        "stomach": 53,
+        "limb": 41
+      },
+      "falloff": {
+        "startM": 18,
+        "endM": 55,
+        "minScale": 0.5
+      },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.62,
+      "weightKg": 1.1,
+      "value": 1950,
+      "price": 2828,
+      "item": {
+        "w": 2,
+        "h": 2
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "pistol_mk23",
+      "label": "MK23 战术手枪",
+      "class": "pistol",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "semi",
+      "fireIntervalMs": 165,
+      "magazineSize": 12,
+      "reloadMs": 3120,
+      "reloadTacticalMs": 2104,
+      "adsMs": 165,
+      "adsFovDeg": 58,
+      "hipSpreadDeg": 2.6,
+      "adsSpreadDeg": 0.45,
+      "spreadPerShotDeg": 0.42,
+      "maxSpreadDeg": 5.2,
+      "spreadRecoveryPerSec": 8.85,
+      "moveSpreadScale": 1.5,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.855
+          ],
+          [
+            0.205,
+            0.969
+          ],
+          [
+            -0.251,
+            0.912
+          ],
+          [
+            0.342,
+            0.798
+          ],
+          [
+            -0.296,
+            0.821
+          ],
+          [
+            0.251,
+            0.775
+          ]
+        ],
+        "recoveryPerSec": 7.89,
+        "adsScale": 0.8,
+        "randomYawDeg": 0.12,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 68,
+        "chest": 39,
+        "stomach": 35,
+        "limb": 27
+      },
+      "falloff": {
+        "startM": 18,
+        "endM": 55,
+        "minScale": 0.5
+      },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.62,
+      "weightKg": 1.35,
+      "value": 1450,
+      "price": 2103,
+      "item": {
+        "w": 2,
+        "h": 2
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "pistol_vz",
+      "label": "VZ 全自动手枪",
+      "class": "pistol",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "semi",
+      "fireIntervalMs": 85,
+      "magazineSize": 20,
+      "reloadMs": 2520,
+      "reloadTacticalMs": 1720,
+      "adsMs": 190,
+      "adsFovDeg": 58,
+      "hipSpreadDeg": 2.6,
+      "adsSpreadDeg": 0.45,
+      "spreadPerShotDeg": 0.42,
+      "maxSpreadDeg": 5.2,
+      "spreadRecoveryPerSec": 7.8,
+      "moveSpreadScale": 1.5,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.657
+          ],
+          [
+            0.158,
+            0.744
+          ],
+          [
+            -0.193,
+            0.7
+          ],
+          [
+            0.263,
+            0.613
+          ],
+          [
+            -0.228,
+            0.63
+          ],
+          [
+            0.193,
+            0.595
+          ]
+        ],
+        "recoveryPerSec": 10.28,
+        "adsScale": 0.8,
+        "randomYawDeg": 0.12,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 52,
+        "chest": 23,
+        "stomach": 21,
+        "limb": 16
+      },
+      "falloff": {
+        "startM": 18,
+        "endM": 55,
+        "minScale": 0.5
+      },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.62,
+      "weightKg": 1.05,
+      "value": 1150,
+      "price": 1668,
+      "item": {
+        "w": 2,
+        "h": 2
+      },
       "lootItemId": null
     },
     {
@@ -152,7 +530,425 @@
       "weightKg": 2.6,
       "value": 1800,
       "price": 2600,
-      "item": { "w": 2, "h": 3 },
+      "item": {
+        "w": 2,
+        "h": 3
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "smg_mp9",
+      "label": "MP9 冲锋枪",
+      "class": "smg",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "auto",
+      "fireIntervalMs": 62,
+      "magazineSize": 40,
+      "reloadMs": 3144,
+      "reloadTacticalMs": 2176,
+      "adsMs": 170,
+      "adsFovDeg": 60,
+      "hipSpreadDeg": 3.4,
+      "adsSpreadDeg": 0.6,
+      "spreadPerShotDeg": 0.34,
+      "maxSpreadDeg": 6,
+      "spreadRecoveryPerSec": 9.8,
+      "moveSpreadScale": 1.3,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.476
+          ],
+          [
+            0.139,
+            0.537
+          ],
+          [
+            -0.173,
+            0.52
+          ],
+          [
+            0.242,
+            0.45
+          ],
+          [
+            -0.208,
+            0.476
+          ],
+          [
+            0.173,
+            0.433
+          ],
+          [
+            -0.156,
+            0.416
+          ],
+          [
+            0.225,
+            0.39
+          ]
+        ],
+        "recoveryPerSec": 9.24,
+        "adsScale": 0.78,
+        "randomYawDeg": 0.2,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 36,
+        "chest": 18,
+        "stomach": 17,
+        "limb": 13
+      },
+      "falloff": {
+        "startM": 15,
+        "endM": 45,
+        "minScale": 0.45
+      },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.66,
+      "weightKg": 2.2,
+      "value": 1950,
+      "price": 2828,
+      "item": {
+        "w": 2,
+        "h": 3
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "smg_ump",
+      "label": "UMP 冲锋枪",
+      "class": "smg",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "auto",
+      "fireIntervalMs": 120,
+      "magazineSize": 25,
+      "reloadMs": 3165,
+      "reloadTacticalMs": 2160,
+      "adsMs": 200,
+      "adsFovDeg": 60,
+      "hipSpreadDeg": 3.4,
+      "adsSpreadDeg": 0.6,
+      "spreadPerShotDeg": 0.34,
+      "maxSpreadDeg": 6,
+      "spreadRecoveryPerSec": 7.93,
+      "moveSpreadScale": 1.3,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.605
+          ],
+          [
+            0.176,
+            0.682
+          ],
+          [
+            -0.22,
+            0.66
+          ],
+          [
+            0.308,
+            0.572
+          ],
+          [
+            -0.264,
+            0.605
+          ],
+          [
+            0.22,
+            0.55
+          ],
+          [
+            -0.198,
+            0.528
+          ],
+          [
+            0.286,
+            0.495
+          ]
+        ],
+        "recoveryPerSec": 7.28,
+        "adsScale": 0.78,
+        "randomYawDeg": 0.2,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 51,
+        "chest": 29,
+        "stomach": 27,
+        "limb": 21
+      },
+      "falloff": {
+        "startM": 15,
+        "endM": 45,
+        "minScale": 0.45
+      },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.66,
+      "weightKg": 2.9,
+      "value": 3300,
+      "price": 4785,
+      "item": {
+        "w": 2,
+        "h": 3
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "smg_mac",
+      "label": "MAC 袖珍冲锋枪",
+      "class": "smg",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "auto",
+      "fireIntervalMs": 56,
+      "magazineSize": 32,
+      "reloadMs": 2712,
+      "reloadTacticalMs": 1872,
+      "adsMs": 155,
+      "adsFovDeg": 60,
+      "hipSpreadDeg": 3.4,
+      "adsSpreadDeg": 0.6,
+      "spreadPerShotDeg": 0.34,
+      "maxSpreadDeg": 6,
+      "spreadRecoveryPerSec": 12.18,
+      "moveSpreadScale": 1.3,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.476
+          ],
+          [
+            0.139,
+            0.537
+          ],
+          [
+            -0.173,
+            0.52
+          ],
+          [
+            0.242,
+            0.45
+          ],
+          [
+            -0.208,
+            0.476
+          ],
+          [
+            0.173,
+            0.433
+          ],
+          [
+            -0.156,
+            0.416
+          ],
+          [
+            0.225,
+            0.39
+          ]
+        ],
+        "recoveryPerSec": 9.24,
+        "adsScale": 0.78,
+        "randomYawDeg": 0.2,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 36,
+        "chest": 18,
+        "stomach": 17,
+        "limb": 13
+      },
+      "falloff": {
+        "startM": 15,
+        "endM": 45,
+        "minScale": 0.45
+      },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.66,
+      "weightKg": 1.8,
+      "value": 1500,
+      "price": 2175,
+      "item": {
+        "w": 2,
+        "h": 3
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "smg_mp5sd",
+      "label": "MP5SD 消音冲锋枪",
+      "class": "smg",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "auto",
+      "fireIntervalMs": 113,
+      "magazineSize": 30,
+      "reloadMs": 3306,
+      "reloadTacticalMs": 2264,
+      "adsMs": 195,
+      "adsFovDeg": 60,
+      "hipSpreadDeg": 3.4,
+      "adsSpreadDeg": 0.6,
+      "spreadPerShotDeg": 0.34,
+      "maxSpreadDeg": 6,
+      "spreadRecoveryPerSec": 10.63,
+      "moveSpreadScale": 1.3,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.605
+          ],
+          [
+            0.176,
+            0.682
+          ],
+          [
+            -0.22,
+            0.66
+          ],
+          [
+            0.308,
+            0.572
+          ],
+          [
+            -0.264,
+            0.605
+          ],
+          [
+            0.22,
+            0.55
+          ],
+          [
+            -0.198,
+            0.528
+          ],
+          [
+            0.286,
+            0.495
+          ]
+        ],
+        "recoveryPerSec": 7.28,
+        "adsScale": 0.78,
+        "randomYawDeg": 0.2,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 51,
+        "chest": 29,
+        "stomach": 27,
+        "limb": 21
+      },
+      "falloff": {
+        "startM": 15,
+        "endM": 45,
+        "minScale": 0.45
+      },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.66,
+      "weightKg": 3.1,
+      "value": 2900,
+      "price": 4205,
+      "item": {
+        "w": 2,
+        "h": 3
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "smg_bizon",
+      "label": "Bizon 大弹匣",
+      "class": "smg",
+      "slot": 2,
+      "ammoType": "9mm",
+      "fireMode": "auto",
+      "fireIntervalMs": 85,
+      "magazineSize": 64,
+      "reloadMs": 4500,
+      "reloadTacticalMs": 3128,
+      "adsMs": 215,
+      "adsFovDeg": 60,
+      "hipSpreadDeg": 3.4,
+      "adsSpreadDeg": 0.6,
+      "spreadPerShotDeg": 0.34,
+      "maxSpreadDeg": 6,
+      "spreadRecoveryPerSec": 8.66,
+      "moveSpreadScale": 1.3,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.538
+          ],
+          [
+            0.157,
+            0.607
+          ],
+          [
+            -0.196,
+            0.587
+          ],
+          [
+            0.274,
+            0.509
+          ],
+          [
+            -0.235,
+            0.538
+          ],
+          [
+            0.196,
+            0.489
+          ],
+          [
+            -0.176,
+            0.47
+          ],
+          [
+            0.255,
+            0.441
+          ]
+        ],
+        "recoveryPerSec": 8.17,
+        "adsScale": 0.78,
+        "randomYawDeg": 0.2,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 41,
+        "chest": 23,
+        "stomach": 21,
+        "limb": 16
+      },
+      "falloff": {
+        "startM": 15,
+        "endM": 45,
+        "minScale": 0.45
+      },
+      "range": 120,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.66,
+      "weightKg": 3,
+      "value": 2400,
+      "price": 3480,
+      "item": {
+        "w": 2,
+        "h": 3
+      },
       "lootItemId": null
     },
     {
@@ -248,7 +1044,505 @@
       "weightKg": 3.4,
       "value": 2600,
       "price": 3800,
-      "item": { "w": 2, "h": 4 },
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "rifle_ak762",
+      "label": "AK-762 突击步枪",
+      "class": "rifle",
+      "slot": 1,
+      "ammoType": "7.62",
+      "fireMode": "auto",
+      "fireIntervalMs": 180,
+      "magazineSize": 30,
+      "reloadMs": 4110,
+      "reloadTacticalMs": 2800,
+      "adsMs": 240,
+      "adsFovDeg": 50,
+      "hipSpreadDeg": 3,
+      "adsSpreadDeg": 0.32,
+      "spreadPerShotDeg": 0.26,
+      "maxSpreadDeg": 4.6,
+      "spreadRecoveryPerSec": 5.47,
+      "moveSpreadScale": 1.7,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.924
+          ],
+          [
+            0.152,
+            1.087
+          ],
+          [
+            -0.196,
+            1.033
+          ],
+          [
+            0.326,
+            0.891
+          ],
+          [
+            -0.283,
+            0.848
+          ],
+          [
+            0.37,
+            0.761
+          ],
+          [
+            -0.326,
+            0.739
+          ],
+          [
+            0.304,
+            0.674
+          ],
+          [
+            -0.239,
+            0.652
+          ],
+          [
+            0.348,
+            0.598
+          ],
+          [
+            -0.304,
+            0.565
+          ],
+          [
+            0.261,
+            0.544
+          ]
+        ],
+        "recoveryPerSec": 6.62,
+        "adsScale": 0.7,
+        "randomYawDeg": 0.16,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 71,
+        "chest": 39,
+        "stomach": 35,
+        "limb": 27
+      },
+      "falloff": {
+        "startM": 45,
+        "endM": 110,
+        "minScale": 0.55
+      },
+      "range": 220,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.5,
+      "weightKg": 3.7,
+      "value": 3100,
+      "price": 4495,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": "rifle_ak762"
+    },
+    {
+      "id": "rifle_aks74u",
+      "label": "AKS-74U 短管",
+      "class": "rifle",
+      "slot": 1,
+      "ammoType": "5.56",
+      "fireMode": "auto",
+      "fireIntervalMs": 113,
+      "magazineSize": 30,
+      "reloadMs": 3306,
+      "reloadTacticalMs": 2264,
+      "adsMs": 195,
+      "adsFovDeg": 50,
+      "hipSpreadDeg": 3,
+      "adsSpreadDeg": 0.32,
+      "spreadPerShotDeg": 0.26,
+      "maxSpreadDeg": 4.6,
+      "spreadRecoveryPerSec": 7.38,
+      "moveSpreadScale": 1.7,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.797
+          ],
+          [
+            0.131,
+            0.937
+          ],
+          [
+            -0.169,
+            0.891
+          ],
+          [
+            0.281,
+            0.769
+          ],
+          [
+            -0.244,
+            0.731
+          ],
+          [
+            0.319,
+            0.656
+          ],
+          [
+            -0.281,
+            0.637
+          ],
+          [
+            0.262,
+            0.581
+          ],
+          [
+            -0.206,
+            0.562
+          ],
+          [
+            0.3,
+            0.516
+          ],
+          [
+            -0.262,
+            0.487
+          ],
+          [
+            0.225,
+            0.469
+          ]
+        ],
+        "recoveryPerSec": 7.68,
+        "adsScale": 0.7,
+        "randomYawDeg": 0.16,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 53,
+        "chest": 29,
+        "stomach": 26,
+        "limb": 20
+      },
+      "falloff": {
+        "startM": 45,
+        "endM": 110,
+        "minScale": 0.55
+      },
+      "range": 220,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.5,
+      "weightKg": 2.8,
+      "value": 2300,
+      "price": 3335,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "rifle_scarh",
+      "label": "SCAR-H 重枪管",
+      "class": "rifle",
+      "slot": 1,
+      "ammoType": "7.62",
+      "fireMode": "auto",
+      "fireIntervalMs": 235,
+      "magazineSize": 20,
+      "reloadMs": 4320,
+      "reloadTacticalMs": 2920,
+      "adsMs": 275,
+      "adsFovDeg": 50,
+      "hipSpreadDeg": 3,
+      "adsSpreadDeg": 0.32,
+      "spreadPerShotDeg": 0.26,
+      "maxSpreadDeg": 4.6,
+      "spreadRecoveryPerSec": 5.25,
+      "moveSpreadScale": 1.7,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.924
+          ],
+          [
+            0.152,
+            1.087
+          ],
+          [
+            -0.196,
+            1.033
+          ],
+          [
+            0.326,
+            0.891
+          ],
+          [
+            -0.283,
+            0.848
+          ],
+          [
+            0.37,
+            0.761
+          ],
+          [
+            -0.326,
+            0.739
+          ],
+          [
+            0.304,
+            0.674
+          ],
+          [
+            -0.239,
+            0.652
+          ],
+          [
+            0.348,
+            0.598
+          ],
+          [
+            -0.304,
+            0.565
+          ],
+          [
+            0.261,
+            0.544
+          ]
+        ],
+        "recoveryPerSec": 6.62,
+        "adsScale": 0.7,
+        "randomYawDeg": 0.16,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 71,
+        "chest": 39,
+        "stomach": 35,
+        "limb": 27
+      },
+      "falloff": {
+        "startM": 45,
+        "endM": 110,
+        "minScale": 0.55
+      },
+      "range": 220,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.5,
+      "weightKg": 4.3,
+      "value": 5600,
+      "price": 8120,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "rifle_rpk",
+      "label": "RPK 支援步枪",
+      "class": "rifle",
+      "slot": 1,
+      "ammoType": "7.62",
+      "fireMode": "auto",
+      "fireIntervalMs": 143,
+      "magazineSize": 60,
+      "reloadMs": 5016,
+      "reloadTacticalMs": 3464,
+      "adsMs": 280,
+      "adsFovDeg": 50,
+      "hipSpreadDeg": 3,
+      "adsSpreadDeg": 0.32,
+      "spreadPerShotDeg": 0.26,
+      "maxSpreadDeg": 4.6,
+      "spreadRecoveryPerSec": 5.9,
+      "moveSpreadScale": 1.7,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.797
+          ],
+          [
+            0.131,
+            0.937
+          ],
+          [
+            -0.169,
+            0.891
+          ],
+          [
+            0.281,
+            0.769
+          ],
+          [
+            -0.244,
+            0.731
+          ],
+          [
+            0.319,
+            0.656
+          ],
+          [
+            -0.281,
+            0.637
+          ],
+          [
+            0.262,
+            0.581
+          ],
+          [
+            -0.206,
+            0.562
+          ],
+          [
+            0.3,
+            0.516
+          ],
+          [
+            -0.262,
+            0.487
+          ],
+          [
+            0.225,
+            0.469
+          ]
+        ],
+        "recoveryPerSec": 7.68,
+        "adsScale": 0.7,
+        "randomYawDeg": 0.16,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 53,
+        "chest": 29,
+        "stomach": 26,
+        "limb": 20
+      },
+      "falloff": {
+        "startM": 45,
+        "endM": 110,
+        "minScale": 0.55
+      },
+      "range": 220,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.5,
+      "weightKg": 5.6,
+      "value": 4600,
+      "price": 6670,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "rifle_famas",
+      "label": "FAMAS 突击步枪",
+      "class": "rifle",
+      "slot": 1,
+      "ammoType": "5.56",
+      "fireMode": "auto",
+      "fireIntervalMs": 80,
+      "magazineSize": 25,
+      "reloadMs": 2685,
+      "reloadTacticalMs": 1840,
+      "adsMs": 205,
+      "adsFovDeg": 50,
+      "hipSpreadDeg": 3,
+      "adsSpreadDeg": 0.32,
+      "spreadPerShotDeg": 0.26,
+      "maxSpreadDeg": 4.6,
+      "spreadRecoveryPerSec": 6.56,
+      "moveSpreadScale": 1.7,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            0.71
+          ],
+          [
+            0.117,
+            0.835
+          ],
+          [
+            -0.15,
+            0.793
+          ],
+          [
+            0.25,
+            0.685
+          ],
+          [
+            -0.217,
+            0.651
+          ],
+          [
+            0.284,
+            0.584
+          ],
+          [
+            -0.25,
+            0.568
+          ],
+          [
+            0.234,
+            0.518
+          ],
+          [
+            -0.184,
+            0.501
+          ],
+          [
+            0.267,
+            0.459
+          ],
+          [
+            -0.234,
+            0.434
+          ],
+          [
+            0.2,
+            0.417
+          ]
+        ],
+        "recoveryPerSec": 8.62,
+        "adsScale": 0.7,
+        "randomYawDeg": 0.16,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 52,
+        "chest": 23,
+        "stomach": 21,
+        "limb": 16
+      },
+      "falloff": {
+        "startM": 45,
+        "endM": 110,
+        "minScale": 0.55
+      },
+      "range": 220,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.5,
+      "weightKg": 3.2,
+      "value": 3600,
+      "price": 5220,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
       "lootItemId": null
     },
     {
@@ -312,7 +1606,345 @@
       "weightKg": 3.8,
       "value": 2000,
       "price": 3000,
-      "item": { "w": 2, "h": 4 },
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "shotgun_saiga",
+      "label": "SAIGA 半自动",
+      "class": "shotgun",
+      "slot": 1,
+      "ammoType": "12ga",
+      "fireMode": "semi",
+      "fireIntervalMs": 300,
+      "magazineSize": 8,
+      "reloadMs": 4560,
+      "reloadTacticalMs": 3056,
+      "adsMs": 280,
+      "adsFovDeg": 62,
+      "hipSpreadDeg": 5.6,
+      "adsSpreadDeg": 3.4,
+      "spreadPerShotDeg": 0.5,
+      "maxSpreadDeg": 8,
+      "spreadRecoveryPerSec": 4.46,
+      "moveSpreadScale": 1.2,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            2.34
+          ],
+          [
+            0.275,
+            2.478
+          ],
+          [
+            -0.31,
+            2.409
+          ],
+          [
+            0.344,
+            2.271
+          ]
+        ],
+        "recoveryPerSec": 7.99,
+        "adsScale": 0.85,
+        "randomYawDeg": 0.6,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 18,
+        "chest": 9,
+        "stomach": 8,
+        "limb": 6
+      },
+      "falloff": {
+        "startM": 8,
+        "endM": 26,
+        "minScale": 0.18
+      },
+      "range": 60,
+      "pellets": 9,
+      "adsMoveSpeedScale": 0.55,
+      "weightKg": 4.2,
+      "value": 3800,
+      "price": 5510,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "shotgun_db",
+      "label": "DB 双管霰弹枪",
+      "class": "shotgun",
+      "slot": 1,
+      "ammoType": "12ga",
+      "fireMode": "semi",
+      "fireIntervalMs": 240,
+      "magazineSize": 2,
+      "reloadMs": 3570,
+      "reloadTacticalMs": 2384,
+      "adsMs": 200,
+      "adsFovDeg": 62,
+      "hipSpreadDeg": 5.6,
+      "adsSpreadDeg": 3.4,
+      "spreadPerShotDeg": 0.5,
+      "maxSpreadDeg": 8,
+      "spreadRecoveryPerSec": 4.19,
+      "moveSpreadScale": 1.2,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            3.4
+          ],
+          [
+            0.4,
+            3.6
+          ],
+          [
+            -0.45,
+            3.5
+          ],
+          [
+            0.5,
+            3.3
+          ]
+        ],
+        "recoveryPerSec": 5.5,
+        "adsScale": 0.85,
+        "randomYawDeg": 0.6,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 26,
+        "chest": 19,
+        "stomach": 17,
+        "limb": 13
+      },
+      "falloff": {
+        "startM": 8,
+        "endM": 26,
+        "minScale": 0.18
+      },
+      "range": 60,
+      "pellets": 9,
+      "adsMoveSpeedScale": 0.55,
+      "weightKg": 3,
+      "value": 1250,
+      "price": 1813,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "shotgun_spas",
+      "label": "SPAS 战术霰弹枪",
+      "class": "shotgun",
+      "slot": 1,
+      "ammoType": "12ga",
+      "fireMode": "semi",
+      "fireIntervalMs": 560,
+      "magazineSize": 8,
+      "reloadMs": 7680,
+      "reloadTacticalMs": 5136,
+      "adsMs": 250,
+      "adsFovDeg": 62,
+      "hipSpreadDeg": 5.6,
+      "adsSpreadDeg": 3.4,
+      "spreadPerShotDeg": 0.5,
+      "maxSpreadDeg": 8,
+      "spreadRecoveryPerSec": 5.46,
+      "moveSpreadScale": 1.2,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            3.4
+          ],
+          [
+            0.4,
+            3.6
+          ],
+          [
+            -0.45,
+            3.5
+          ],
+          [
+            0.5,
+            3.3
+          ]
+        ],
+        "recoveryPerSec": 5.5,
+        "adsScale": 0.85,
+        "randomYawDeg": 0.6,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 26,
+        "chest": 19,
+        "stomach": 17,
+        "limb": 13
+      },
+      "falloff": {
+        "startM": 8,
+        "endM": 26,
+        "minScale": 0.18
+      },
+      "range": 60,
+      "pellets": 9,
+      "adsMoveSpeedScale": 0.55,
+      "weightKg": 4,
+      "value": 3000,
+      "price": 4350,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "shotgun_usas",
+      "label": "USAS 重型霰弹枪",
+      "class": "shotgun",
+      "slot": 1,
+      "ammoType": "12ga",
+      "fireMode": "semi",
+      "fireIntervalMs": 280,
+      "magazineSize": 10,
+      "reloadMs": 4410,
+      "reloadTacticalMs": 2960,
+      "adsMs": 300,
+      "adsFovDeg": 62,
+      "hipSpreadDeg": 5.6,
+      "adsSpreadDeg": 3.4,
+      "spreadPerShotDeg": 0.5,
+      "maxSpreadDeg": 8,
+      "spreadRecoveryPerSec": 4.34,
+      "moveSpreadScale": 1.2,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            2.34
+          ],
+          [
+            0.275,
+            2.478
+          ],
+          [
+            -0.31,
+            2.409
+          ],
+          [
+            0.344,
+            2.271
+          ]
+        ],
+        "recoveryPerSec": 7.99,
+        "adsScale": 0.85,
+        "randomYawDeg": 0.6,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 18,
+        "chest": 9,
+        "stomach": 8,
+        "limb": 6
+      },
+      "falloff": {
+        "startM": 8,
+        "endM": 26,
+        "minScale": 0.18
+      },
+      "range": 60,
+      "pellets": 9,
+      "adsMoveSpeedScale": 0.55,
+      "weightKg": 5.2,
+      "value": 4500,
+      "price": 6525,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "shotgun_ksg",
+      "label": "KSG 无托霰弹枪",
+      "class": "shotgun",
+      "slot": 1,
+      "ammoType": "12ga",
+      "fireMode": "semi",
+      "fireIntervalMs": 640,
+      "magazineSize": 14,
+      "reloadMs": 8910,
+      "reloadTacticalMs": 5968,
+      "adsMs": 235,
+      "adsFovDeg": 62,
+      "hipSpreadDeg": 5.6,
+      "adsSpreadDeg": 3.4,
+      "spreadPerShotDeg": 0.5,
+      "maxSpreadDeg": 8,
+      "spreadRecoveryPerSec": 6.26,
+      "moveSpreadScale": 1.2,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            3.4
+          ],
+          [
+            0.4,
+            3.6
+          ],
+          [
+            -0.45,
+            3.5
+          ],
+          [
+            0.5,
+            3.3
+          ]
+        ],
+        "recoveryPerSec": 5.5,
+        "adsScale": 0.85,
+        "randomYawDeg": 0.6,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 26,
+        "chest": 19,
+        "stomach": 17,
+        "limb": 13
+      },
+      "falloff": {
+        "startM": 8,
+        "endM": 26,
+        "minScale": 0.18
+      },
+      "range": 60,
+      "pellets": 9,
+      "adsMoveSpeedScale": 0.55,
+      "weightKg": 3.3,
+      "value": 2600,
+      "price": 3770,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
       "lootItemId": null
     },
     {
@@ -380,8 +2012,366 @@
       "weightKg": 4.6,
       "value": 3200,
       "price": 5200,
-      "item": { "w": 2, "h": 4 },
+      "item": {
+        "w": 2,
+        "h": 4
+      },
       "lootItemId": "rifle_sr25"
+    },
+    {
+      "id": "dmr_m14",
+      "label": "M14 战斗步枪",
+      "class": "dmr",
+      "slot": 1,
+      "ammoType": "7.62",
+      "fireMode": "semi",
+      "fireIntervalMs": 330,
+      "magazineSize": 20,
+      "reloadMs": 5460,
+      "reloadTacticalMs": 3680,
+      "adsMs": 320,
+      "adsFovDeg": 35,
+      "hipSpreadDeg": 4.2,
+      "adsSpreadDeg": 0.12,
+      "spreadPerShotDeg": 0.75,
+      "maxSpreadDeg": 6.5,
+      "spreadRecoveryPerSec": 4.52,
+      "moveSpreadScale": 2.2,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            1.916
+          ],
+          [
+            0.202,
+            2.118
+          ],
+          [
+            -0.242,
+            2.017
+          ],
+          [
+            0.303,
+            1.866
+          ],
+          [
+            -0.282,
+            1.815
+          ]
+        ],
+        "recoveryPerSec": 4.96,
+        "adsScale": 0.72,
+        "randomYawDeg": 0.1,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 107,
+        "chest": 59,
+        "stomach": 53,
+        "limb": 41
+      },
+      "falloff": {
+        "startM": 80,
+        "endM": 200,
+        "minScale": 0.72
+      },
+      "range": 300,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.42,
+      "weightKg": 5,
+      "value": 5000,
+      "price": 7250,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "dmr_sks",
+      "label": "SKS 半自动",
+      "class": "dmr",
+      "slot": 1,
+      "ammoType": "7.62",
+      "fireMode": "semi",
+      "fireIntervalMs": 150,
+      "magazineSize": 10,
+      "reloadMs": 2850,
+      "reloadTacticalMs": 1920,
+      "adsMs": 265,
+      "adsFovDeg": 35,
+      "hipSpreadDeg": 4.2,
+      "adsSpreadDeg": 0.12,
+      "spreadPerShotDeg": 0.75,
+      "maxSpreadDeg": 6.5,
+      "spreadRecoveryPerSec": 6.28,
+      "moveSpreadScale": 2.2,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            1.558
+          ],
+          [
+            0.164,
+            1.722
+          ],
+          [
+            -0.197,
+            1.64
+          ],
+          [
+            0.246,
+            1.517
+          ],
+          [
+            -0.23,
+            1.476
+          ]
+        ],
+        "recoveryPerSec": 6.1,
+        "adsScale": 0.72,
+        "randomYawDeg": 0.1,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 102,
+        "chest": 39,
+        "stomach": 35,
+        "limb": 27
+      },
+      "falloff": {
+        "startM": 80,
+        "endM": 200,
+        "minScale": 0.72
+      },
+      "range": 300,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.42,
+      "weightKg": 3.9,
+      "value": 2700,
+      "price": 3915,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "dmr_g28",
+      "label": "G28 精准步枪",
+      "class": "dmr",
+      "slot": 1,
+      "ammoType": "7.62",
+      "fireMode": "semi",
+      "fireIntervalMs": 380,
+      "magazineSize": 20,
+      "reloadMs": 6060,
+      "reloadTacticalMs": 4080,
+      "adsMs": 340,
+      "adsFovDeg": 35,
+      "hipSpreadDeg": 4.2,
+      "adsSpreadDeg": 0.12,
+      "spreadPerShotDeg": 0.75,
+      "maxSpreadDeg": 6.5,
+      "spreadRecoveryPerSec": 4.3,
+      "moveSpreadScale": 2.2,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            1.916
+          ],
+          [
+            0.202,
+            2.118
+          ],
+          [
+            -0.242,
+            2.017
+          ],
+          [
+            0.303,
+            1.866
+          ],
+          [
+            -0.282,
+            1.815
+          ]
+        ],
+        "recoveryPerSec": 4.96,
+        "adsScale": 0.72,
+        "randomYawDeg": 0.1,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 107,
+        "chest": 59,
+        "stomach": 53,
+        "limb": 41
+      },
+      "falloff": {
+        "startM": 80,
+        "endM": 200,
+        "minScale": 0.72
+      },
+      "range": 300,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.42,
+      "weightKg": 5.4,
+      "value": 6200,
+      "price": 8990,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "dmr_vss",
+      "label": "VSS 微声狙击",
+      "class": "dmr",
+      "slot": 1,
+      "ammoType": "7.62",
+      "fireMode": "semi",
+      "fireIntervalMs": 280,
+      "magazineSize": 20,
+      "reloadMs": 4860,
+      "reloadTacticalMs": 3280,
+      "adsMs": 250,
+      "adsFovDeg": 35,
+      "hipSpreadDeg": 4.2,
+      "adsSpreadDeg": 0.12,
+      "spreadPerShotDeg": 0.75,
+      "maxSpreadDeg": 6.5,
+      "spreadRecoveryPerSec": 6.76,
+      "moveSpreadScale": 2.2,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            1.916
+          ],
+          [
+            0.202,
+            2.118
+          ],
+          [
+            -0.242,
+            2.017
+          ],
+          [
+            0.303,
+            1.866
+          ],
+          [
+            -0.282,
+            1.815
+          ]
+        ],
+        "recoveryPerSec": 4.96,
+        "adsScale": 0.72,
+        "randomYawDeg": 0.1,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 107,
+        "chest": 59,
+        "stomach": 53,
+        "limb": 41
+      },
+      "falloff": {
+        "startM": 80,
+        "endM": 200,
+        "minScale": 0.72
+      },
+      "range": 300,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.42,
+      "weightKg": 3.5,
+      "value": 3600,
+      "price": 5220,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
+    },
+    {
+      "id": "dmr_mk14",
+      "label": "MK14 增强步枪",
+      "class": "dmr",
+      "slot": 1,
+      "ammoType": "7.62",
+      "fireMode": "semi",
+      "fireIntervalMs": 150,
+      "magazineSize": 20,
+      "reloadMs": 3300,
+      "reloadTacticalMs": 2240,
+      "adsMs": 290,
+      "adsFovDeg": 35,
+      "hipSpreadDeg": 4.2,
+      "adsSpreadDeg": 0.12,
+      "spreadPerShotDeg": 0.75,
+      "maxSpreadDeg": 6.5,
+      "spreadRecoveryPerSec": 5.33,
+      "moveSpreadScale": 2.2,
+      "recoil": {
+        "pattern": [
+          [
+            0,
+            1.558
+          ],
+          [
+            0.164,
+            1.722
+          ],
+          [
+            -0.197,
+            1.64
+          ],
+          [
+            0.246,
+            1.517
+          ],
+          [
+            -0.23,
+            1.476
+          ]
+        ],
+        "recoveryPerSec": 6.1,
+        "adsScale": 0.72,
+        "randomYawDeg": 0.1,
+        "recoveryDelayMs": 120,
+        "recoveryWhileFiringScale": 0.35
+      },
+      "damage": {
+        "head": 102,
+        "chest": 39,
+        "stomach": 35,
+        "limb": 27
+      },
+      "falloff": {
+        "startM": 80,
+        "endM": 200,
+        "minScale": 0.72
+      },
+      "range": 300,
+      "pellets": 1,
+      "adsMoveSpeedScale": 0.42,
+      "weightKg": 4.4,
+      "value": 4200,
+      "price": 6090,
+      "item": {
+        "w": 2,
+        "h": 4
+      },
+      "lootItemId": null
     }
   ],
   "_ammoNote": "★ M5-3（制作人裁定）：口径表**不定义重量** —— 弹药的负重与仓库库存都以掉落表的物品重量为准（每格 60 发，单发重量 = 物品 weightKg / stack）。这里只声明『这个口径对应哪个物品条目』（lootItemId），启动期会校验它存在、且属于 ammo 类别。此前这里有一份 weightPerRoundKg，与掉落表构成同一件事的两份真值，已删除。",
@@ -467,5 +2457,6 @@
       "ttkArmoredSecMax": 1.2,
       "nearEdgeRatio": 0.1
     }
-  }
+  },
+  "_m6_1Note": "M6-1：每类别扩充至 6 把（原每类 1 把）。数值由角色反解并经 tools/ttk.mjs 同源算法验证；原有 5 把基准武器**数值一字未改**。"
 }

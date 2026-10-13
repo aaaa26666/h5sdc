@@ -15,6 +15,7 @@ import {
   consumableOnHand,
   overweightBand,
   loadoutWeight,
+  buildCarry,
 } from './loadout.js';
 import { stashSummary, stashValue, stashWeight } from './stash.js';
 import { stockView, sellPriceOf } from './shop.js';
@@ -24,10 +25,36 @@ import { itemDef } from './items.js';
 import { ACTIONS, isRebindable, resolveBindings } from './keybinds.js';
 import { dataKeys } from './lootTable.js';
 
+/**
+ * ★ M6：携行具的容量与**进局投放结果**。
+ *
+ * 为什么必须显示出来：M6 起弹药与药品要占背包格，因此"我在面板上填了 300 发"
+ * 与"进战区真的带得进去多少"是两件事。不显示的话，玩家会在局内发现子弹少了，
+ * 而那时已经无法补救 —— 静默少带是最容易被当成"游戏坏了"的一类问题。
+ */
+function carryPanel(lo, cfg) {
+  const plan = buildCarry(lo, cfg);
+  const total = plan.backpack.w * plan.backpack.h + (plan.rig ? plan.rig.w * plan.rig.h : 0);
+  const used = plan.placements.reduce((a, p) => a + p.w * p.h, 0);
+  return {
+    plan,
+    backpack: plan.backpack,
+    rig: plan.rig,
+    kitSlots: used,
+    freeSlots: total - used,
+    totalSlots: total,
+    overflow: plan.overflow,
+  };
+}
+
 /** 配装面板：槽位可选装备（只列仓库里现成的）、弹药与消耗品的携带量、负重档位。 */
 function loadoutPanel(profile, cfg) {
   const lo = activeLoadout(profile);
   const ow = overweightBand(lo, cfg);
+  // ★ M6：负重上限的基数必须是**所装备的背包**，否则面板上写的加成与局内实际不符
+  //   （换一只更大的背包后，面板还按参考装载 22kg 算）。
+  const carry = carryPanel(lo, cfg);
+  const mods = skillModifiers(profile, cfg, { weightBaseKg: carry.backpack.weightLimitKg });
 
   const slots = cfg.equipment.slots
     .filter((s) => !s.disabled)
@@ -85,7 +112,16 @@ function loadoutPanel(profile, cfg) {
     },
     nextAtKg: ow.nextAtKg,
     toNextKg: ow.toNextKg,
-    modifiers: skillModifiers(profile, cfg),
+    modifiers: mods,
+    /** ★ M6：携行具容量与进局投放结果（含"装不下"的清单，见 carryPanel 的说明） */
+    carry: {
+      backpack: carry.backpack,
+      rig: carry.rig,
+      kitSlots: carry.kitSlots,
+      freeSlots: carry.freeSlots,
+      totalSlots: carry.totalSlots,
+      overflow: carry.overflow,
+    },
   };
 }
 

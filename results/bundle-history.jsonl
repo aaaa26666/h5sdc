@@ -22,3 +22,7 @@
 {"at":"2026-10-12T15:22:04.850Z","firstRawKB":790.3,"firstGzipKB":226.6,"firstBrotliKB":185.3,"asyncBrotliKB":0,"budgetKB":200,"pass":true}
 {"at":"2026-10-12T15:35:18.942Z","firstRawKB":795.3,"firstGzipKB":228,"firstBrotliKB":186.7,"asyncBrotliKB":0,"budgetKB":200,"pass":true}
 {"at":"2026-10-12T15:40:53.607Z","firstRawKB":795.4,"firstGzipKB":228.1,"firstBrotliKB":186.6,"asyncBrotliKB":0,"budgetKB":200,"pass":true}
+{"at":"2026-10-13T12:29:27.567Z","firstRawKB":795.4,"firstGzipKB":228.1,"firstBrotliKB":186.6,"asyncBrotliKB":0,"budgetKB":2048,"warnKB":512,"pass":true}
+{"at":"2026-10-13T12:42:34.521Z","firstRawKB":815.1,"firstGzipKB":231.4,"firstBrotliKB":188.8,"asyncBrotliKB":0,"budgetKB":2048,"warnKB":512,"pass":true}
+{"at":"2026-10-13T13:45:16.897Z","firstRawKB":824.6,"firstGzipKB":234.5,"firstBrotliKB":191.4,"asyncBrotliKB":0,"budgetKB":2048,"warnKB":512,"pass":true}
+{"at":"2026-10-13T15:54:19.986Z","firstRawKB":839.6,"firstGzipKB":239.8,"firstBrotliKB":195.7,"asyncBrotliKB":0,"budgetKB":2048,"warnKB":512,"pass":true}

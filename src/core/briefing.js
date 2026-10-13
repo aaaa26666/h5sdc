@@ -48,6 +48,8 @@ export function buildRaidBriefing(cfg, kit) {
   const zones = cfg.extract.zones;
   const start = cfg.startLoadout;
   const bp = cfg.lootTable.backpack;
+  /** ★ M6：携行具的规格来自 raidKit（装备的那只背包 / 弹挂 + 进局投放结果） */
+  const carry = kit && kit.carry ? kit.carry : null;
   // 当前配装：有 raidKit 用它，否则用配置表的起始配装（两条路径的字段形状相同）
   const lo = kit
     ? kit.loadout
@@ -114,10 +116,32 @@ export function buildRaidBriefing(cfg, kit) {
       })),
     },
     // 背包与安全箱：这两项是"继续贪还是马上撤"的判断依据，开局就要让玩家看见。
-    // 数值与 inventory.js 读的是**同一个字段**（lootTable.backpack / safeContainer），
-    // 这里只做展示，不另立一份容量口径。
+    // ★ M6：容量来自**所装备的**背包/弹挂，不再是掉落表里的固定 6x5。
+    //   没有 raidKit 时（纯逻辑单测）退回掉落表的参考装载，与 createInventory 的兜底一致。
     pack: {
-      backpack: { w: bp.w, h: bp.h, slots: bp.w * bp.h, weightLimitKg: bp.weightLimitKg },
+      backpack: carry
+        ? {
+            id: carry.backpack.id,
+            label: carry.backpack.label,
+            source: carry.backpack.source,
+            w: carry.backpack.w,
+            h: carry.backpack.h,
+            slots: carry.backpack.w * carry.backpack.h,
+            weightLimitKg: carry.backpack.weightLimitKg,
+            /** 含技能加成的实际上限（inventory 用的就是它） */
+            totalWeightLimitKg: carry.backpack.weightLimitTotalKg,
+          }
+        : { id: null, label: bp.referenceId, source: 'reference', w: bp.w, h: bp.h, slots: bp.w * bp.h, weightLimitKg: bp.weightLimitKg, totalWeightLimitKg: bp.weightLimitKg },
+      rig: carry && carry.rig
+        ? { id: carry.rig.id, label: carry.rig.label, w: carry.rig.w, h: carry.rig.h, slots: carry.rig.w * carry.rig.h, accepts: carry.rig.accepts }
+        : null,
+      /** 自己带的弹药/药品占掉的格数（"还能装几件战利品"要减掉它） */
+      kitSlots: carry ? carry.placements.reduce((a, p) => a + p.w * p.h, 0) : 0,
+      /**
+       * ★ 装不下而**没带进战区**的东西。它必须显示出来：
+       * 静默少带的表现是"进局发现只有 60 发子弹"，而玩家会以为游戏算错了。
+       */
+      overflow: carry ? carry.overflow.map((o) => ({ ...o })) : [],
       safe: { id: safeTier.id, label: safeTier.label, w: safeTier.w, h: safeTier.h },
     },
   };

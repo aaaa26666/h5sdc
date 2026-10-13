@@ -22,7 +22,7 @@
 //             强度直接映射为柱高。属 M7 美术替换范围。
 import * as THREE from 'three';
 import { mulberry32 } from '../core/rng.js';
-import { containerById, rarityById, rollItems, interruptRule } from '../core/lootTable.js';
+import { containerById, rarityById, rollItems, rollItemsFromDef, interruptRule } from '../core/lootTable.js';
 
 // 容器分级的外观。尺寸与颜色只影响"一眼看出这是什么容器"，不参与任何数值。
 const TYPE_STYLE = {
@@ -30,6 +30,8 @@ const TYPE_STYLE = {
   crate_military: { color: 0x5c6b47, w: 1.3, h: 1.0, d: 0.9 },
   safe: { color: 0x44545f, w: 1.0, h: 1.2, d: 1.0 },
   key_room: { color: 0x6d4340, w: 1.5, h: 1.3, d: 1.1 },
+  // M6-2：AI 尸体。低、扁、宽 —— 一眼能与箱子区分开（"这是个人，不是个箱子"）。
+  corpse: { color: 0x77302c, w: 0.9, h: 0.45, d: 1.5 },
 };
 const FALLBACK_STYLE = { color: 0x9a7b4f, w: 1.1, h: 0.9, d: 0.8 };
 
@@ -59,11 +61,18 @@ export function createLoot(cfg, level, scene, opts = {}) {
   const N = defs.length;
   const rarityOrder = table.rarity.map((r) => r.id);
 
+  // ★ M6-2：尸体是**运行时才出现**的容器，而 InstancedMesh 的实例数在创建时定死。
+  //   因此这里预留一段"尸体槽位"，空槽用与光束相同的隐藏手法（缩放到 0.0001 挪走）。
+  //   预留上限取「本局 AI 总数 + Boss」，由调用方传入 —— 不写死常量，
+  //   否则 AI 配额一改这里就静默不够用。
+  const CORPSE_SLOTS = Math.max(0, opts.corpseSlots | 0);
+  const SLOTS = N + CORPSE_SLOTS;
+
   // ---- 容器本体：一个 InstancedMesh 装全部箱子 ----
   // 89 个容器若逐个 Mesh 提交会违反约束 C-5（静态几何必须实例化）。
   const boxGeo = new THREE.BoxGeometry(1, 1, 1);
   const boxMat = new THREE.MeshLambertMaterial({});
-  const boxes = new THREE.InstancedMesh(boxGeo, boxMat, N);
+  const boxes = new THREE.InstancedMesh(boxGeo, boxMat, SLOTS);
   boxes.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   scene.add(boxes);
 
@@ -73,7 +82,7 @@ export function createLoot(cfg, level, scene, opts = {}) {
   const beamMat = new THREE.MeshBasicMaterial({
     transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false,
   });
-  const beams = new THREE.InstancedMesh(beamGeo, beamMat, N);
+  const beams = new THREE.InstancedMesh(beamGeo, beamMat, SLOTS);
   beams.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   scene.add(beams);
 
@@ -143,6 +152,96 @@ export function createLoot(cfg, level, scene, opts = {}) {
   if (boxes.instanceColor) boxes.instanceColor.needsUpdate = true;
   beams.instanceMatrix.needsUpdate = true;
   if (beams.instanceColor) beams.instanceColor.needsUpdate = true;
+
+  // 尸体槽位先全部隐藏（见 CORPSE_SLOTS 的说明）。用与光束相同的"缩到 0.0001 挪走"手法 ——
+  // 缩放到 0 会让矩阵退化。
+  {
+    vec.set(0, -50, 0);
+    scl.set(0.0001, 0.0001, 0.0001);
+    mtx.compose(vec, quat, scl);
+    for (let k = N; k < SLOTS; k++) {
+      boxes.setMatrixAt(k, mtx);
+      beams.setMatrixAt(k, mtx);
+      col.setHex(0x000000);
+      boxes.setColorAt(k, col);
+      beams.setColorAt(k, col);
+    }
+    boxes.instanceMatrix.needsUpdate = true;
+    beams.instanceMatrix.needsUpdate = true;
+    if (boxes.instanceColor) boxes.instanceColor.needsUpdate = true;
+    if (beams.instanceColor) beams.instanceColor.needsUpdate = true;
+  }
+
+  // ---- M6-2：AI 尸体 ----
+  //
+  // 尸体就是"运行时长出来的一具可搜刮容器"，因此它**完全复用**容器的
+  // 选中 / 搜索进度 / 打断 / 入包路径（见下方 update 的 nearest 查找，它只按
+  // `containers` 与层号筛选，不区分类型）。唯一的差别是三件事：
+  //   · 掉落表按**兵种**取（`corpseByTier`），而不是容器类型
+  //   · def 在这里现构 —— 刻意**不**往 lootTable.containers 里加一个 corpse 类型，
+  //     那样它的 rarityWeights 永远不会被读到，属于死配置
+  //   · 槽位来自预分配池，用尽时复用最早的一具并**记警告**（不静默丢弃）
+  const corpseTable = table.corpseByTier || {};
+  let corpseSeq = 0;
+
+  /**
+   * 在某处生成一具可搜刮的尸体。
+   * @param {number} x @param {number} z @param {number} floor
+   * @param {string} tierId 兵种 id（决定掉落表与外观强度）
+   * @returns {object|null} 生成的容器对象；该兵种没配掉落表时返回 null
+   */
+  function spawnCorpse(x, z, floor, tierId) {
+    const spec = corpseTable[tierId];
+    if (!spec) return null; // 没配掉落表的兵种不生成（AI 表校验器会拦住这种表）
+
+    let slot;
+    if (corpseSeq < CORPSE_SLOTS) {
+      slot = N + corpseSeq++;
+    } else {
+      // 槽位用尽：复用**最早**的那一具（它的东西多半还在，但比"不生成"更不容易误导玩家）
+      const idx = containers.findIndex((c) => c.type === 'corpse');
+      if (idx < 0) return null;
+      console.warn('[loot] 尸体槽位已用尽，复用最早的一具');
+      slot = containers[idx].id;
+      containers.splice(idx, 1);
+    }
+
+    const style = TYPE_STYLE.corpse;
+    const baseY = level.floorBaseY(floor);
+    const y = baseY + style.h / 2;
+    const def = {
+      id: 'corpse',
+      label: '尸体',
+      // 搜索耗时与打断规则来自 corpseByTier 的同级字段（与 containers 的定义方式一致）
+      searchMs: corpseTable.searchMs ?? 1800,
+      interruptRule: corpseTable.interruptRule ?? 'keep_partial',
+      requiresKey: null,
+      itemsMin: spec.itemsMin,
+      itemsMax: spec.itemsMax,
+      rarityWeights: spec.rarityWeights,
+    };
+    // ★ 抽表复用 core/lootTable.js 的同一段实现（不另写一份 —— 算法同源是硬要求）
+    const items = rollItemsFromDef(table, def, rnd);
+
+    vec.set(x, y, z);
+    scl.set(style.w, style.h, style.d);
+    mtx.compose(vec, quat, scl);
+    boxes.setMatrixAt(slot, mtx);
+    col.setHex(style.color);
+    boxes.setColorAt(slot, col);
+    boxes.instanceMatrix.needsUpdate = true;
+    if (boxes.instanceColor) boxes.instanceColor.needsUpdate = true;
+
+    const c = {
+      id: slot, x, y, z, floor, type: 'corpse', def, style,
+      // 尸体不发稀有度光束：光束是"这箱子值不值得冒险"的第一眼信号，
+      // 而尸体已经用"我打死了他"回答了这个问题。
+      rarity: null, beamIntensity: 0, dropSoundTier: 0, colorHex: '#77302c',
+      items, opened: false, progress: 0, tierId,
+    };
+    containers.push(c);
+    return c;
+  }
 
   let activeContainer = null;
   let searchAnchor = null;
@@ -271,6 +370,10 @@ export function createLoot(cfg, level, scene, opts = {}) {
     boxes,
     beams,
     update,
+    /** M6-2：生成一具可搜刮的尸体（掉落表按兵种取） */
+    spawnCorpse,
+    /** M6-2：本局已生成的尸体数（诊断与断言用） */
+    corpseCount: () => containers.filter((c) => c.type === 'corpse').length,
     openedCount: () => containers.filter((c) => c.opened).length,
     remaining: () => containers.filter((c) => !c.opened).length,
     /** 各类容器的数量（用于核对与地图表的容器预算是否一致） */

@@ -1,19 +1,21 @@
 {
   "_comment": "M2 防护与消耗品数值表。护甲按『部位覆盖 + 等级减伤 + 耐久消耗』建模。",
-
   "armor": [
     {
       "id": "none",
       "label": "无防护",
       "class": 0,
       "durability": 0,
-      "damageAbsorb": 0.0,
+      "damageAbsorb": 0,
       "durabilityLossPerHit": 0,
       "covers": [],
       "weightKg": 0,
       "value": 0,
       "price": 0,
-      "item": { "w": 1, "h": 1 },
+      "item": {
+        "w": 1,
+        "h": 1
+      },
       "lootItemId": null
     },
     {
@@ -23,11 +25,17 @@
       "durability": 55,
       "damageAbsorb": 0.35,
       "durabilityLossPerHit": 1.6,
-      "covers": ["chest", "stomach"],
+      "covers": [
+        "chest",
+        "stomach"
+      ],
       "weightKg": 3.2,
       "value": 550,
       "price": 800,
-      "item": { "w": 2, "h": 2 },
+      "item": {
+        "w": 2,
+        "h": 2
+      },
       "lootItemId": "vest2"
     },
     {
@@ -37,12 +45,38 @@
       "durability": 80,
       "damageAbsorb": 0.48,
       "durabilityLossPerHit": 2.1,
-      "covers": ["chest", "stomach"],
+      "covers": [
+        "chest",
+        "stomach"
+      ],
       "weightKg": 4,
       "value": 1250,
       "price": 1900,
-      "item": { "w": 2, "h": 3 },
+      "item": {
+        "w": 2,
+        "h": 3
+      },
       "lootItemId": "vest3"
+    },
+    {
+      "id": "vest4",
+      "label": "四级防弹衣",
+      "class": 4,
+      "durability": 110,
+      "damageAbsorb": 0.58,
+      "durabilityLossPerHit": 2.6,
+      "covers": [
+        "chest",
+        "stomach"
+      ],
+      "weightKg": 5.2,
+      "value": 3600,
+      "price": 5500,
+      "item": {
+        "w": 2,
+        "h": 3
+      },
+      "lootItemId": "vest4"
     },
     {
       "id": "helmet2",
@@ -51,11 +85,16 @@
       "durability": 40,
       "damageAbsorb": 0.4,
       "durabilityLossPerHit": 1.4,
-      "covers": ["head"],
+      "covers": [
+        "head"
+      ],
       "weightKg": 1.8,
       "value": 480,
       "price": 700,
-      "item": { "w": 2, "h": 2 },
+      "item": {
+        "w": 2,
+        "h": 2
+      },
       "lootItemId": "helmet2"
     },
     {
@@ -65,30 +104,67 @@
       "durability": 60,
       "damageAbsorb": 0.55,
       "durabilityLossPerHit": 1.8,
-      "covers": ["head"],
+      "covers": [
+        "head"
+      ],
       "weightKg": 2.1,
       "value": 980,
       "price": 1500,
-      "item": { "w": 2, "h": 2 },
+      "item": {
+        "w": 2,
+        "h": 2
+      },
       "lootItemId": "helmet3"
+    },
+    {
+      "id": "helmet4",
+      "label": "四级头盔",
+      "class": 4,
+      "durability": 85,
+      "damageAbsorb": 0.62,
+      "durabilityLossPerHit": 2.4,
+      "covers": [
+        "head"
+      ],
+      "weightKg": 2.4,
+      "value": 2600,
+      "price": 4000,
+      "item": {
+        "w": 2,
+        "h": 2
+      },
+      "lootItemId": "helmet4"
     }
   ],
-
   "armorRules": {
     "_comment": "护甲被打穿后的行为。penetrationRatio >= 1 表示弹药穿透等级足够，减伤按剩余耐久打折。",
-    "minAbsorbWhenBroken": 0.0,
+    "minAbsorbWhenBroken": 0,
     "durabilityToAbsorbScale": 0.6,
     "penetrationLevelBonus": 0.12
   },
-
   "hitZones": {
     "_comment": "命中部位划分。几何用于射线求交，倍率来自各武器的 damage 字段。护甲覆盖关系由 armor.covers 直接按部位名声明，此处不再重复一层 armorSlot 映射（避免出现无人读取的字段）。",
-    "head": { "radius": 0.30, "centerY": 1.62, "label": "头部" },
-    "chest": { "radius": 0.42, "centerY": 1.18, "label": "胸部" },
-    "stomach": { "radius": 0.34, "centerY": 0.88, "label": "腹部" },
-    "limb": { "radius": 0.30, "centerY": 0.50, "label": "四肢" }
+    "head": {
+      "radius": 0.3,
+      "centerY": 1.62,
+      "label": "头部"
+    },
+    "chest": {
+      "radius": 0.42,
+      "centerY": 1.18,
+      "label": "胸部"
+    },
+    "stomach": {
+      "radius": 0.34,
+      "centerY": 0.88,
+      "label": "腹部"
+    },
+    "limb": {
+      "radius": 0.3,
+      "centerY": 0.5,
+      "label": "四肢"
+    }
   },
-
   "consumables": [
     {
       "id": "bandage",
@@ -107,11 +183,11 @@
       "stopOnDamage": true
     }
   ],
-
   "playerVitals": {
     "_comment": "M2 玩家生命与护甲规则（数值真值）。",
     "_movedNote": "★ M5-3：原来的 startArmor / startConsumables 已迁至 equipment.json 的 starterLoadout —— 『进战区带什么』只能有一份真值，而配装界面要改的正是这一份。config/index.js 会把它派生回 playerVitals.startArmor / startConsumables（**派生视图**，供 player.js / briefing.js 沿用，不是第二份真值）。此处不再保留副本。",
     "maxHealth": 100,
-    "headshotInstantDeathChance": 0.0
-  }
+    "headshotInstantDeathChance": 0
+  },
+  "_m6_2Note": "M6-2：新增 4 级护甲（vest4/helmet4）—— Boss 的\"更好的护甲\"需要它，同时修掉一个既有缺口：掉落表里早就有 vest4（epic）却**没有任何装备定义**，属\"搜得到穿不上\"。★ 四级套**不进商店**，只能从 Boss 尸体或 epic 容器获得 —— 让 Boss 成为独特产出。"
 }

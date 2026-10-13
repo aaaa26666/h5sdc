@@ -2,7 +2,6 @@
   "_comment": "M5-4 经济表（唯一真值）：仓库规格、买卖价差、商店在售清单、通胀监控参数。",
   "_priceAuthorityNote": "★ 价格的**算法**只有一处（core/shop.js 的 basePrice/buyPrice/sellPrice）。本表只给『价差比例』与『卖什么』，不给任何成品的买价或卖价数字 —— 否则改一次价差就要改一列数字，正是 M5 约束词禁止的『两处各算一次价格』。",
   "_basePriceRule": "基价 = 装备表（weapons.json / combat.json）的 price（若 id 命中某件装备）；否则 = 物品表（loot.json）的 value。搜刮结算用的是 value（估值），商店用的是 price（市价）—— 估值与市价不同是设计意图，不是不一致。",
-
   "stash": {
     "_comment": "仓库：二维格子，与局内背包同一套排放算法（core/packing.js）。",
     "w": 10,
@@ -12,45 +11,366 @@
       "maxBytes": 200000,
       "_maxBytesNote": "档案序列化后的软上限。超过时先丢 _repairs、再截断 economy.samples（保游戏进度，牺牲诊断与统计），仍超则不动旧档并记一次警告 —— 宁可少存一次，也不要写半份。"
     },
-    "sortModes": ["category", "rarity", "value", "name"],
+    "sortModes": [
+      "category",
+      "rarity",
+      "value",
+      "name"
+    ],
     "_sortNote": "排序只改坐标、不改内容（多重集合必须相等，有单测守住）。默认按类别，其次稀有度降序、再按价值降序。"
   },
-
   "priceRules": {
-    "buySpread": { "weapon": 1.15, "armor": 1.1, "ammo": 0.7, "medical": 0.9, "consumable": 0.9 },
+    "buySpread": {
+      "weapon": 1.15,
+      "armor": 1.1,
+      "ammo": 0.7,
+      "medical": 0.9,
+      "consumable": 0.9,
+      "backpack": 1.12,
+      "rig": 1.12
+    },
     "_buySpreadNote": "买价 = ceil(基价 × buySpread)。>1 表示商店加价（弹药与医疗按 0.7/0.9 是**补贴**：它们是消耗品，定价过高会让玩家不敢开枪/不敢治伤）。",
     "sellRatio": {
-      "weapon": 0.42, "armor": 0.42, "attachment": 0.38, "ammo": 0.28,
-      "medical": 0.32, "consumable": 0.32, "valuable": 0.55, "quest": 0
+      "weapon": 0.42,
+      "armor": 0.42,
+      "attachment": 0.38,
+      "ammo": 0.28,
+      "medical": 0.32,
+      "consumable": 0.32,
+      "valuable": 0.55,
+      "quest": 0,
+      "backpack": 0.45,
+      "rig": 0.45
     },
     "_sellRatioNote": "卖价 = floor(基价 × sellRatio)。**每一个物品类别都必须在这里出现**（含 0），否则启动期报错 —— 缺一类的表现是『这类东西卖不掉且没人知道为什么』。quest 固定为 0：任务物品不可出售。",
     "_noArbitrageNote": "启动期校验：凡在 buySpread 里出现的类别，都必须满足 sellRatio < buySpread，否则玩家可以『买入再卖出』无限刷钱。",
     "minSellPrice": 1,
-    "_minSellPriceNote": "单件卖价下限。破甲（耐久 0）另有 brokenSellRatio 规则，见 equipment.json 的 durabilityRules。"
+    "_minSellPriceNote": "单件卖价下限。破甲（耐久 0）另有 brokenSellRatio 规则，见 equipment.json 的 durabilityRules。",
+    "_m6CarryNote": "M6 新增 backpack / rig 两类的价差。取 0.45/1.12（略高于护甲的 0.42/1.10）：携行具是买了就长期用的装备，回收价值给高一点才不会让换包变成纯亏损。启动期会校验 sellRatio < buySpread（0.45 < 1.12 ✓），不存在买入再卖出的无风险套利。"
   },
-
   "stock": {
     "_comment": "商店在售清单。qty 的语义：-1 = 无限；正数 = **单次购买上限**（不做『刷新库存』，那属 M6+）。",
     "_unlockNote": "unlockLevel 对照 progression.json 的等级；启动期校验它不超过 maxLevel。",
     "items": [
-      { "id": "pistol_p9", "kind": "weapon", "ref": "pistol_p9", "unlockLevel": 1, "qty": -1 },
-      { "id": "rifle_m4", "kind": "weapon", "ref": "rifle_m4", "unlockLevel": 1, "qty": -1 },
-      { "id": "smg_v9", "kind": "weapon", "ref": "smg_v9", "unlockLevel": 2, "qty": -1 },
-      { "id": "shotgun_m590", "kind": "weapon", "ref": "shotgun_m590", "unlockLevel": 3, "qty": -1 },
-      { "id": "dmr_sr25", "kind": "weapon", "ref": "dmr_sr25", "unlockLevel": 6, "qty": -1 },
-      { "id": "helmet2", "kind": "armor", "ref": "helmet2", "unlockLevel": 1, "qty": -1 },
-      { "id": "vest2", "kind": "armor", "ref": "vest2", "unlockLevel": 1, "qty": -1 },
-      { "id": "helmet3", "kind": "armor", "ref": "helmet3", "unlockLevel": 4, "qty": -1 },
-      { "id": "vest3", "kind": "armor", "ref": "vest3", "unlockLevel": 4, "qty": -1 },
-      { "id": "ammo_556", "kind": "item", "ref": "ammo_556", "unlockLevel": 1, "qty": 300 },
-      { "id": "ammo_762", "kind": "item", "ref": "ammo_762", "unlockLevel": 2, "qty": 200 },
-      { "id": "ammo_ap", "kind": "item", "ref": "ammo_ap", "unlockLevel": 5, "qty": 150 },
-      { "id": "pistol_mag", "kind": "item", "ref": "pistol_mag", "unlockLevel": 1, "qty": 200 },
-      { "id": "bandage", "kind": "item", "ref": "bandage", "unlockLevel": 1, "qty": -1 },
-      { "id": "medkit", "kind": "item", "ref": "medkit", "unlockLevel": 1, "qty": -1 }
-    ]
+      {
+        "id": "pistol_p9",
+        "kind": "weapon",
+        "ref": "pistol_p9",
+        "unlockLevel": 1,
+        "qty": -1
+      },
+      {
+        "id": "rifle_m4",
+        "kind": "weapon",
+        "ref": "rifle_m4",
+        "unlockLevel": 1,
+        "qty": -1
+      },
+      {
+        "id": "smg_v9",
+        "kind": "weapon",
+        "ref": "smg_v9",
+        "unlockLevel": 2,
+        "qty": -1
+      },
+      {
+        "id": "shotgun_m590",
+        "kind": "weapon",
+        "ref": "shotgun_m590",
+        "unlockLevel": 3,
+        "qty": -1
+      },
+      {
+        "id": "dmr_sr25",
+        "kind": "weapon",
+        "ref": "dmr_sr25",
+        "unlockLevel": 6,
+        "qty": -1
+      },
+      {
+        "id": "pistol_p12",
+        "kind": "weapon",
+        "ref": "pistol_p12",
+        "unlockLevel": 3,
+        "qty": -1
+      },
+      {
+        "id": "pistol_g17",
+        "kind": "weapon",
+        "ref": "pistol_g17",
+        "unlockLevel": 1,
+        "qty": -1
+      },
+      {
+        "id": "pistol_rsh",
+        "kind": "weapon",
+        "ref": "pistol_rsh",
+        "unlockLevel": 5,
+        "qty": -1
+      },
+      {
+        "id": "pistol_mk23",
+        "kind": "weapon",
+        "ref": "pistol_mk23",
+        "unlockLevel": 4,
+        "qty": -1
+      },
+      {
+        "id": "pistol_vz",
+        "kind": "weapon",
+        "ref": "pistol_vz",
+        "unlockLevel": 2,
+        "qty": -1
+      },
+      {
+        "id": "smg_mp9",
+        "kind": "weapon",
+        "ref": "smg_mp9",
+        "unlockLevel": 3,
+        "qty": -1
+      },
+      {
+        "id": "smg_ump",
+        "kind": "weapon",
+        "ref": "smg_ump",
+        "unlockLevel": 6,
+        "qty": -1
+      },
+      {
+        "id": "smg_mac",
+        "kind": "weapon",
+        "ref": "smg_mac",
+        "unlockLevel": 4,
+        "qty": -1
+      },
+      {
+        "id": "smg_mp5sd",
+        "kind": "weapon",
+        "ref": "smg_mp5sd",
+        "unlockLevel": 5,
+        "qty": -1
+      },
+      {
+        "id": "smg_bizon",
+        "kind": "weapon",
+        "ref": "smg_bizon",
+        "unlockLevel": 8,
+        "qty": -1
+      },
+      {
+        "id": "rifle_ak762",
+        "kind": "weapon",
+        "ref": "rifle_ak762",
+        "unlockLevel": 5,
+        "qty": -1
+      },
+      {
+        "id": "rifle_aks74u",
+        "kind": "weapon",
+        "ref": "rifle_aks74u",
+        "unlockLevel": 3,
+        "qty": -1
+      },
+      {
+        "id": "rifle_scarh",
+        "kind": "weapon",
+        "ref": "rifle_scarh",
+        "unlockLevel": 13,
+        "qty": -1
+      },
+      {
+        "id": "rifle_rpk",
+        "kind": "weapon",
+        "ref": "rifle_rpk",
+        "unlockLevel": 10,
+        "qty": -1
+      },
+      {
+        "id": "rifle_famas",
+        "kind": "weapon",
+        "ref": "rifle_famas",
+        "unlockLevel": 7,
+        "qty": -1
+      },
+      {
+        "id": "shotgun_saiga",
+        "kind": "weapon",
+        "ref": "shotgun_saiga",
+        "unlockLevel": 9,
+        "qty": -1
+      },
+      {
+        "id": "shotgun_db",
+        "kind": "weapon",
+        "ref": "shotgun_db",
+        "unlockLevel": 5,
+        "qty": -1
+      },
+      {
+        "id": "shotgun_spas",
+        "kind": "weapon",
+        "ref": "shotgun_spas",
+        "unlockLevel": 7,
+        "qty": -1
+      },
+      {
+        "id": "shotgun_usas",
+        "kind": "weapon",
+        "ref": "shotgun_usas",
+        "unlockLevel": 12,
+        "qty": -1
+      },
+      {
+        "id": "shotgun_ksg",
+        "kind": "weapon",
+        "ref": "shotgun_ksg",
+        "unlockLevel": 4,
+        "qty": -1
+      },
+      {
+        "id": "dmr_m14",
+        "kind": "weapon",
+        "ref": "dmr_m14",
+        "unlockLevel": 16,
+        "qty": -1
+      },
+      {
+        "id": "dmr_sks",
+        "kind": "weapon",
+        "ref": "dmr_sks",
+        "unlockLevel": 8,
+        "qty": -1
+      },
+      {
+        "id": "dmr_g28",
+        "kind": "weapon",
+        "ref": "dmr_g28",
+        "unlockLevel": 20,
+        "qty": -1
+      },
+      {
+        "id": "dmr_vss",
+        "kind": "weapon",
+        "ref": "dmr_vss",
+        "unlockLevel": 10,
+        "qty": -1
+      },
+      {
+        "id": "dmr_mk14",
+        "kind": "weapon",
+        "ref": "dmr_mk14",
+        "unlockLevel": 13,
+        "qty": -1
+      },
+      {
+        "id": "helmet2",
+        "kind": "armor",
+        "ref": "helmet2",
+        "unlockLevel": 1,
+        "qty": -1
+      },
+      {
+        "id": "vest2",
+        "kind": "armor",
+        "ref": "vest2",
+        "unlockLevel": 1,
+        "qty": -1
+      },
+      {
+        "id": "helmet3",
+        "kind": "armor",
+        "ref": "helmet3",
+        "unlockLevel": 4,
+        "qty": -1
+      },
+      {
+        "id": "vest3",
+        "kind": "armor",
+        "ref": "vest3",
+        "unlockLevel": 4,
+        "qty": -1
+      },
+      {
+        "id": "bp_small",
+        "kind": "backpack",
+        "ref": "bp_small",
+        "unlockLevel": 1,
+        "qty": -1
+      },
+      {
+        "id": "rig_light",
+        "kind": "rig",
+        "ref": "rig_light",
+        "unlockLevel": 2,
+        "qty": -1
+      },
+      {
+        "id": "bp_medium",
+        "kind": "backpack",
+        "ref": "bp_medium",
+        "unlockLevel": 3,
+        "qty": -1
+      },
+      {
+        "id": "rig_heavy",
+        "kind": "rig",
+        "ref": "rig_heavy",
+        "unlockLevel": 5,
+        "qty": -1
+      },
+      {
+        "id": "bp_large",
+        "kind": "backpack",
+        "ref": "bp_large",
+        "unlockLevel": 8,
+        "qty": -1
+      },
+      {
+        "id": "ammo_556",
+        "kind": "item",
+        "ref": "ammo_556",
+        "unlockLevel": 1,
+        "qty": 300
+      },
+      {
+        "id": "ammo_762",
+        "kind": "item",
+        "ref": "ammo_762",
+        "unlockLevel": 2,
+        "qty": 200
+      },
+      {
+        "id": "ammo_ap",
+        "kind": "item",
+        "ref": "ammo_ap",
+        "unlockLevel": 5,
+        "qty": 150
+      },
+      {
+        "id": "pistol_mag",
+        "kind": "item",
+        "ref": "pistol_mag",
+        "unlockLevel": 1,
+        "qty": 200
+      },
+      {
+        "id": "bandage",
+        "kind": "item",
+        "ref": "bandage",
+        "unlockLevel": 1,
+        "qty": -1
+      },
+      {
+        "id": "medkit",
+        "kind": "item",
+        "ref": "medkit",
+        "unlockLevel": 1,
+        "qty": -1
+      }
+    ],
+    "_m6_1Note": "M6-1：商店武器条目由 5 增至 30（每类别 6 把）。既有 5 条的 unlockLevel 未改动；新增条目按 1~20 级铺开，最高不超过 progression.maxLevel。",
+    "_m6CarryNote": "M6：新增 5 条携行具在售（3 背包 + 2 弹挂），解锁 1~8 级。"
   },
-
   "inflation": {
     "_comment": "通胀监控（M5 硬性要求：能输出监控数据）。判定用档案里的 economy.samples（每局一行）。",
     "windowRaids": 20,
@@ -61,7 +381,6 @@
     "maxSamples": 60,
     "_maxSamplesNote": "档案里保留的样本行数上限（环形）。它同时是档案体积的主要来源，所以有限制。"
   },
-
   "starterCurrency": 20000,
   "_starterCurrencyNote": "新账号起始货币。**由制作人裁定为 20000**（我原先自拟 8000，理由是『刚好买得起 M4+二级甲+二级头 ≈ 6020』；20000 的后果是开局可以直接买齐一把 SR-25 + 三级甲 + 三级头还剩约一半，前期经济压力显著更低）。这是策划数值，无实测依据 —— 标定属试玩阶段，改它只改这一行。",
   "starterStash": null,

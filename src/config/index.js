@@ -37,10 +37,16 @@ import equipmentTable from './equipment.json' with { type: 'json' };
 import economyTable from './economy.json' with { type: 'json' };
 import progressionTable from './progression.json' with { type: 'json' };
 import questsTable from './quests.json' with { type: 'json' };
+// M6：携行具表（背包 / 弹挂）。它们决定局内能装多少，因此是装备而不是装饰。
+import carryTable from './carry.json' with { type: 'json' };
 import { OPEN_RULE, resolveMs } from '../core/extractRules.js';
+import { resolveBackpack } from '../core/lootTable.js';
 // M5-5：效果类型白名单与倍率聚合。它必须是纯函数模块（不反过来 import 本文件），
 // 校验器才能安全地"用同一份实现"验证配置 —— 否则就成了两处各算一次。
 import { skillModifiers, CONSUMED_MODIFIERS } from '../core/progression.js';
+// M6：携行具的网格投放算法（纯函数）。启动期要用**同一个**实现断言
+// "起始配装一定塞得进兜底背包" —— 各写一份就会出现"校验说塞得下、进局却掉东西"。
+import { planCarry } from '../core/carry.js';
 
 function fail(msg) {
   throw new Error(`[config] ${msg}`);
@@ -565,9 +571,41 @@ function validateMap(map, grid) {
     fail(`地图 aiSpawns 配额之和 ${aiTotal} 与 ai.spawnRules.totalCount ${wantAi} 不一致`);
   }
   const zoneIds = new Set((map.zones || []).map((z) => z.id));
+  const zoneById = new Map((map.zones || []).map((z) => [z.id, z]));
+  const floorCount = (map.floors || []).length || 1;
+  const tierIds = new Set(aiTable.tiers.map((t) => t.id));
   for (const s of map.aiSpawns || []) {
     if (!zoneIds.has(s.zone)) fail(`地图 aiSpawns 引用了不存在的分区 ${s.zone}`);
     if (!(s.count >= 0)) fail(`地图 aiSpawns.${s.zone} 的数量必须为非负`);
+    // [M6-2] 出生层：必须存在，且**必须与该分区自身的层号一致**。
+    //   不一致是最隐蔽的一类错误：配置写 floor=1、分区其实在一层，
+    //   运行时按层取格会取到"第 1 层的另一处"，AI 就刷在玩家意想不到的地方。
+    const zf = zoneById.get(s.zone).floor || 0;
+    const sf = s.floor || 0;
+    if (sf !== zf) fail(`地图 aiSpawns.${s.zone} 写的 floor=${sf}，但该分区实际在第 ${zf} 层`);
+    if (sf >= floorCount) fail(`地图 aiSpawns.${s.zone} 的 floor=${sf} 超出该图的层数 ${floorCount}`);
+    // [M6-2] 分区兵种权重覆盖：引用的兵种必须存在，且不得含 boss
+    if (s.tiers) {
+      for (const [id, w] of Object.entries(s.tiers)) {
+        if (!tierIds.has(id)) fail(`地图 aiSpawns.${s.zone}.tiers 引用了不存在的兵种 ${id}`);
+        if (id === 'boss') fail(`地图 aiSpawns.${s.zone}.tiers 不得包含 boss —— Boss 走 spawnRules.bossCount 独立配额`);
+        if (!(w >= 0)) fail(`地图 aiSpawns.${s.zone}.tiers.${id} 的权重必须为非负`);
+      }
+    }
+  }
+  // [M6-2] Boss 配额：数量与 spawnRules.bossCount 一致；分区与层必须存在
+  const bossCount = aiTable.spawnRules.bossCount ?? 0;
+  const bossSpawns = map.bossSpawns || [];
+  if (bossSpawns.length !== bossCount) {
+    fail(`地图 bossSpawns 条目数 ${bossSpawns.length} 与 ai.spawnRules.bossCount ${bossCount} 不一致`);
+  }
+  if (bossCount > 0 && !aiTable.tiers.some((t) => t.id === 'boss')) {
+    fail('ai.spawnRules.bossCount > 0，但 ai.tiers 里没有 id 为 boss 的档位');
+  }
+  for (const b of bossSpawns) {
+    if (!zoneIds.has(b.zone)) fail(`地图 bossSpawns 引用了不存在的分区 ${b.zone}`);
+    const bf = zoneById.get(b.zone).floor || 0;
+    if ((b.floor || 0) !== bf) fail(`地图 bossSpawns.${b.zone} 写的 floor=${b.floor || 0}，实际在第 ${bf} 层`);
   }
 }
 
@@ -634,10 +672,15 @@ function buildItemViews() {
     };
   }
 
-  // ② 装备（武器 / 护甲，class=0 的"无防护"不是物品）
+  // ② 装备（武器 / 护甲 / 携行具，class=0 的"无防护"不是物品）
+  //
+  // ★ M6：背包与弹挂并入这条同源路径 —— 它们的物品形态（估值/重量/形状/堆叠）
+  //   由本函数统一派生，不在掉落表里另留副本。这与其他装备的处理完全一致。
   const equipmentSources = [
     ...weaponsTable.weapons.map((def) => ({ kind: 'weapon', def })),
     ...combatTable.armor.filter((a) => a.class > 0).map((def) => ({ kind: 'armor', def })),
+    ...(carryTable.backpacks || []).map((def) => ({ kind: 'backpack', def })),
+    ...(carryTable.rigs || []).map((def) => ({ kind: 'rig', def })),
   ];
   for (const { kind, def } of equipmentSources) {
     if (equipmentDefs[def.id]) fail(`装备 id 重复：${def.id}`);
@@ -674,7 +717,10 @@ function buildItemViews() {
       items[itemId] = {
         id: itemId,
         label: def.label,
-        category: kind === 'weapon' ? 'weapon' : 'armor',
+        // 类别直接取自 kind（weapon / armor / backpack / rig）——
+        // 原来写成 `kind === 'weapon' ? 'weapon' : 'armor'`，加入携行具后
+        // 会把背包与弹挂标成 armor，进而在经济表里按护甲的价差买卖。
+        category: kind,
         rarity: null,
         value: def.value,
         weightKg: def.weightKg,
@@ -709,6 +755,27 @@ function buildItemViews() {
 }
 
 const ITEM_VIEWS = buildItemViews();
+
+/**
+ * ★ M6：背包容量改为**对携行具表的引用**，不再在 loot.json 里写数字。
+ *
+ * 为什么必须派生而不是两处各留一份：M6 起背包是可装备物，
+ * `carry.json.backpacks` 是容量的唯一真值；loot.json 只声明“按哪只背包做经济模拟”。
+ * 若两边各写一份 6x5，改了 A 忘了 B 就会变成“面板说 6x5、局内却是 4x3”这类静默分叉。
+ *
+ * 派生出的形状与原 backpack 完全一致（w / h / weightLimitKg），
+ * 因此 inventory.js 等下游一行都不用改。
+ */
+function backpackView() {
+  try {
+    // 解析实现**只有一份**（core/lootTable.js 的 resolveBackpack）——
+    // 校验器直读 loot.json、看不到这里的派生，若各写一份就会分叉。
+    return resolveBackpack(lootTable, carryTable);
+  } catch (e) {
+    fail(e.message);
+  }
+}
+const LOOT_VIEW = { ...lootTable, backpack: backpackView() };
 
 /**
  * 口径视图：把"这个口径用哪种弹药条目"与"单发重量"派生出来。
@@ -759,7 +826,10 @@ function validateEquipment() {
       fail(`槽位 ${s.id} 的 accepts 不能为空（否则它接受任何东西）`);
     }
     for (const k of s.accepts) {
-      if (k !== 'weapon' && k !== 'armor') fail(`槽位 ${s.id} 的 accepts 含未知类别 "${k}"`);
+      // M6：白名单加入携行具 —— 背包/弹挂是装备，不是"任意类别"
+      if (k !== 'weapon' && k !== 'armor' && k !== 'backpack' && k !== 'rig') {
+        fail(`槽位 ${s.id} 的 accepts 含未知类别 "${k}"`);
+      }
     }
   }
 
@@ -1069,7 +1139,11 @@ function validateProgression() {
   const maxed = {
     progression: { skills: Object.fromEntries(p.skills.map((s) => [s.id, s.maxLevel])) },
   };
-  const mods = skillModifiers(maxed, { progression: p, lootTable });
+  // ★ M6：这里必须传 **LOOT_VIEW** 而不是原始 lootTable ——
+  //   skillModifiers 会用 `lootTable.backpack.weightLimitKg` 当负重基数，
+  //   而 M6 起背包容量是**派生的**（loot.json 里只剩一个 referenceId）。
+  //   传原始表会让它读到 undefined，进而在校验里变成 NaN。
+  const mods = skillModifiers(maxed, { progression: p, lootTable: LOOT_VIEW });
   if (!(mods.weightLimitKg > 0)) fail(`点满负重技能后 weightLimitKg=${mods.weightLimitKg} 非法`);
   if (!(mods.moveSpeedScale >= 1)) fail(`点满机动技能后移速倍率 ${mods.moveSpeedScale} < 1（技能不该让人更慢）`);
   if (!(mods.recoilScale > 0 && mods.recoilScale <= 1)) fail(`点满后后坐力倍率 ${mods.recoilScale} 必须落在 (0, 1]`);
@@ -1157,6 +1231,83 @@ function validateQuests() {
   // 因此"至少要有一个无前置的任务"就是唯一的可达性前提）
   const roots = q.quests.filter((x) => x.requires.length === 0);
   if (roots.length === 0) fail('没有任何无前置的任务 —— 玩家接不到第一个任务');
+}
+
+// ---------------------------------------------------------------------------
+// M6 携行具表校验（背包 / 弹挂）
+// ---------------------------------------------------------------------------
+function validateCarry() {
+  const bps = carryTable.backpacks || [];
+  const rigs = carryTable.rigs || [];
+  assertUnique(bps, 'id', 'carry.backpacks');
+  assertUnique(rigs, 'id', 'carry.rigs');
+
+  const knownCategories = new Set(Object.values(ITEM_VIEWS.items).map((i) => i.category));
+  // 背包与弹挂共用的形状检查（两者的差别只在 accepts）
+  const checkShape = (def, kindLabel) => {
+    if (!(Number.isInteger(def.capacityW) && def.capacityW > 0)) fail(`${kindLabel} ${def.id} 的 capacityW 必须为正整数`);
+    if (!(Number.isInteger(def.capacityH) && def.capacityH > 0)) fail(`${kindLabel} ${def.id} 的 capacityH 必须为正整数`);
+    if (!(def.item && def.item.w > 0 && def.item.h > 0)) fail(`${kindLabel} ${def.id} 缺少合法的 item.{w,h}（它在仓库里也要占格）`);
+    if (!(def.weightKg > 0)) fail(`${kindLabel} ${def.id} 的 weightKg 必须为正`);
+    if (!(def.value >= 0)) fail(`${kindLabel} ${def.id} 的 value 必须为非负`);
+    if (!(def.price > 0)) fail(`${kindLabel} ${def.id} 的 price 必须为正（它同时是商店基价）`);
+  };
+  for (const b of bps) {
+    checkShape(b, '背包');
+    if (!(b.weightLimitKg > 0)) fail(`背包 ${b.id} 的 weightLimitKg 必须为正`);
+    // ★ slots 是**声明值**：这里核对它等于 capacityW×capacityH。
+    //   若把它改成派生值，这条检查就永远为真 —— 等于没有检查。
+    if (b.slots !== b.capacityW * b.capacityH) {
+      fail(`背包 ${b.id} 声明的 slots=${b.slots} 与 capacityW×capacityH=${b.capacityW * b.capacityH} 不一致`);
+    }
+  }
+  for (const r of rigs) {
+    checkShape(r, '弹挂');
+    if (!Array.isArray(r.accepts) || r.accepts.length === 0) fail(`弹挂 ${r.id} 的 accepts 不能为空（否则它等于第二只背包）`);
+    for (const c of r.accepts) {
+      if (!knownCategories.has(c)) fail(`弹挂 ${r.id} 的 accepts 含不存在的类别 "${c}"`);
+    }
+  }
+
+  const d = carryTable.defaults || {};
+  const dbp = d.backpack;
+  if (!dbp) fail('carry.defaults.backpack 缺失 —— 它是"没装备背包"时的兜底容量，不能没有');
+  if (!(dbp.w > 0 && dbp.h > 0)) fail('carry.defaults.backpack 的 w/h 必须为正');
+  if (!(dbp.weightLimitKg > 0)) fail('carry.defaults.backpack 的 weightLimitKg 必须为正');
+
+  // ★ 起始配装的携行物品**必须塞得进兜底背包**，而且不能刚好占满。
+  //   为什么这条必须有：容量一旦由装备决定，"起始配装 + 没买背包"就是一个真实可达的状态，
+  //   而它塞不下的表现是**进局时静默少带**（子弹不够、没有绷带）—— 玩家只会觉得"游戏坏了"。
+  //   为什么还要管"剩几格"：3×2 的兜底容量是在"携行件不占格"的年代定的，那时 6 格全给战利品；
+  //   M6 起携行件要占 4 格，同一个 3×2 就只剩 2 格 —— 新账号第一局几乎捡不了东西，
+  //   而"搜"是这个玩法的核心动作。这个下限是**策划口径**（MIN_FREE_CELLS），不是随手取的值。
+  const MIN_FREE_CELLS = 4;
+  const starterPlan = planCarry({
+    loadout: STARTER,
+    carry: carryTable,
+    ammo: AMMO_VIEW,
+    consumables: combatTable.consumables,
+    itemDefs: ITEM_VIEWS.items,
+  });
+  if (starterPlan.overflow.length) {
+    const detail = starterPlan.overflow.map((o) => `${o.itemId}×${o.count}`).join('、');
+    fail(
+      `起始配装（equipment.starterLoadout）的携行物品塞不进兜底背包：${detail}。` +
+        ` 兜底背包 ${carryTable.defaults.backpack.w}×${carryTable.defaults.backpack.h}` +
+        `（${carryTable.defaults.backpack.w * carryTable.defaults.backpack.h} 格）。` +
+        ' 请调大兜底容量、给起始配装一只背包，或减少起始携带量 —— 三选一，别让玩家静默少带。'
+    );
+  }
+  const starterTotal = carryTable.defaults.backpack.w * carryTable.defaults.backpack.h;
+  const starterUsed = starterPlan.placements.reduce((a, p) => a + p.w * p.h, 0);
+  if (starterTotal - starterUsed < MIN_FREE_CELLS) {
+    fail(
+      `兜底背包在装下起始携行件后只剩 ${starterTotal - starterUsed} 格（要求至少 ${MIN_FREE_CELLS} 格）：` +
+        ` 兜底 ${carryTable.defaults.backpack.w}×${carryTable.defaults.backpack.h}=${starterTotal} 格，` +
+        `起始携行件占 ${starterUsed} 格。` +
+        ' 新账号一进战区就没有装战利品的地方，"搜"这个核心动作就没了。'
+    );
+  }
 }
 
 function validate() {
@@ -1267,6 +1418,7 @@ function validate() {
   // ★ M5：局外系统的四张表。顺序有依赖 —— 经济表要读成长表的 maxLevel、
   //   任务表要读物品视图与掉落表，因此放在后面。
   validateEquipment();
+  validateCarry();
   validateProgression();
   validateEconomy();
   validateQuests();
@@ -1321,7 +1473,7 @@ export const config = {
   /** 已注册的全部地图表。测试与工具需要"显式指定某一张图"（例如单层对照）时用它 */
   maps: MAP_TABLES,
   /** 掉落表（M3-3/4/5/6 的唯一真值：容器分级、稀有度、物品池、背包、安全箱） */
-  lootTable,
+  lootTable: LOOT_VIEW,
   weapons: weaponsTable.weapons,
   /** 口径表（派生视图：含 itemId 与 weightPerRoundKg，「每格几发」来自掉落表） */
   ammo: AMMO_VIEW,
@@ -1351,6 +1503,8 @@ export const config = {
   // ---- M5 局外系统的四张表与两张派生视图 ----
   /** 配装表（槽位 / 起始配装 / 携带上限 / 超重惩罚） */
   equipment: equipmentTable,
+  /** M6 携行具表（背包 / 弹挂）。**容量的唯一真值**，另见 lootTable.backpack 的 referenceId */
+  carry: carryTable,
   /** 经济表（仓库规格 / 买卖价差 / 商店清单 / 通胀参数） */
   economy: economyTable,
   /** 成长表（等级曲线 / 经验规则 / 技能树） */

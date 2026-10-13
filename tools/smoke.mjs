@@ -170,7 +170,10 @@ const page = await browser.newPage();
 const pageErrors = [];
 const badResponses = [];
 const lifecycle = [];
-page.on('pageerror', (e) => pageErrors.push('pageerror: ' + e.message));
+// ★ 带上调用栈：只记 message 会多花一轮才能定位（"Cannot read properties of undefined"
+//   几乎无法从消息本身判断是哪里）。栈只取前几行，避免把噪声塞进报告。
+page.on('pageerror', (e) => pageErrors.push('pageerror: ' + e.message
+  + (e.stack ? ' @ ' + e.stack.split('\n').slice(1, 5).map((l) => l.trim()).join(' | ') : '')));
 page.on('console', (m) => {
   if (m.type() === 'error') pageErrors.push('console.error: ' + m.text());
 });
@@ -238,6 +241,13 @@ async function ensureRunning(tag) {  const s = await snap();
  */
 async function startRaidFromLobby() {
   await sleep(1200); // 给浏览器留出指针锁定的冷却时间
+  // ★ M6：进局前把配装补齐到仓库里。
+  //   为什么需要：M6 起携行具与弹药是**真的会被带走**的装备 —— 上一局没撤离就丢了，
+  //   而本段的各组测的是武器/技能/搜刮，不该被"上局把包丢了"这件事干扰
+  //   （那会有 6 格的兜底包，容量一变，负重上限、能装多少都跟着变）。
+  //   注意它只**补齐当前配装所需**，不重置配装 —— 所以"在大厅把主武器换成霰弹枪"
+  //   这类断言仍然成立（补齐的是那把霰弹枪，而不是换回 M4）。
+  await page.evaluate(() => window.__m2.restockLoadout());
   await page.click('#btnStart');
   await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 10000 });
   try {
@@ -271,6 +281,15 @@ async function loadAndStart() {
   await page.evaluate(() => window.__m2.grantTestKit());
   await page.click('#btnStart');
   await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 10000 });
+  // ★ M6-2：让 AI 先静默。
+  //   理由：本段前几组（M2-2 后坐力/开镜、M2-1 切枪换弹）断言的是**武器机制**，
+  //   却要连续开火 —— 而枪声（听觉半径 45m）会把 AI 拉过来。AI 由 7 名扩到 16 名后，
+  //   聚拢量翻倍，实测会在这些组里把玩家打死、整轮冒烟从 270 条崩到 46 条。
+  //   **那几组本来就不该依赖"自由开火还能活"** —— 这是一条从未言明的隐含假设，
+  //   密度一变就碎。这里把它显式化：本段先要一个安静的世界，
+  //   ⑥ M2-6 AI 组自己负责把它打开（那之后的组照旧面对活着的 AI）。
+  //   注意这**不削弱任何断言**：AI 依然存活、依然可被击中掉血（"射击使 AI 掉血"照常成立）。
+  await page.evaluate(() => window.__m2.aiStandDown(true));
   try {
     await page.waitForFunction(() => document.pointerLockElement !== null, { timeout: 5000 });
   } catch {
@@ -572,6 +591,9 @@ async function runLegacyGroups() {
   // ============================================================
   group('⑥ M2-6 AI 状态机与寻路');
   {
+    // ★ M6-2：本组起**把 AI 打开**（loadAndStart 默认让它们静默，见那里的说明）。
+    //   从这里往后的所有组都面对"活着的 AI"，与改造前的语义一致。
+    await page.evaluate(() => window.__m2.aiStandDown(false));
     await ensureRunning('ai');
     const s0 = await snap();
     // ★ 守卫：本组依赖"局内在跑"。若玩家已阵亡或流程已结束，AI 不再 update，
@@ -656,12 +678,18 @@ async function runLegacyGroups() {
         //   （读数变成"起始 —"），测试把自己的被测对象消灭了。
         //   枪声走的是 hearGunshot 通路，与"被攻击"一样会写入最后已知位置，
         //   但不会造成伤害 —— 既测到行为，又不会毁掉样本。
-        const shot = await page.evaluate((i) => {
+        const shotRaw = await page.evaluate((i) => {
           const r = window.__m2.teleportNearAi(i, 12);
           window.__m2.makeNoise();
           return r;
         }, far.i);
         await ensureRunning('ai-approach-shot');
+        // ★ 夹具返回 null 时必须**报一条失败**，不能抛异常：
+        //   抛出去会被 runLegacyGroups 的 try/catch 吞掉，表现为"后面所有组都没跑"
+        //   （总数从 270 掉到几十条）—— 那是最难诊断的一类失败，"0 失败"甚至更好看。
+        check('夹具：能在目标 AI 附近找到合法落位点', !!shotRaw,
+          shotRaw ? undefined : `最远 AI 在 ${far.d.toFixed(1)}m 处，其周围无合法落点`);
+        const shot = shotRaw || { aiId: '__夹具失败__' };
 
         let d0 = null;
         let dMin = Infinity;
@@ -2520,6 +2548,240 @@ async function runM5Groups() {
     await page.evaluate(() => window.__m2.returnToLobby());
     await sleep(200);
   }
+
+  // ---------------------------------------------------------------------------
+  if (m5Group('M6-1 武器扩充（30 把：装备 / 进局 / 开火）')) {
+    // 本组同样**自带页面加载**，才能被 `--only=武器` 单独快速回归。
+    if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
+      await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    }
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
+
+    // 覆盖 3 种口径、2 个槽位（主武器 7.62/12ga、副武器 9mm）。
+    // ★ 这几条是**纯逻辑断言看不见**的一层：表里合法 ≠ 玩家拿得到 ≠ 进局真能开火。
+    //   武器表从 5 把扩到 30 把之后，"写进表里但没人能拿到"或"拿到也开不了火（口径没带对）"
+    //   这类缺陷只会在这一层暴露 —— 而它们恰恰最容易在批量扩充时发生。
+    const CASES = [
+      { ref: 'rifle_ak762', slot: 'primary', ammo: '7.62' },
+      { ref: 'dmr_g28', slot: 'primary', ammo: '7.62' },
+      { ref: 'smg_mp9', slot: 'secondary', ammo: '9mm' },
+      { ref: 'shotgun_saiga', slot: 'primary', ammo: '12ga' },
+    ];
+
+    for (const c of CASES) {
+      const g = await page.evaluate((ref) => window.__m2.grantWeapon(ref), c.ref);
+      check(`★ M6-1 ${c.ref}：能按 id 授予并装入对应槽位（${c.slot}）`,
+        !!g && g.equipped === c.ref && g.slot === c.slot && g.ammoType === c.ammo,
+        JSON.stringify(g));
+
+      await startRaidFromLobby();
+      await call('teleportToSafeSpot');
+      await sleep(500);
+
+      const s0 = await snap();
+      check(`★ M6-1 ${c.ref}：进局后手上就是它（没有回落成起始配装）`,
+        s0.weapon.id === c.ref, `局内 ${s0.weapon.id}「${s0.weapon.label}」`);
+      check(`★ M6-1 ${c.ref}：带足了弹药（否则"拿到也开不了火"）`,
+        s0.weapon.magazine > 0 && s0.weapon.reserve > 0,
+        `弹匣 ${s0.weapon.magazine} 备弹 ${s0.weapon.reserve}`);
+
+      // 真开一枪 —— 弹匣必须掉。这是"这把枪的射击路径是通的"最直接的证据。
+      await page.mouse.down({ button: 'left' });
+      await sleep(220);
+      await page.mouse.up({ button: 'left' });
+      await sleep(350);
+      const s1 = await snap();
+      check(`★ M6-1 ${c.ref}：开火有效（弹匣真的减少，不是哑火）`,
+        s1.weapon.magazine < s0.weapon.magazine,
+        `弹匣 ${s0.weapon.magazine} → ${s1.weapon.magazine}`);
+
+      await page.evaluate(() => window.__m2.abandonRaid());
+      await waitForEnd(20000);
+      await page.evaluate(() => window.__m2.returnToLobby());
+      await sleep(200);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  if (m5Group('M6-2 AI 尸体掉落（击杀 → 尸体 → 搜开）')) {
+    if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
+      await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    }
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
+    await page.evaluate(() => window.__m2.grantTestKit());
+    await startRaidFromLobby();
+    await call('teleportToSafeSpot');
+    // ★ 本组测的是"击杀 → 尸体 → 搜开"这条**掉落路径**，不是 AI 交战。
+    //   而尸体的搜索用的是容器的打断规则（keep_partial）：搜到一半**受击会打断**，
+    //   进度只保留一半。全量跑时本组前面已有组把 AI 解冻，于是"搜尸途中被 AI 打中"
+    //   会让 opened 停在 false —— 单跑通过、全量失败，正是这个差异造成的。
+    //   这里同样按"不测 AI 的组要一个安静的世界"处理（不影响任何断言的严格度：
+    //   killOneAi 对静默的 AI 照样生效，尸体照样生成，搜索路径照走）。
+    await page.evaluate(() => window.__m2.aiStandDown(true));
+    await sleep(400);
+
+    const before = await snap();
+    check('M6-2 开局尸体数为 0（还没击杀）', before.corpses === 0, `corpses=${before.corpses}`);
+
+    // 击杀一只（用夹具，不依赖枪法）—— 这是"打"这一侧唯一有收益的路径
+    const killed = await page.evaluate(() => window.__m2.killOneAi());
+    await sleep(500);
+    const afterKill = await snap();
+    check('★ M6-2 击杀后留下可搜刮的尸体（此前击杀只计数、不掉任何东西）',
+      afterKill.corpses >= 1, `killOneAi=${JSON.stringify(killed)} corpses=${afterKill.corpses}`);
+
+    const list = await page.evaluate(() => window.__m2.corpseList());
+    const c0 = list[0];
+    check('★ M6-2 尸体带着**它那一档**的掉落表（不是随便一张表）',
+      !!c0 && typeof c0.tierId === 'string' && c0.items.length > 0,
+      c0 ? `tier=${c0.tierId} items=${c0.items.join(',')}` : '没有尸体');
+
+    // 真的搜一次：站到尸体上按住 F，进度走完应当 opened=true。
+    // 这是"尸体复用了容器整条搜索路径"的直接证据 —— 而不是只断言"对象被创建了"。
+    if (c0) {
+      await page.evaluate((c) => window.__m2.teleport(c.x, c.z, c.floor), c0);
+      await sleep(300);
+      await page.keyboard.down('KeyF');
+      await sleep(2400); // corpseByTier.searchMs = 1800
+      await page.keyboard.up('KeyF');
+      await sleep(300);
+      const list2 = await page.evaluate(() => window.__m2.corpseList());
+      check('★ M6-2 尸体可搜开（复用容器的搜索路径：进度 → 开箱 → 拾取）',
+        !!list2[0] && list2[0].opened === true,
+        list2[0] ? `opened=${list2[0].opened} 剩余物品 ${list2[0].items.length}` : '尸体不见了');
+    }
+  }
+}
+
+// ============================================================
+// ★ M6：携行具容量化 + 弹药/消耗品进网格（端到端）
+//
+// 纯逻辑单测（tools/unit-tests.mjs 的 M6 一节）已经覆盖了算法；
+// 这里只补**纯逻辑看不见的那一层**：容量真的从大厅配置一路走到局内、
+// 弹药真的在网格里被扣、"仓库什么都没有"时进战区不崩。
+// ============================================================
+async function runM6CarryGroup() {
+  if (m5Group('★ M6 携行具容量化与弹药网格化')) {
+    // ---- ① 装备哪只包，局内就是哪只包的容量 ----
+    await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    await page.evaluate(() => window.__m2.grantTestKit());
+    // 配上一只轻型背包与一只弹挂（grantTestKit 给的是标准背包）
+    await page.evaluate(() => window.__m2.equipCarry('bp_small', 'rig_light'));
+    await startRaidFromLobby();
+    let limitSmall = 0;
+    {
+      const s = await snap();
+      const small = config.carry.backpacks.find((b) => b.id === 'bp_small');
+      const rig = config.carry.rigs.find((r) => r.id === 'rig_light');
+      limitSmall = s.loot.bag.limitKg;
+      check('★ M6 局内容量 = 所装备的背包（销"容量写死在 loot.json"）',
+        s.loot.bag.backpackId === 'bp_small' && s.loot.bag.total === small.capacityW * small.capacityH,
+        `${s.loot.bag.backpackId} ${s.loot.bag.total} 格`);
+      check('★ M6 负重上限不低于所装备背包的 weightLimitKg（技能只往上加）',
+        s.loot.bag.limitKg >= small.weightLimitKg,
+        `${s.loot.bag.limitKg}kg（bp_small ${small.weightLimitKg}kg + 技能）`);
+      check('★ M6 弹挂是**第二张网格**且进了局内',
+        s.loot.bag.rigId === 'rig_light' && s.loot.bag.rigTotal === rig.capacityW * rig.capacityH,
+        `${s.loot.bag.rigId} ${s.loot.bag.rigTotal} 格`);
+      check('★ M6 自己带的弹药药品真的占了格（销 M5-TEMP-11）',
+        s.loot.bag.kitSlots > 0 && s.loot.bag.lootSlots === 0,
+        `自带 ${s.loot.bag.kitSlots} 格 / 战利品 ${s.loot.bag.lootSlots} 格`);
+
+      // ---- ② 备弹是网格的派生量：打几发再换弹，网格里必须真的少掉那些发 ----
+      await page.mouse.down({ button: 'left' });
+      await sleep(220);
+      await page.mouse.up({ button: 'left' });
+      await sleep(120);
+      const before = await call('ammoInGrid');
+      await page.keyboard.press('KeyR');
+      await sleep(2000); // 等换弹完成（战术/空仓换弹都在 2s 内）
+      const after = await call('ammoInGrid');
+      const loaded = after.magazine - before.magazine;
+      check('★ M6 换弹从背包网格里扣子弹（备弹数不是另存的一份数字）',
+        loaded > 0 && after.total === before.total - loaded,
+        `网格 ${before.total} → ${after.total}，弹匣 ${before.magazine} → ${after.magazine}（装填 ${loaded} 发）`);
+    }
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
+
+    // ---- ②-b 换成更大的背包：容量与负重上限必须**一起**变 ----
+    // 为什么用"两只包做差"而不是"等于表里的数"：负重上限 = 背包 + 技能加成，
+    // 而技能在别的组里可能已经点过。差值才是"背包真的驱动了容量"的证据。
+    {
+      const small = config.carry.backpacks.find((b) => b.id === 'bp_small');
+      const large = config.carry.backpacks.find((b) => b.id === 'bp_large');
+      await page.evaluate(() => window.__m2.equipCarry('bp_large', null));
+      await startRaidFromLobby();
+      const s = await snap();
+      check('★ M6 换一只更大的背包：格数与负重上限同时变大（差值等于表里的差）',
+        s.loot.bag.backpackId === 'bp_large'
+        && s.loot.bag.total === large.capacityW * large.capacityH
+        && s.loot.bag.limitKg - limitSmall === large.weightLimitKg - small.weightLimitKg,
+        `${s.loot.bag.total} 格 / ${s.loot.bag.limitKg}kg` +
+          `（bp_large ${large.capacityW * large.capacityH} 格 / ${large.weightLimitKg}kg）`);
+      await page.evaluate(() => window.__m2.returnToLobby());
+      await sleep(200);
+    }
+
+    // ---- ③ 仓库什么都没有时进战区：空手 + 兜底背包，且**不能崩** ----
+    {
+      const errsBefore = pageErrors.length;
+      await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+      await page.evaluate(() => window.__m2.clearStash());
+      // 刻意**不用** startRaidFromLobby（它会补齐配装）—— 这一条测的就是"什么都没有"
+      await sleep(1200);
+      await page.click('#btnStart');
+      await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 10000 });
+      await sleep(400);
+      const s = await snap();
+      const def = config.carry.defaults.backpack;
+      check('★ M6 空仓库进局不崩（销"配装里的枪拿不到就凭空给一把"）',
+        pageErrors.length - errsBefore === 0,
+        pageErrors.slice(errsBefore, errsBefore + 2).join(' | ') || '无异常');
+      check('★ M6 空仓库进局 = 空手 + 兜底背包（"缺件也允许进局"是一条真能跑的路径）',
+        s.weapon.hasWeapon === false && s.loot.bag.backpackId === null
+        && s.loot.bag.total === def.w * def.h,
+        `武器=${s.weapon.label} 背包=${s.loot.bag.backpackId || '兜底'} ${s.loot.bag.total} 格`);
+      await page.evaluate(() => window.__m2.returnToLobby());
+      await sleep(200);
+    }
+
+    // ---- ④ 装不下时**报出来**，而不是静默少带 ----
+    {
+      await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+      await page.evaluate(() => window.__m2.grantTestKit());
+      await page.evaluate(() => window.__m2.equipCarry('bp_small', null));
+      // 120 发霰弹 = 2 格；绷带 20 个（stack 4）= 5 格；急救包 20 个（stack 2、2×1）= 20 格。
+      // 合计 27 格 > bp_small 的 20 格 —— 必然溢出，且溢出的正是"最先放不下的那些"。
+      const res = await page.evaluate(() => window.__m2.stuffLoadout({ '12ga': 120 }, { bandage: 20, medkit: 20 }));
+      check('★ M6 装不下的携行件被报成 overflow（不静默少带）',
+        Array.isArray(res.overflow) && res.overflow.length > 0,
+        res.overflow.map((o) => `${o.itemId}×${o.count}`).join('、') || '没有溢出（夹具失效）');
+      const brief = await page.evaluate(() => window.__m2.lobby().briefing.pack);
+      check('★ M6 简报把"装不下"告诉玩家（进战区前就该知道）',
+        (brief.overflow || []).length > 0 && brief.kitSlots > 0,
+        `自带 ${brief.kitSlots} 格 / 溢出 ${(brief.overflow || []).length} 项`);
+
+      // 界面上真的写出来了 —— 数据里有、界面没画等于没告诉玩家
+      const panelText = await page.evaluate(() =>
+        document.getElementById('tabLoadout').innerText.replace(/\s+/g, ' '));
+      check('★ M6 配装面板画出了携行容量与"装不下"警告（不是只在数据里有）',
+        /携行/.test(panelText) && /装不下/.test(panelText),
+        panelText.slice(0, 140));
+      const slotIds = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('#tabLoadout select[data-act-change="slotSelect"]'))
+          .map((s) => s.dataset.slot));
+      check('★ M6 配装面板出现背包与弹挂两个槽位（新槽位真的能配）',
+        slotIds.includes('backpack') && slotIds.includes('rig'), slotIds.join('/'));
+    }
+  }
 }
 
 // ============================================================
@@ -2528,9 +2790,11 @@ try {
   // 不指定时按原顺序：历史组 → M5 段落 → 运行时错误。
   if (ONLY) {
     await runM5Groups();
+    await runM6CarryGroup();
   } else {
     await runLegacyGroups();
     await runM5Groups();
+    await runM6CarryGroup();
   }
 
   // ============================================================

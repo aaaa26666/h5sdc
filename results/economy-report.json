@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-12T14:29:08.871Z",
+  "generatedAt": "2026-10-13T15:54:15.874Z",
   "seed": 20260201,
   "simulatedRaids": 200,
   "_method": "理论分布模拟（掉落表目标区间均匀抽样 + 设计存活率），不是运行时实测收益",
@@ -71,6 +71,231 @@
       "margin": 3796
     },
     {
+      "ref": "pistol_p12",
+      "itemId": "pistol_p12",
+      "units": 1,
+      "unlockLevel": 3,
+      "buy": 2752,
+      "sell": 1005,
+      "margin": 1747
+    },
+    {
+      "ref": "pistol_g17",
+      "itemId": "pistol_g17",
+      "units": 1,
+      "unlockLevel": 1,
+      "buy": 1334,
+      "sell": 487,
+      "margin": 847
+    },
+    {
+      "ref": "pistol_rsh",
+      "itemId": "pistol_rsh",
+      "units": 1,
+      "unlockLevel": 5,
+      "buy": 3253,
+      "sell": 1187,
+      "margin": 2066
+    },
+    {
+      "ref": "pistol_mk23",
+      "itemId": "pistol_mk23",
+      "units": 1,
+      "unlockLevel": 4,
+      "buy": 2419,
+      "sell": 883,
+      "margin": 1536
+    },
+    {
+      "ref": "pistol_vz",
+      "itemId": "pistol_vz",
+      "units": 1,
+      "unlockLevel": 2,
+      "buy": 1919,
+      "sell": 700,
+      "margin": 1219
+    },
+    {
+      "ref": "smg_mp9",
+      "itemId": "smg_mp9",
+      "units": 1,
+      "unlockLevel": 3,
+      "buy": 3253,
+      "sell": 1187,
+      "margin": 2066
+    },
+    {
+      "ref": "smg_ump",
+      "itemId": "smg_ump",
+      "units": 1,
+      "unlockLevel": 6,
+      "buy": 5503,
+      "sell": 2009,
+      "margin": 3494
+    },
+    {
+      "ref": "smg_mac",
+      "itemId": "smg_mac",
+      "units": 1,
+      "unlockLevel": 4,
+      "buy": 2502,
+      "sell": 913,
+      "margin": 1589
+    },
+    {
+      "ref": "smg_mp5sd",
+      "itemId": "smg_mp5sd",
+      "units": 1,
+      "unlockLevel": 5,
+      "buy": 4836,
+      "sell": 1766,
+      "margin": 3070
+    },
+    {
+      "ref": "smg_bizon",
+      "itemId": "smg_bizon",
+      "units": 1,
+      "unlockLevel": 8,
+      "buy": 4002,
+      "sell": 1461,
+      "margin": 2541
+    },
+    {
+      "ref": "rifle_ak762",
+      "itemId": "rifle_ak762",
+      "units": 1,
+      "unlockLevel": 5,
+      "buy": 5170,
+      "sell": 1887,
+      "margin": 3283
+    },
+    {
+      "ref": "rifle_aks74u",
+      "itemId": "rifle_aks74u",
+      "units": 1,
+      "unlockLevel": 3,
+      "buy": 3836,
+      "sell": 1400,
+      "margin": 2436
+    },
+    {
+      "ref": "rifle_scarh",
+      "itemId": "rifle_scarh",
+      "units": 1,
+      "unlockLevel": 13,
+      "buy": 9338,
+      "sell": 3410,
+      "margin": 5928
+    },
+    {
+      "ref": "rifle_rpk",
+      "itemId": "rifle_rpk",
+      "units": 1,
+      "unlockLevel": 10,
+      "buy": 7671,
+      "sell": 2801,
+      "margin": 4870
+    },
+    {
+      "ref": "rifle_famas",
+      "itemId": "rifle_famas",
+      "units": 1,
+      "unlockLevel": 7,
+      "buy": 6003,
+      "sell": 2192,
+      "margin": 3811
+    },
+    {
+      "ref": "shotgun_saiga",
+      "itemId": "shotgun_saiga",
+      "units": 1,
+      "unlockLevel": 9,
+      "buy": 6337,
+      "sell": 2314,
+      "margin": 4023
+    },
+    {
+      "ref": "shotgun_db",
+      "itemId": "shotgun_db",
+      "units": 1,
+      "unlockLevel": 5,
+      "buy": 2085,
+      "sell": 761,
+      "margin": 1324
+    },
+    {
+      "ref": "shotgun_spas",
+      "itemId": "shotgun_spas",
+      "units": 1,
+      "unlockLevel": 7,
+      "buy": 5003,
+      "sell": 1827,
+      "margin": 3176
+    },
+    {
+      "ref": "shotgun_usas",
+      "itemId": "shotgun_usas",
+      "units": 1,
+      "unlockLevel": 12,
+      "buy": 7504,
+      "sell": 2740,
+      "margin": 4764
+    },
+    {
+      "ref": "shotgun_ksg",
+      "itemId": "shotgun_ksg",
+      "units": 1,
+      "unlockLevel": 4,
+      "buy": 4336,
+      "sell": 1583,
+      "margin": 2753
+    },
+    {
+      "ref": "dmr_m14",
+      "itemId": "dmr_m14",
+      "units": 1,
+      "unlockLevel": 16,
+      "buy": 8338,
+      "sell": 3045,
+      "margin": 5293
+    },
+    {
+      "ref": "dmr_sks",
+      "itemId": "dmr_sks",
+      "units": 1,
+      "unlockLevel": 8,
+      "buy": 4503,
+      "sell": 1644,
+      "margin": 2859
+    },
+    {
+      "ref": "dmr_g28",
+      "itemId": "dmr_g28",
+      "units": 1,
+      "unlockLevel": 20,
+      "buy": 10339,
+      "sell": 3775,
+      "margin": 6564
+    },
+    {
+      "ref": "dmr_vss",
+      "itemId": "dmr_vss",
+      "units": 1,
+      "unlockLevel": 10,
+      "buy": 6003,
+      "sell": 2192,
+      "margin": 3811
+    },
+    {
+      "ref": "dmr_mk14",
+      "itemId": "dmr_mk14",
+      "units": 1,
+      "unlockLevel": 13,
+      "buy": 7004,
+      "sell": 2557,
+      "margin": 4447
+    },
+    {
       "ref": "helmet2",
       "itemId": "helmet2",
       "units": 1,
@@ -105,6 +330,51 @@
       "buy": 2090,
       "sell": 798,
       "margin": 1292
+    },
+    {
+      "ref": "bp_small",
+      "itemId": "bp_small",
+      "units": 1,
+      "unlockLevel": 1,
+      "buy": 1009,
+      "sell": 405,
+      "margin": 604
+    },
+    {
+      "ref": "rig_light",
+      "itemId": "rig_light",
+      "units": 1,
+      "unlockLevel": 2,
+      "buy": 1176,
+      "sell": 472,
+      "margin": 704
+    },
+    {
+      "ref": "bp_medium",
+      "itemId": "bp_medium",
+      "units": 1,
+      "unlockLevel": 3,
+      "buy": 2352,
+      "sell": 945,
+      "margin": 1407
+    },
+    {
+      "ref": "rig_heavy",
+      "itemId": "rig_heavy",
+      "units": 1,
+      "unlockLevel": 5,
+      "buy": 3025,
+      "sell": 1215,
+      "margin": 1810
+    },
+    {
+      "ref": "bp_large",
+      "itemId": "bp_large",
+      "units": 1,
+      "unlockLevel": 8,
+      "buy": 5377,
+      "sell": 2160,
+      "margin": 3217
     },
     {
       "ref": "ammo_556",

@@ -34,8 +34,18 @@ export const AI_STATE = Object.freeze({
  *   表现为"穿了三级甲还是掉一样多血"，而这正是 M2-4 的核心功能。
  *   造一个伪武器走同一条 resolveHit 路径，是保证双方伤害模型不分叉的唯一手段。
  */
-function tierWeapon(tier) {
+function tierWeapon(tier, cfg) {
   const d = tier.damagePerShot;
+  // ★ M6-2：Boss 声明了 `weaponId` 时，**弹道参数取自真实武器**
+  //   （伤害四部位 / 衰减 / 射程 / 弹丸数）—— 这就是"拿着更好的枪械"。
+  //
+  //   刻意**不取**真实武器的三样东西，以及原因：
+  //     · fireIntervalMs / burstShots → 连发节拍属 AI 行为，由档位控制（武器表没有这些概念）
+  //     · magazineSize → 真实弹匣会让 AI **打空即停**（AI 没有换弹逻辑），故仍为无限
+  //     · 扩散与后坐力 → AI 不用它们（命中由 accuracyDeg 决定）
+  //   伤害仍然走同一条 `resolveHit`，因此**不存在第二套伤害模型** —— 只是参数来源不同。
+  //   这三点差异若被当成"两处真值"会让人误解，所以写在代码里而不是留在提交信息里。
+  const real = tier.weaponId ? cfg.weapons.find((w) => w.id === tier.weaponId) : null;
   return {
     id: `ai_${tier.id}`,
     label: tier.label,
@@ -55,23 +65,27 @@ function tierWeapon(tier) {
     spreadRecoveryPerSec: 1,
     moveSpreadScale: 1,
     recoil: { pattern: [[0, 0]], recoveryPerSec: 1, adsScale: 1, randomYawDeg: 0 },
-    damage: {
-      head: d * 1.9,
-      chest: d,
-      stomach: d * 0.9,
-      limb: d * 0.75,
-    },
-    falloff: { startM: tier.fireRange, endM: tier.fireRange * 2, minScale: 0.6 },
-    range: tier.fireRange,
-    pellets: 1,
+    damage: real
+      ? { ...real.damage }
+      : {
+          head: d * 1.9,
+          chest: d,
+          stomach: d * 0.9,
+          limb: d * 0.75,
+        },
+    falloff: real ? { ...real.falloff } : { startM: tier.fireRange, endM: tier.fireRange * 2, minScale: 0.6 },
+    range: real ? real.range : tier.fireRange,
+    pellets: real ? real.pellets : 1,
     adsMoveSpeedScale: 1,
+    // 供报告与断言追溯：这一把用的是谁的弹道
+    _sourceWeaponId: real ? real.id : null,
   };
 }
 
-export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler, rngSeed }) {
+export function createAi({ cfg, level, scene, spawnCell, spawnFloor = 0, index, tier, scheduler, rngSeed }) {
   const rnd = mulberry32(rngSeed);
   const spawn = level.cellToWorld(spawnCell[0], spawnCell[1]);
-  const pseudoWeapon = tierWeapon(tier);
+  const pseudoWeapon = tierWeapon(tier, cfg);
   const pseudoAmmo = { id: pseudoWeapon.ammoType, damageScale: 1, armorPenetration: tier.armorPen ?? 2 };
 
   const zoneOrder = cfg.hitZoneNames;
@@ -79,7 +93,10 @@ export function createAi({ cfg, level, scene, spawnCell, index, tier, scheduler,
   const ai = {
     id: `ai_${index}`,
     tier,
-    position: { x: spawn.x, y: 0, z: spawn.z },
+    // ★ M6-2：出生高度必须是**该层的地面标高**，不能写死 0。
+    //   `followGround()` 用 `surfaceAt(x, z, feet)` 解析高度 —— 若二层出生的 AI 从 y=0 起算，
+    //   它会被解析到一层地面并直接"掉"下去（静默出错：AI 数量对、位置全错）。
+    position: { x: spawn.x, y: level.floorBaseY(spawnFloor), z: spawn.z },
     // 竖直速度（M3-1b-2 ③）。只有"真的掉层"时才用得上 —— 见 followGround。
     vy: 0,
     yaw: rnd() * Math.PI * 2,

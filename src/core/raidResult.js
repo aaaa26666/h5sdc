@@ -45,10 +45,19 @@ export function buildRaidResult(facts) {
   // 免得 UI 层哪天改了它、反过来把局内数据改脏。
   const toItemView = (e) => {
     const r = rarityOf(e.item.rarity);
+    const units = e.item.unitsPerItem || 1;
+    // ★ M6：局内一格可以只装半盒（打掉几发），所以入仓单位数与估值都按**这一格实际剩多少**算。
+    //   按整盒算会把"打剩 30 发的弹盒"当成 60 发存进仓库 —— 一发子弹凭空多出来。
+    //   count 有两条来源：运行时条目（e.count）与断线快照条目（e.item.count）。
+    const count = Number.isFinite(e.count) ? e.count : Number.isFinite(e.item.count) ? e.item.count : units;
+    // 估值同样两条来源：运行时条目有 unitValue（单价），快照条目里已经是算好的总价。
+    const value = e.item.unitValue !== undefined ? e.item.unitValue * count : e.item.value;
     return {
       id: e.item.id,
       label: e.item.label,
-      value: e.item.value,
+      count,
+      unitsPerItem: units,
+      value,
       rarity: e.item.rarity || null,
       rarityLabel: r ? r.label : '',
       colorHex: r ? r.colorHex : null,
@@ -72,7 +81,7 @@ export function buildRaidResult(facts) {
       label: r.label,
       colorHex: r.colorHex,
       count: list.length,
-      value: list.reduce((a, e) => a + e.item.value, 0),
+      value: list.reduce((a, e) => a + toItemView(e).value, 0),
     };
   });
 

@@ -49,6 +49,18 @@ const FORBIDDEN = [
   'teleportToContainer',
   'teleportToExtract',
   'debugContainerList',
+  // M6-1 新增的调试接口（武器扩到 30 把后，端到端需要一个能授予**任意**武器的夹具；
+  // 它同样必须只存在于开发构建）
+  'grantWeapon',
+  // M6-2 的测试隔离开关（同一理由：只应存在于开发构建）
+  'aiStandDown',
+  // M6 携行具容量化新增的夹具（补配装 / 清空仓库 / 装配携行具 / 塞满配装 / 读网格弹药）。
+  // 加进来的理由与上面每一条相同：**"我以为它会被摇掉"不算证据**。
+  'restockLoadout',
+  'clearStash',
+  'equipCarry',
+  'stuffLoadout',
+  'ammoInGrid',
 ];
 
 console.log('\n================ 生产产物校验（调试接口必须已被剔除）================\n');

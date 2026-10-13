@@ -1,6 +1,5 @@
 {
-  "_comment": "M2 AI 数值表。硬性要求：AI 更新频率必须支持分级（距离玩家远的 AI 降频更新）；难度必须可分级，禁止只靠命中率调难度。",
-
+  "_comment": "M2 AI 数值表。硬性要求：AI 更新频率必须支持分级（距离玩家远的 AI 降频更新）；难度必须可分级，禁止只靠命中率调难度。 【M6-2】6 档：scav/guard/elite（原样保留）+ heavy/sniper（新）+ boss（独立配额）。",
   "tiers": [
     {
       "id": "scav",
@@ -11,14 +10,17 @@
       "viewAngleDeg": 95,
       "reactMs": 620,
       "aimTimeMs": 320,
-      "accuracyDeg": 8.0,
+      "accuracyDeg": 8,
       "burstShots": 3,
       "burstPauseMs": 900,
       "fireIntervalMs": 260,
       "fireRange": 30,
       "damagePerShot": 7,
       "armorPen": 1,
-      "armor": { "body": "none", "head": "none" },
+      "armor": {
+        "body": "none",
+        "head": "none"
+      },
       "searchDurationMs": 6000,
       "retreatHealthRatio": 0.18,
       "color": "0x8a9aa8",
@@ -40,7 +42,10 @@
       "fireRange": 38,
       "damagePerShot": 8,
       "armorPen": 2,
-      "armor": { "body": "vest2", "head": "none" },
+      "armor": {
+        "body": "vest2",
+        "head": "none"
+      },
       "searchDurationMs": 7500,
       "retreatHealthRatio": 0.22,
       "color": "0x9aa88a",
@@ -62,17 +67,96 @@
       "fireRange": 46,
       "damagePerShot": 10,
       "armorPen": 3,
-      "armor": { "body": "vest3", "head": "helmet2" },
+      "armor": {
+        "body": "vest3",
+        "head": "helmet2"
+      },
       "searchDurationMs": 9000,
       "retreatHealthRatio": 0.3,
       "color": "0xc98a5a",
       "weight": 15
+    },
+    {
+      "id": "heavy",
+      "label": "重装兵",
+      "maxHealth": 170,
+      "moveSpeed": 2,
+      "viewRange": 22,
+      "viewAngleDeg": 100,
+      "reactMs": 520,
+      "aimTimeMs": 300,
+      "accuracyDeg": 7.5,
+      "burstShots": 8,
+      "burstPauseMs": 650,
+      "fireIntervalMs": 140,
+      "fireRange": 20,
+      "damagePerShot": 6,
+      "armorPen": 2,
+      "armor": {
+        "body": "vest3",
+        "head": "helmet3"
+      },
+      "searchDurationMs": 7000,
+      "retreatHealthRatio": 0.12,
+      "color": "0x6f7f8f",
+      "weight": 20
+    },
+    {
+      "id": "sniper",
+      "label": "狙击手",
+      "maxHealth": 85,
+      "moveSpeed": 2.5,
+      "viewRange": 50,
+      "viewAngleDeg": 70,
+      "reactMs": 700,
+      "aimTimeMs": 600,
+      "accuracyDeg": 2,
+      "burstShots": 1,
+      "burstPauseMs": 1500,
+      "fireIntervalMs": 1500,
+      "fireRange": 70,
+      "damagePerShot": 28,
+      "armorPen": 3,
+      "armor": {
+        "body": "none",
+        "head": "none"
+      },
+      "searchDurationMs": 5000,
+      "retreatHealthRatio": 0.35,
+      "color": "0x7a9a6a",
+      "weight": 12
+    },
+    {
+      "id": "boss",
+      "label": "头目",
+      "maxHealth": 260,
+      "moveSpeed": 2.9,
+      "viewRange": 42,
+      "viewAngleDeg": 120,
+      "reactMs": 260,
+      "aimTimeMs": 150,
+      "accuracyDeg": 3,
+      "burstShots": 6,
+      "burstPauseMs": 550,
+      "fireIntervalMs": 170,
+      "fireRange": 55,
+      "damagePerShot": 12,
+      "armorPen": 3,
+      "armor": {
+        "body": "vest4",
+        "head": "helmet4"
+      },
+      "searchDurationMs": 12000,
+      "retreatHealthRatio": 0,
+      "color": "0xd06a3a",
+      "weight": 0,
+      "weaponId": "rifle_scarh",
+      "_bossNote": "制作人裁定：Boss = 更好的护甲(vest4/helmet4) + 更好的枪械(真实武器 rifle_scarh) + 血量翻倍(elite 130 → 260)。★ 弹道（伤害/衰减/射程/弹丸）取自真实武器，**连发节拍与精度仍由本档控制** —— AI 没有换弹逻辑，真实弹匣会让它打空即停，故弹匣仍为无限。★ weight=0：Boss 不进普通权重池，走 spawnRules.bossCount 独立配额。"
     }
   ],
-
   "spawnRules": {
     "_comment": "M2 刷新规则：只做数量与配置，出生点选取逻辑见 aiManager。禁止扩展兵种以外的东西。",
-    "totalCount": 7,
+    "totalCount": 15,
     "minDistanceFromPlayerCells": 12,
     "minDistanceBetweenAiCells": 3,
     "difficultyRamp": {
@@ -80,15 +164,16 @@
       "graceMs": 20000,
       "accuracyScaleDuringGrace": 1.8,
       "reactScaleDuringGrace": 1.6
-    }
+    },
+    "bossCount": 1,
+    "_m6_2Note": "M6-2：普通 AI 7 → 15（每图），Boss 由 bossCount 独立配额（**不计入 totalCount**，因此\"地图 aiSpawns 之和 === totalCount\"这条校验口径收窄为\"普通 AI 总数\"，校验本身不变）。"
   },
-
   "updateTiers": [
     {
       "_comment": "近距：每帧更新（intervalMs=0），完整感知与寻路",
       "maxDistanceM": 28,
       "intervalMs": 0,
-      "pathBudgetShare": 1.0
+      "pathBudgetShare": 1
     },
     {
       "_comment": "中距：约 8Hz",
@@ -100,28 +185,25 @@
       "_comment": "远距：约 2.5Hz，只做最低限度维护",
       "maxDistanceM": 100000,
       "intervalMs": 400,
-      "pathBudgetShare": 0.0
+      "pathBudgetShare": 0
     }
   ],
-
   "pathBudget": {
     "_comment": "M0-TECH-01 约束 C-1/C-2：每帧寻路查询必须限流。这两个值是硬上限，超出即排队到后续帧。",
     "maxQueriesPerFrame": 2,
-    "maxMsPerFrame": 2.0,
+    "maxMsPerFrame": 2,
     "replanIntervalMs": 550,
     "replanIntervalJitterMs": 220,
     "losIntervalMs": 90,
     "losIntervalJitterMs": 60,
     "maxPathWaypoints": 512
   },
-
   "perception": {
     "_comment": "M2 感知记忆：看到后会记住最后已知位置并去搜索，不再是 M1 的『永久警觉』。",
     "memoryMs": 9000,
     "hearingGunshotRangeM": 45,
     "hearingFootstepRangeM": 14
   },
-
   "combat": {
     "_comment": "交战距离控制与撤退。",
     "preferredRangeM": 12,

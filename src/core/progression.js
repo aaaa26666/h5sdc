@@ -117,9 +117,14 @@ export function spentPoints(profile, cfg) {
  *     与 M5 之前的行为逐字节一致（有断言守）。
  *   · 其余键 base = 1（倍率）或 0（加成比例）。
  *
+ * @param {object} [opts]
+ * @param {number} [opts.weightBaseKg] `fromLoot` 类效果的基数（负重上限）。
+ *        ★ M6：容量改由**所装备的背包**决定后，基数不能再固定读 loot 表的参考背包 ——
+ *        否则"换一只更大的背包"不会改变负重上限，技能加成也永远按 6x5 算。
+ *        缺省仍是 loot 表的参考装载，因此不传参的调用方（校验器、单测）行为不变。
  * @returns {object} 至少包含 CONSUMED_MODIFIERS 的每一个键
  */
-export function skillModifiers(profile, cfg) {
+export function skillModifiers(profile, cfg, opts = {}) {
   const acc = {};
   for (const sk of cfg.progression.skills) {
     const lv = skillLevel(profile, sk.id);
@@ -131,7 +136,9 @@ export function skillModifiers(profile, cfg) {
   const out = {};
   for (const kind of dataKeys(cfg.progression.effectKinds)) {
     const kd = cfg.progression.effectKinds[kind];
-    const base = kd.base === 'fromLoot' ? cfg.lootTable.backpack.weightLimitKg : kd.base;
+    const base = kd.base === 'fromLoot'
+      ? (Number.isFinite(opts.weightBaseKg) ? opts.weightBaseKg : cfg.lootTable.backpack.weightLimitKg)
+      : kd.base;
     out[kind] = base + (acc[kind] || 0);
   }
   return out;

@@ -45,7 +45,14 @@ function raySphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, r) {
   return t >= 0 ? t : tca + thc;
 }
 
-export function createWeaponSystem({ cfg, level, player, rng, emit, kit }) {
+/**
+ * @param {object} [ammoStore] ★ M6：备弹的**唯一来源**（通常是 gameplay/inventory.js）。
+ *        提供 `total(caliber)` 与 `take(caliber, rounds)`。
+ *        为什么必须注入而不是自己留一份 `reserve` 计数：M6 起弹药是**摆在背包网格里的物体**，
+ *        若武器系统再存一份数字，就必然出现"网格里有子弹、HUD 说没有"（或反过来）的两套账。
+ *        不传时退回旧的内部计数（纯逻辑单测与无 raidKit 的场景），行为与 M5 一致。
+ */
+export function createWeaponSystem({ cfg, level, player, rng, emit, kit, ammoStore }) {
   const zoneOrder = cfg.hitZoneNames; // ['head','chest','stomach','limb']
 
   // ---- 装备与弹药 ----
@@ -59,7 +66,8 @@ export function createWeaponSystem({ cfg, level, player, rng, emit, kit }) {
     ammo: cfg.startLoadout.reserveByAmmo,
   };
   const loadout = [lo.primary, lo.secondary].filter(Boolean);
-  const reserve = { ...lo.ammo };
+  // ★ M6：有 ammoStore 时它才是真值；这份内部计数只是"没有网格"时的退化实现。
+  const reserve = ammoStore ? null : { ...lo.ammo };
   // M5-5：据枪/精度技能改变后坐力与扩散（倍率由 core/progression.js 聚合）
   const recoilScale = kit ? kit.modifiers.recoilScale : 1;
   const spreadScale = kit ? kit.modifiers.spreadScale : 1;
@@ -80,13 +88,40 @@ export function createWeaponSystem({ cfg, level, player, rng, emit, kit }) {
   });
 
   let activeIndex = 0;
+  /**
+   * ★ M6：**空手**状态桩（两个槽都空）。
+   *
+   * 为什么需要它，而不是到处判 null：M5 裁定"缺件也允许进局"，而 M6 起 raidKit 只装
+   * **仓库真的拿得出**的东西 —— 于是"一把枪都没有"成了一个真实可达的状态
+   * （唯一那把枪上局丢了、卖了，或新账号还没买到手）。此前它不可达（raidKit 照配装填枪，
+   * 没枪也会凭空给一把），所以到处 `.def` 都相安无事；现在不处理就会在进局第一帧
+   * 崩在 `active().def` 上 —— 表现是"进战区黑屏"。
+   *
+   * 桩的形状与普通武器状态一致，因此所有既有代码路径照常工作（开镜时长、后坐力恢复
+   * 都走同一条路），只有开火被显式拒绝（见 fire 的 `!wdef.id` 分支）。
+   */
+  const NO_WEAPON = {
+    id: null,
+    def: {
+      id: null, label: '空手', class: 'none', ammoType: null, magazineSize: 0,
+      adsMs: 200, adsFovDeg: 55, fireMode: 'semi', fireIntervalMs: 600, pellets: 0,
+      hipSpreadDeg: 0, adsSpreadDeg: 0, maxSpreadDeg: 1, spreadRecoveryPerSec: 1,
+      recoil: { recoveryDelayMs: 0, recoveryPerSec: 12 },
+    },
+    ammo: null,
+    magazine: 0,
+    cooldownUntil: 0,
+    reloading: false,
+    reloadEndAt: 0,
+    reloadWasTactical: false,
+    spread: 0,
+  };
+  const active = () => states[activeIndex] || NO_WEAPON;
   let adsT = 0;               // 0=腰射 1=完全开镜
   // 后坐力偏移**不再由本模块持有** —— 它归 player 的 recoilYaw/recoilPitch 管，
   // 这样"玩家瞄的"与"后坐力的"是两笔账，恢复不会去动玩家的瞄准（M2-TEMP-1）。
   // 这里只记录**最近一次开火时间**，用于决定恢复走哪一档。
   let lastShotAt = -1e9;
-
-  const active = () => states[activeIndex];
 
   const stats = {
     shotsFired: 0,
@@ -99,6 +134,8 @@ export function createWeaponSystem({ cfg, level, player, rng, emit, kit }) {
   };
 
   function reserveOf(ammoType) {
+    // ★ M6：弹药是背包网格里的物体，"还剩多少发"是数出来的，不是另存的一份数字。
+    if (ammoStore) return ammoStore.total(ammoType);
     return reserve[ammoType] || 0;
   }
 
@@ -142,9 +179,13 @@ export function createWeaponSystem({ cfg, level, player, rng, emit, kit }) {
     const s = active();
     const need = s.def.magazineSize - s.magazine;
     const avail = reserveOf(s.def.ammoType);
-    const take = Math.min(need, avail);
+    const want = Math.min(need, avail);
+    // ★ M6：从网格里**真的扣掉**。take 返回实际扣到的发数 ——
+    //   用它而不是 want，是为了不假设"数出来的量一定扣得到"
+    //   （网格是另一份状态，两者不一致时必须以实际扣减为准，否则会凭空造子弹）。
+    const take = ammoStore ? ammoStore.take(s.def.ammoType, want) : want;
+    if (!ammoStore) reserve[s.def.ammoType] = avail - take;
     s.magazine += take;
-    reserve[s.def.ammoType] = avail - take;
     s.reloading = false;
     stats.reloads++;
     emit({ type: 'reloadEnd', weapon: s.def, loaded: take });
@@ -200,6 +241,9 @@ export function createWeaponSystem({ cfg, level, player, rng, emit, kit }) {
   function fire(nowMs, targets) {
     const s = active();
     const wdef = s.def;
+    // ★ M6：空手不能开火。刻意**不**在这里 emit 'empty' —— 那会让音效/后坐力
+    //   去处理一个没有武器的"空仓"，而玩家只是没枪。
+    if (!wdef.id) return false;
     if (s.reloading) return false;
     if (nowMs < s.cooldownUntil) return false;
     if (s.magazine <= 0) {
@@ -259,7 +303,8 @@ export function createWeaponSystem({ cfg, level, player, rng, emit, kit }) {
     const s = active();
 
     // ---- 开镜 ----
-    const wantAds = input.ads() && !s.reloading;
+    // ★ M6：空手不允许开镜（否则按住右键会把视野拉到 55°，像是"隐形瞄具"）。
+    const wantAds = input.ads() && !s.reloading && !!s.def.id;
     const adsRate = 1000 / s.def.adsMs;
     adsT = wantAds
       ? Math.min(1, adsT + (dt * adsRate))

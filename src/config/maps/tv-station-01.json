@@ -2770,24 +2770,128 @@
   "aiSpawns": [
     {
       "zone": "z1_cargo",
-      "count": 2
+      "count": 2,
+      "floor": 0,
+      "tiers": {
+        "scav": 30,
+        "guard": 40,
+        "elite": 15,
+        "heavy": 15
+      }
     },
     {
       "zone": "z1_server",
-      "count": 2
+      "count": 2,
+      "floor": 0,
+      "tiers": {
+        "scav": 30,
+        "guard": 40,
+        "elite": 15,
+        "heavy": 15
+      }
     },
     {
       "zone": "z1_garage",
-      "count": 1
-    },
-    {
-      "zone": "z1_office_s",
-      "count": 1
+      "count": 1,
+      "floor": 0,
+      "tiers": {
+        "scav": 45,
+        "guard": 35,
+        "elite": 12,
+        "heavy": 8
+      }
     },
     {
       "zone": "z1_warehouse",
-      "count": 1
+      "count": 2,
+      "floor": 0,
+      "tiers": {
+        "scav": 45,
+        "guard": 35,
+        "elite": 12,
+        "heavy": 8
+      }
+    },
+    {
+      "zone": "z1_hall",
+      "count": 1,
+      "floor": 0,
+      "tiers": {
+        "scav": 70,
+        "guard": 25,
+        "elite": 5
+      }
+    },
+    {
+      "zone": "z1_courtyard",
+      "count": 1,
+      "floor": 0,
+      "tiers": {
+        "scav": 70,
+        "guard": 25,
+        "elite": 5
+      }
+    },
+    {
+      "zone": "z2_server2",
+      "count": 2,
+      "floor": 1,
+      "tiers": {
+        "scav": 30,
+        "guard": 40,
+        "elite": 15,
+        "heavy": 15
+      }
+    },
+    {
+      "zone": "z2_equipment",
+      "count": 1,
+      "floor": 1,
+      "tiers": {
+        "scav": 45,
+        "guard": 35,
+        "elite": 12,
+        "heavy": 8
+      }
+    },
+    {
+      "zone": "z2_control",
+      "count": 1,
+      "floor": 1,
+      "tiers": {
+        "scav": 30,
+        "guard": 40,
+        "elite": 15,
+        "heavy": 15
+      }
+    },
+    {
+      "zone": "z2_studio",
+      "count": 1,
+      "floor": 1,
+      "tiers": {
+        "scav": 70,
+        "guard": 25,
+        "elite": 5
+      }
+    },
+    {
+      "zone": "z2_archive",
+      "count": 1,
+      "floor": 1,
+      "tiers": {
+        "scav": 70,
+        "guard": 25,
+        "elite": 5
+      }
     }
   ],
-  "_routesNote": "[M3-TEMP-6] 动线直接写在本表里，不在生成器 tools/gen-map-tv-station.mjs 的参数中 —— 重跑生成器会把这 4 条动线抹掉。要么把动线纳入生成器，要么让生成器保留已有的 routes 字段。"
+  "_routesNote": "[M3-TEMP-6] 动线直接写在本表里，不在生成器 tools/gen-map-tv-station.mjs 的参数中 —— 重跑生成器会把这 4 条动线抹掉。要么把动线纳入生成器，要么让生成器保留已有的 routes 字段。",
+  "bossSpawns": [
+    {
+      "zone": "z2_control",
+      "floor": 1
+    }
+  ],
+  "_m6_2Note": "M6-2：AI 7→15，**首次给二层配 AI**（修 M3-TEMP-7）；交战区(cargo/server/server2/control)加权精英与重装。Boss 布在二层控制室。"
 }

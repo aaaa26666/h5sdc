@@ -70,7 +70,9 @@ export function applyRaidToProfile(profile, input, cfg) {
   const byItem = new Map();
   for (const it of result.items || []) {
     const def = itemDef(it.id, cfg);
-    const units = def ? def.unitsPerItem : 1;
+    // ★ M6：优先用**这一格实际剩多少**（局内一格可以只装半盒），
+    //   只有老口径（没有 count 字段）才退回"一件 = unitsPerItem 个存储单位"。
+    const units = Number.isFinite(it.count) ? it.count : def ? def.unitsPerItem : 1;
     byItem.set(it.id, (byItem.get(it.id) || 0) + units);
   }
   for (const [itemId, count] of byItem) {

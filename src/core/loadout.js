@@ -21,8 +21,12 @@ import { itemDef, itemIdOfEquipment, equipmentDef, equipmentIdOfItem, safeTierDe
 import { skillModifiers } from './progression.js';
 import { sanitizeLoadoutShape, activeLoadout } from './profile.js';
 import { questTrackerView } from './quests.js';
+import { planCarry } from './carry.js';
 
-const EQUIP_SLOTS = Object.freeze(['primary', 'secondary', 'body', 'head']);
+// ★ M6：背包与弹挂进槽位表。它们既是装备（占仓库格、按件取放、阵亡会丢），
+//   也是**局内容量的来源** —— 因此必须和其它装备走同一条"进局扣件 / 撤离还件"的路，
+//   否则"死了背包还在"只需一行代码就会发生。
+const EQUIP_SLOTS = Object.freeze(['primary', 'secondary', 'body', 'head', 'backpack', 'rig']);
 
 /** 单发重量（发/件 → kg）。唯一来源：掉落表的物品重量 ÷ 每格发数。 */
 export function roundWeightKg(caliber, cfg) {
@@ -49,6 +53,25 @@ export function loadoutWeight(lo, cfg) {
     if (def) kg += def.weightKg * n;
   }
   return kg;
+}
+
+/**
+ * ★ M6：把配装里的弹药与消耗品**摆进网格**（销 [M5-TEMP-11]）。
+ *
+ * 为什么要在这里算而不是在局内算：容量是**出发前**就定下来的东西。
+ * 若等进局再摆，"仓库里明明有 180 发却只带了 120 发"就只能在局内被发现，
+ * 而那时玩家已经在战区里了 —— 退出重配是不可能的。
+ *
+ * @returns {object} core/carry.js 的 planCarry 产物（backpack / rig / placements / overflow）
+ */
+export function buildCarry(lo, cfg) {
+  return planCarry({
+    loadout: lo,
+    carry: cfg.carry,
+    ammo: cfg.ammo,
+    consumables: cfg.consumables,
+    itemDefs: cfg.itemDefs,
+  });
 }
 
 /**
@@ -142,25 +165,86 @@ export function consumableOnHand(profile, itemId, cfg) {
 
 /**
  * 进局：把配装从仓库拿走。
- * @returns {{profile:object, taken:Array, missing:Array}}
+ *
+ * ★ M6：拿走什么**由实际摆进网格的东西决定**，而不是由"配装上写了多少"决定。
+ *   否则"要 180 发但只摆得下 120 发"会把这 60 发从仓库扣掉却带不进战区 ——
+ *   一次静默的物资蒸发。扣不掉的那部分进 missing，摆不下的进 overflow，两者都要报给玩家。
+ *
+ * @returns {{profile:object, taken:Array, missing:Array, overflow:Array, carry:object, effectiveLoadout:object}}
  *          taken 是"这一局身上带着的东西"，结算时要靠它把没用完的还回去。
+ *          effectiveLoadout 是**仓库真的拿得出**的那份配装 —— 局内必须按它建包，理由见下。
  */
 export function takeLoadout(profile, cfg) {
-  const reqs = loadoutRequirements(activeLoadout(profile), cfg);
+  const lo = activeLoadout(profile);
+  const plan0 = buildCarry(lo, cfg);
   let stash = profile.stash;
   const taken = [];
   const missing = [];
-  for (const r of reqs) {
-    const res = stashRemoveItem(stash, r.itemId, r.count, cfg);
+  // 摆不下的：**不从仓库扣**（扣了就等于凭空消失），原样报给调用方。
+  const overflow = plan0.overflow.map((o) => ({ itemId: o.itemId, count: o.count, kind: o.kind, reason: o.reason }));
+
+  // ---- ① 装备（含背包与弹挂）：按件 ----
+  const equipTaken = new Set();
+  for (const slot of EQUIP_SLOTS) {
+    const id = lo[slot];
+    if (!id) continue;
+    const itemId = itemIdOfEquipment(id, cfg);
+    const res = stashRemoveItem(stash, itemId, 1, cfg);
     stash = res.stash;
     if (res.removed > 0) {
-      taken.push({ itemId: r.itemId, count: res.removed, kind: r.kind, caliber: r.caliber || null, slot: r.slot || null });
+      taken.push({ itemId, count: res.removed, kind: 'equipment', caliber: null, slot });
+      equipTaken.add(slot);
     }
-    if (res.leftover > 0) {
-      missing.push({ ...r, missing: res.leftover });
-    }
+    if (res.leftover > 0) missing.push({ itemId, count: 1, kind: 'equipment', slot, missing: res.leftover });
   }
-  return { profile: { ...profile, stash }, taken, missing };
+
+  // ---- ② 携行物品（弹药 / 消耗品）：按**摆进网格的盒数**汇总后扣仓库 ----
+  const agg = new Map();
+  for (const p of plan0.placements) {
+    const key = `${p.kind}:${p.itemId}`;
+    const e = agg.get(key) || { itemId: p.itemId, count: 0, kind: p.kind, caliber: p.caliber || null, slot: null };
+    e.count += p.count;
+    agg.set(key, e);
+  }
+  const gotByItem = new Map();
+  for (const r of agg.values()) {
+    const res = stashRemoveItem(stash, r.itemId, r.count, cfg);
+    stash = res.stash;
+    if (res.removed > 0) taken.push({ ...r, count: res.removed });
+    if (res.leftover > 0) missing.push({ ...r, missing: res.leftover });
+    gotByItem.set(r.itemId, res.removed);
+  }
+
+  // ---- ③ ★ 用**实际拿到的**量重算一次投放 ----
+  //
+  // 为什么必须重算：`plan0` 是按**配装上写的数**摆的，而仓库里可能根本没有那么多。
+  // 若局内按 plan0 建包，玩家就会凭空拿到仓库里没有的弹药/药品/背包 ——
+  // 一个"越穷越赚"的漏洞，而且它只在"配装里留了已卖掉的东西"时才出现。
+  // 这也顺手修掉一个 M5 遗留的同类问题：配装里那把**已经卖掉**的枪
+  // 此前照样会出现在局内（takeLoadout 拿不到，但 raidKit 仍按配装填枪）。
+  const effLo = {
+    ...lo,
+    primary: equipTaken.has('primary') ? lo.primary : null,
+    secondary: equipTaken.has('secondary') ? lo.secondary : null,
+    body: equipTaken.has('body') ? lo.body : null,
+    head: equipTaken.has('head') ? lo.head : null,
+    backpack: equipTaken.has('backpack') ? lo.backpack : null,
+    rig: equipTaken.has('rig') ? lo.rig : null,
+    ammo: {},
+    consumables: {},
+  };
+  for (const [caliber, want] of Object.entries(lo.ammo || {})) {
+    const a = cfg.ammo.find((x) => x.id === caliber);
+    const got = a && a.itemId ? Math.min(want, gotByItem.get(a.itemId) || 0) : 0;
+    if (got > 0) effLo.ammo[caliber] = got;
+  }
+  for (const [id, want] of Object.entries(lo.consumables || {})) {
+    const got = Math.min(want, gotByItem.get(id) || 0);
+    if (got > 0) effLo.consumables[id] = got;
+  }
+  const carry = buildCarry(effLo, cfg);
+
+  return { profile: { ...profile, stash }, taken, missing, overflow, carry, effectiveLoadout: effLo };
 }
 
 /**
@@ -202,10 +286,17 @@ export function returnLoadout(profile, taken, remaining, cfg) {
  * 局内系统只**读**它，不再自行查配置表（那正是 M5-TEMP-2 的问题：
  * 局内读的是写死的 startLoadout，与玩家配装无关）。
  */
-export function buildRaidKit(profile, cfg) {
-  const lo = activeLoadout(profile);
+export function buildRaidKit(profile, cfg, opts = {}) {
+  // ★ M6：`opts.loadout` 由 takeLoadout 给（= 仓库**真的拿得出**的那份）。
+  //   不传时退回档案里的配装 —— 纯逻辑单测与"还没进局"的简报走这条路径。
+  const lo = opts.loadout || activeLoadout(profile);
   const ow = overweightBand(lo, cfg);
   const safe = safeTierDef(profile.safeTierUnlocked, cfg);
+  // ★ M6：携行具决定局内容量，因此**先**解析携行具，再按它的负重上限算技能加成。
+  //   顺序反了的话，换一只更大的背包不会改变负重上限（加成永远按参考背包算）。
+  const carry = opts.carry || buildCarry(lo, cfg);
+  const mods = skillModifiers(profile, cfg, { weightBaseKg: carry.backpack.weightLimitKg });
+  carry.backpack.weightLimitTotalKg = mods.weightLimitKg;
   return {
     presetId: lo.id,
     presetName: lo.name,
@@ -213,12 +304,22 @@ export function buildRaidKit(profile, cfg) {
       primary: lo.primary,
       secondary: lo.secondary,
       armor: { body: lo.body, head: lo.head },
+      backpack: lo.backpack || null,
+      rig: lo.rig || null,
+      /**
+       * ★ M6：这两个只是**出发行头的账**（负重、大厅与简报的显示）。
+       * 局内**禁止**读它们来决定弹药/药品存量 —— 那会绕开网格，
+       * 回到"M5 的不占格数字"，也就是 [M5-TEMP-11] 本身。
+       * 局内的唯一来源是 `carry`（真值）与 gameplay/inventory.js（运行时）。
+       */
       ammo: { ...lo.ammo },
       consumables: { ...lo.consumables },
       safeTierId: profile.safeTierUnlocked,
       safeTierLabel: safe ? safe.label : null,
     },
-    modifiers: skillModifiers(profile, cfg),
+    /** ★ M6：身上真的摆着什么（含格坐标）。局内据此建网格，不再自己猜。 */
+    carry,
+    modifiers: mods,
     overweight: {
       bandId: ow.band.id,
       label: ow.band.label,
@@ -324,8 +425,12 @@ export function loadoutView(profile, cfg) {
     secondary: lo.secondary,
     body: lo.body,
     head: lo.head,
+    backpack: lo.backpack || null,
+    rig: lo.rig || null,
     ammo: { ...lo.ammo },
     consumables: { ...lo.consumables },
+    /** ★ M6：容量来自装备（含兜底），界面的"几×几格 / 几 kg"必须显示这个，而不是参考装载 */
+    carry: buildCarry(lo, cfg),
     weightKg: ow.weightKg,
     band: { id: ow.band.id, label: ow.band.label, speedScale: ow.band.speedScale, noSprint: ow.band.noSprint },
     nextAtKg: ow.nextAtKg,

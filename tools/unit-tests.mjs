@@ -76,6 +76,7 @@ import {
   takeLoadout,
   returnLoadout,
   buildRaidKit,
+  buildCarry,
   updatePreset,
   addPreset,
   removePreset,
@@ -99,6 +100,9 @@ import {
   questTrackerView,
 } from '../src/core/quests.js';
 import { applyRaidToProfile } from '../src/core/settlement.js';
+import { buildRaidResult } from '../src/core/raidResult.js';
+import { createInventory } from '../src/gameplay/inventory.js';
+import { planCarry, resolveCarrySpecs } from '../src/core/carry.js';
 
 let pass = 0;
 const failures = [];
@@ -3615,6 +3619,283 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     JSON.stringify(qt));
   check('M5-8 关了阴影的档位不给阴影尺寸（死字段会被校验拦下）',
     Object.entries(qt).filter(([k]) => !k.startsWith('_')).every(([, q]) => q.shadows || q.shadowMapSize === 0));
+}
+
+// ============================================================
+// M6-1 武器扩充：数值平衡 + 内容可达性
+// ============================================================
+//
+// 为什么要有这一组：`tools/ttk.mjs` 在 M6-1 之前**只打印、从不 exit 非零**，
+// 所以"数值平衡做完了没"一直没有自动判定。这一组把同一套判据搬进秒级反馈的纯逻辑测试，
+// 判定口径与 ttk.mjs **完全同源**（同一个 computeTtk / spreadRecoverySeconds）——
+// 不另写一份实现，否则两处会各说各话。
+//
+// 刻意**不重复**断言 config/index.js 已经守住的 schema 规则（4 部位伤害、后坐力图案非空等）：
+// 那些在配置加载时就已经拦下了，再写一遍等于两处校验。
+{
+  const T = config.designTargets;
+  const G = T._globalLimits;
+  const HP = config.playerVitals.maxHealth;
+  const vest3 = armorById('vest3');
+
+  check('★ M6-1 武器数达到扩充目标（≥6）', config.weapons.length >= 6, `${config.weapons.length} 把`);
+
+  const byClass = {};
+  for (const w of config.weapons) byClass[w.class] = (byClass[w.class] || 0) + 1;
+  check('★ M6-1 每个类别都有 ≥2 把（"类别内有得选"是本次扩充的设计意图）',
+    Object.values(byClass).every((n) => n >= 2),
+    Object.entries(byClass).map(([k, v]) => `${k}:${v}`).join(' '));
+
+  const classless = config.weapons.filter((w) => !T.byClass[w.class]).map((w) => `${w.id}[${w.class}]`);
+  check('★ M6-1 每把武器的类别都有设计目标（否则 ttk.mjs 会静默跳过它）',
+    classless.length === 0, classless.join(',') || '全部有');
+
+  const bad = [];
+  for (const w of config.weapons) {
+    const tc = T.byClass[w.class];
+    if (!tc) continue;
+    const R = tc.benchmarkRangeM;
+    const ammo = ammoById(w.ammoType);
+    const hit = w.pellets > 1 ? 0.7 : 1.0;
+    const t = (zone, armorDef) =>
+      computeTtk({
+        weapon: w, ammo, zone, distanceM: R,
+        armorDef, armorDurability: armorDef ? armorDef.durability : 0,
+        armorRules: config.armorRules, maxHealth: HP, pelletHitRatio: hit,
+      });
+    const ttk = t('chest', null).ttkMs / 1000;
+    const headPulls = t('head', null).pulls;
+    const armored = t('chest', vest3).ttkMs / 1000;
+    const rec = spreadRecoverySeconds(w, true);
+    if (!(ttk >= tc.ttkBodySecMin && ttk <= tc.ttkBodySecMax)) bad.push(`${w.id} 躯干TTK ${ttk.toFixed(3)}s`);
+    if (!(headPulls <= tc.ttkHeadshotsMax)) bad.push(`${w.id} 爆头 ${headPulls} 发`);
+    if (!(w.adsMs <= tc.adsMsMax)) bad.push(`${w.id} 开镜 ${w.adsMs}ms`);
+    if (!(rec <= tc.spreadRecoverySecMax)) bad.push(`${w.id} 扩散恢复 ${rec.toFixed(3)}s`);
+    if (!(armored <= G.ttkArmoredSecMax)) bad.push(`${w.id} 三级甲 ${armored.toFixed(3)}s`);
+  }
+  check('★ M6-1 全部武器落在其类别的设计目标内（与 ttk.mjs 同源算法）',
+    bad.length === 0, bad.slice(0, 4).join('；') || `${config.weapons.length} 把全部达标`);
+
+  // 内容可达性：写进表里但玩家拿不到，等于没做
+  const inShop = new Set(
+    config.economy.stock.items.filter((i) => i.kind === 'weapon').map((i) => i.ref)
+  );
+  const unreachable = config.weapons.filter((w) => !inShop.has(w.id)).map((w) => w.id);
+  check('★ M6-1 每把武器都可在商店买到（否则"存在但拿不到"）',
+    unreachable.length === 0, unreachable.join(',') || `${inShop.size} 把在售`);
+
+  // 基准 5 把不许被顺带改动 —— M6-1 方案 §6.1 的裁定，防止"扩内容顺手调参"
+  const BASE = {
+    pistol_p9: [30, 130, 900], smg_v9: [24, 75, 1800], rifle_m4: [33, 92, 2600],
+    shotgun_m590: [19, 780, 2000], dmr_sr25: [58, 260, 3200],
+  };
+  const drifted = Object.entries(BASE)
+    .filter(([id, [c, iv, val]]) => {
+      const w = config.weapons.find((x) => x.id === id);
+      return !w || w.damage.chest !== c || w.fireIntervalMs !== iv || w.value !== val;
+    })
+    .map(([id]) => id);
+  check('★ M6-1 原有 5 把基准武器数值未被顺带改动', drifted.length === 0,
+    drifted.join(',') || '5 把逐一比对一致');
+}
+
+// ============================================================
+// ★ M6：携行具容量化 + 弹药/消耗品进网格（销 M5-TEMP-11）
+//
+// 这一节守的是四件容易静默出错的事：
+//   ① 容量必须**来自装备**（换包就换容量），没装包用兜底；
+//   ② 备弹/药品必须是**网格的派生量**，不是另存的一份数字；
+//   ③ 携行件不能进安全箱、不能算战利品 —— 否则同一批子弹被还两次；
+//   ④ 仓库拿不出的东西不能凭空出现在局内（effectiveLoadout）。
+// ============================================================
+{
+  const CARRY = config.carry;
+  const bpMedium = CARRY.backpacks.find((b) => b.id === 'bp_medium');
+  const rigLight = CARRY.rigs.find((r) => r.id === 'rig_light');
+  const bpSmall = CARRY.backpacks.find((b) => b.id === 'bp_small');
+  const kitFor = (patch) => {
+    const lo = { ...config.equipment.starterLoadout, ...patch };
+    // 与 buildRaidKit 同一条路径：先解析携行具，再按它算负重上限
+    const carry = buildCarry(lo, config);
+    const mods = skillModifiers(createNewProfile(config, 0), config, { weightBaseKg: carry.backpack.weightLimitKg });
+    carry.backpack.weightLimitTotalKg = mods.weightLimitKg;
+    return { loadout: { ...lo, armor: { body: lo.body, head: lo.head }, safeTierId: 'safe_t1' }, carry, modifiers: mods };
+  };
+
+  // ---- ① 容量来自装备 ----
+  {
+    const carry = planCarry({
+      loadout: { ...config.equipment.starterLoadout, backpack: 'bp_small' },
+      carry: CARRY, ammo: config.ammo, consumables: config.consumables, itemDefs: config.itemDefs,
+    });
+    check('★ M6 容量取**所装备的**背包（不是掉落表里的固定 6×5）',
+      carry.backpack.id === 'bp_small' && carry.backpack.w === 5 && carry.backpack.h === 4
+      && carry.backpack.source === 'equipped',
+      `${carry.backpack.label} ${carry.backpack.w}×${carry.backpack.h}（${carry.backpack.source}）`);
+
+    const def = planCarry({
+      loadout: { ...config.equipment.starterLoadout, backpack: null },
+      carry: CARRY, ammo: config.ammo, consumables: config.consumables, itemDefs: config.itemDefs,
+    });
+    check('没装备背包时用 carry.json 的兜底容量（且标记来源为 default）',
+      def.backpack.source === 'default' && def.backpack.id === null
+      && def.backpack.w === CARRY.defaults.backpack.w,
+      `${def.backpack.w}×${def.backpack.h} / ${def.backpack.weightLimitKg}kg`);
+  }
+
+  // ---- ② 弹药与消耗品真的占格，且一格可装多件（与仓库堆叠同源）----
+  {
+    const lo = { ...config.equipment.starterLoadout, backpack: 'bp_medium', ammo: { '5.56': 130 }, consumables: { medkit: 2 } };
+    const plan = planCarry({ loadout: lo, carry: CARRY, ammo: config.ammo, consumables: config.consumables, itemDefs: config.itemDefs });
+    const ammoBoxes = plan.placements.filter((p) => p.itemId === 'ammo_556');
+    check('★ M6 弹药按 stack 切盒（130 发 = 60+60+10，占 3 格而不是 130 格）',
+      ammoBoxes.length === 3 && ammoBoxes.map((b) => b.count).sort((a, b) => b - a).join(',') === '60,60,10',
+      ammoBoxes.map((b) => `${b.count}@${b.x},${b.y}`).join(' '));
+    const mk = plan.placements.filter((p) => p.itemId === 'medkit');
+    check('★ M6 一格可装多件（急救包 stack=2 → 2 个装进一格 2×1）',
+      mk.length === 1 && mk[0].count === 2, mk.map((p) => `${p.count} 个 @${p.x},${p.y} ${p.w}×${p.h}`).join(' '));
+  }
+
+  // ---- ③ 弹挂优先：只收它 accepts 的类别，装不下才溢出到背包 ----
+  {
+    const lo = {
+      ...config.equipment.starterLoadout, backpack: 'bp_medium', rig: 'rig_light',
+      ammo: { '9mm': 60 }, consumables: { bandage: 2, medkit: 1 },
+    };
+    const plan = planCarry({ loadout: lo, carry: CARRY, ammo: config.ammo, consumables: config.consumables, itemDefs: config.itemDefs });
+    check('★ M6 弹药与药品先摆进**弹挂**（"马上要用的"与"背回去卖的"分开）',
+      plan.placements.every((p) => p.grid === 'rig'),
+      plan.placements.map((p) => `${p.itemId}→${p.grid}`).join(' '));
+
+    // 1×1 的包：必须报溢出，而不是静默丢弃
+    const tinyCarry = { backpacks: [{ id: 'bp_tiny', capacityW: 1, capacityH: 1, weightLimitKg: 1, slots: 1 }], rigs: [], defaults: { backpack: { w: 1, h: 1, weightLimitKg: 1 } } };
+    const tiny = planCarry({
+      loadout: { ammo: { '9mm': 60 }, consumables: { medkit: 2 } },
+      carry: tinyCarry, ammo: config.ammo, consumables: config.consumables, itemDefs: config.itemDefs,
+    });
+    check('★ M6 装不下的东西进 overflow（不静默丢弃）',
+      tiny.overflow.length > 0 && tiny.placements.length === 1,
+      `摆进 ${tiny.placements.length} 件 / 溢出 ${tiny.overflow.map((o) => `${o.itemId}×${o.count}`).join('、')}`);
+
+    // 缺 defaults 必须响，而不是兜底一个 1×1
+    let threw = null;
+    try { resolveCarrySpecs({}, { backpacks: [], rigs: [] }); } catch (e) { threw = e; }
+    check('携行具表缺 defaults 时报错（不兜底成"只能带一件"）', !!threw, threw ? threw.message.slice(0, 40) : '未报错');
+  }
+
+  // ---- ④ 局内：容量/备弹/药品全部来自网格 ----
+  {
+    const kit = kitFor({ backpack: 'bp_small', rig: 'rig_light', ammo: { '9mm': 60 }, consumables: { bandage: 3 } });
+    const inv = createInventory(config, { kit });
+    check('★ M6 局内背包格数来自所装备的背包',
+      inv.totalSlots() === 20 && inv.rigTotalSlots() === rigLight.capacityW * rigLight.capacityH,
+      `背包 ${inv.totalSlots()} 格 / 弹挂 ${inv.rigTotalSlots()} 格`);
+    check('★ M6 局内负重上限来自所装备的背包（不再固定 22kg）',
+      inv.weightLimitKg === bpSmall.weightLimitKg,
+      `${inv.weightLimitKg}kg（bp_small 是 ${bpSmall.weightLimitKg}kg，参考装载是 ${bpMedium.weightLimitKg}kg）`);
+    check('★ M6 携行件真的摆进了网格（source=kit），且不计入战利品格数',
+      inv.items.length > 0 && inv.items.every((e) => e.source === 'kit') && inv.lootSlots() === 0
+      && inv.usedSlots() === inv.kitSlots(),
+      `${inv.items.length} 件 / 占 ${inv.kitSlots()} 格`);
+    check('★ M6 备弹是**网格的派生量**（60 发 9mm 就在包里）',
+      inv.ammoTotalOf('9mm') === 60 && inv.kitAmmoOf('9mm') === 60,
+      `总计 ${inv.ammoTotalOf('9mm')} / 自带 ${inv.kitAmmoOf('9mm')}`);
+
+    // 打掉 25 发：网格里必须真的少 25，且那一格还剩 35
+    const took = inv.takeAmmo('9mm', 25);
+    check('★ M6 消耗弹药会从网格里真的扣（销 M5-TEMP-11 的关键一步）',
+      took === 25 && inv.ammoTotalOf('9mm') === 35 && inv.kitAmmoOf('9mm') === 35,
+      `扣了 ${took} 发，剩 ${inv.ammoTotalOf('9mm')}`);
+
+    // 药品同理
+    const used = inv.takeItem('bandage', 1);
+    check('★ M6 使用药品会从网格里真的拿走一个',
+      used === 1 && inv.countOf('bandage') === 2, `剩 ${inv.countOf('bandage')} 个绷带`);
+  }
+
+  // ---- ⑤ 携行件不进安全箱、不算战利品（防止同一批子弹被还两次）----
+  {
+    const kit = kitFor({ backpack: 'bp_medium', ammo: { '9mm': 60 }, consumables: { bandage: 1 } });
+    const inv = createInventory(config, { kit });
+    const allInSafe = inv.items.every((e) => !e.inSafe);
+    check('★ M6 自己带的弹药/药品**不会**被自动塞进安全箱（否则死亡零成本刷弹药）',
+      allInSafe, allInSafe ? '携行件全部 inSafe=false' : '有携行件进了安全箱');
+
+    const s = inv.settle('extract');
+    check('★ M6 携行件不算"带出的战利品"（它们走 returnLoadout 那条账）',
+      s.kept.length === 0 && s.lost.length === 0 && s.keptValue === 0,
+      `kept ${s.kept.length} / lost ${s.lost.length}`);
+
+    // 捡到的同类物品算战利品，且它**可以**进安全箱
+    const bandageDef = config.itemDefs.bandage;
+    inv.tryAdd(bandageDef);
+    const s2 = inv.settle('extract');
+    check('捡到的同类物品进战利品账（与携行件区分开）',
+      s2.kept.length === 1 && s2.keptValue === bandageDef.value,
+      `kept ${s2.kept.length} 件 / ${s2.keptValue}`);
+  }
+
+  // ---- ⑥ 半盒入仓：估值与存储单位按"这一格实际剩多少"算 ----
+  {
+    const ammoDef = config.itemDefs.ammo_556;
+    const entry = { item: ammoDef, count: 30, inSafe: false };
+    const result = buildRaidResult({
+      reason: 'extracted', outcome: 'extract', elapsedMs: 1000, kills: 0, aiTotal: 0,
+      containersOpened: 0, containersTotal: 0, shotsFired: 0, health: 100,
+      kept: [entry], lost: [], keptValue: ammoDef.unitValue * 30, lostValue: 0, safeValue: 0,
+      rarityTable: config.lootTable.rarity,
+    });
+    const it = result.items[0];
+    check('★ M6 打剩 30 发的弹盒按 30 发入仓（不是按整盒 60 发）',
+      it.count === 30 && it.value === ammoDef.unitValue * 30,
+      `count=${it.count} value=${it.value}（整盒 ${ammoDef.value}）`);
+
+    const p0 = createNewProfile(config, 0);
+    const applied = applyRaidToProfile(
+      { ...p0, stash: [], lastRaidId: null },
+      { raidId: 'r-half', atMs: 1, result, facts: { kills: 0 }, taken: [], remaining: {} },
+      config
+    );
+    const stashed = applied.profile.stash.find((e) => e.itemId === 'ammo_556');
+    check('★ M6 结算入库也是 30 发（估值与入库单位不会凭空翻倍）',
+      !!stashed && stashed.count === 30, `入库 ${stashed ? stashed.count : 0} 发`);
+  }
+
+  // ---- ⑦ effectiveLoadout：仓库拿不出的东西不能凭空出现在局内 ----
+  {
+    const bare = createNewProfile(config, 0);   // 新账号：仓库为空
+    const res = takeLoadout(bare, config);
+    check('★ M6 空仓库进局：配装里的手枪不会被凭空带进战区（M5 遗留缺陷的回归防线）',
+      res.effectiveLoadout.secondary === null && res.effectiveLoadout.primary === null
+      && res.carry.placements.length === 0,
+      `taken ${res.taken.length} 件 / 摆放 ${res.carry.placements.length} 件`);
+
+    const kit = buildRaidKit(bare, config, { loadout: res.effectiveLoadout, carry: res.carry });
+    check('★ M6 空仓库进局仍有兜底背包（"缺件也允许进局"是一条真能跑的路径）',
+      kit.carry.backpack.source === 'default' && kit.loadout.primary === null
+      && kit.loadout.backpack === null,
+      `${kit.carry.backpack.w}×${kit.carry.backpack.h} / 无武器`);
+
+    // 仓库里只有 40 发 9mm：只能带 40 发，不能凭空补成 60
+    let p = { ...bare, loadouts: [{ ...bare.loadouts[0], ammo: { '9mm': 60 } }], stash: stashAdd([], 'pistol_mag', 40, config).stash };
+    const res2 = takeLoadout(p, config);
+    const placed = res2.carry.placements.filter((x) => x.itemId === 'pistol_mag').reduce((a, x) => a + x.count, 0);
+    check('★ M6 仓库只有 40 发时，网格里也只有 40 发（拿不到的不会凭空出现）',
+      placed === 40 && res2.missing.some((m) => m.itemId === 'pistol_mag' && m.missing === 20),
+      `摆放 ${placed} 发 / 缺 ${JSON.stringify(res2.missing.map((m) => `${m.itemId}×${m.missing}`))}`);
+  }
+
+  // ---- ⑧ 负重上限 = 所装背包 + 技能加成（基数必须跟着背包走）----
+  {
+    const p = createNewProfile(config, 0);
+    const base = skillModifiers(p, config, { weightBaseKg: 10 });
+    check('★ M6 技能加成以**所装背包**的负重上限为基数（换大包才真的更能装）',
+      base.weightLimitKg === 10,
+      `10kg 基数 → ${base.weightLimitKg}kg（没点技能时等于基数）`);
+    check('不传基数时退回参考装载（校验器与旧调用方行为不变）',
+      skillModifiers(p, config).weightLimitKg === config.lootTable.backpack.weightLimitKg,
+      `${skillModifiers(p, config).weightLimitKg}kg`);
+  }
 }
 
 // ============================================================

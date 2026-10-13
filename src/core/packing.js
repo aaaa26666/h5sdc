@@ -69,6 +69,46 @@ export function packGrid(gridW, gridH, items, weightLimitKg = Infinity, excludeC
   return { placed, value, weightKg, vol, occupied };
 }
 
+/** 价值密度降序 —— "先捡单位体积最值钱的"这条贪心规则的**唯一**比较器。 */
+export function byValueDensity(a, b) {
+  return b.value / b.vol - a.value / a.vol;
+}
+
+/**
+ * 在**已有占用**的网格里按给定顺序继续装包。
+ *
+ * 与 packGrid 的区别只有一个：它不清空占用图。存在的理由是 M6 的"整理背包"——
+ * 配装件（弹药 / 医疗）是**被带进来的**，它们不该在整理时被重新摆到别处
+ * （玩家会以为"整理把我的子弹弄丢了"），只有战利品需要重排。
+ * 两者共用同一套"首次适配 + 可旋转"的判定，不是两份算法。
+ *
+ * @param {object} grid createGrid 的产物（**会被就地修改**）
+ * @param {Array} items 物品数组（需含 w / h / vol / value / weightKg / category）
+ * @returns {{placed:Array, leftovers:Array, weightKg:number}}
+ */
+export function packIntoGrid(grid, items, weightLimitKg = Infinity, excludeCategories = []) {
+  const excluded = new Set(excludeCategories);
+  const placed = [];
+  const leftovers = [];
+  let weightKg = 0;
+  for (const it of items) {
+    if (excluded.has(it.category)) continue;
+    if (weightKg + it.weightKg > weightLimitKg) {
+      leftovers.push(it);
+      continue;
+    }
+    const slot = findSlot(grid, it);
+    if (!slot) {
+      leftovers.push(it);
+      continue;
+    }
+    markArea(grid, slot.x, slot.y, slot.w, slot.h, true);
+    placed.push({ item: it, ...slot });
+    weightKg += it.weightKg;
+  }
+  return { placed, leftovers, weightKg };
+}
+
 /** 创建一张空的占用图。 */
 export function createGrid(w, h) {
   return { w, h, occupied: Array.from({ length: h }, () => new Array(w).fill(false)) };
@@ -122,7 +162,7 @@ export function markArea(grid, x, y, w, h, v = true) {
  * @returns {{placed: Array, value: number, weightKg: number, leftovers: Array}} leftovers 是整理后仍放不下的
  */
 export function repack(grid, placedItems, weightLimitKg = Infinity, excludeCategories = []) {
-  const sorted = [...placedItems].sort((a, b) => b.value / b.vol - a.value / a.vol);
+  const sorted = [...placedItems].sort(byValueDensity);
   const res = packGrid(grid.w, grid.h, sorted, weightLimitKg, excludeCategories);
   // 用排放结果重建占用图
   markAreaRect(grid, res.occupied);

@@ -1,8 +1,21 @@
 // 首包体积门禁
 //
 // 依据 M0-TECH-01 约束 C-13：每次构建必须输出首包 brotli 大小并记录趋势，超标即阻断合入。
-// 依据 M0-TECH-02 第 1.3 节：JS 运行时首包上限 200 KB（brotli）。
+//   ★ C-13 冻结的是**机制**（门禁 + 趋势 + 超标阻断），不含具体数值 —— 数值在 M0-TECH-02。
+// 依据 M0-TECH-02 第 1.3 节「资源预算分配框架」：JS 运行时首包上限。
+//
 // 对比基线：M0 实测最小可运行骨架 106.7 KB brotli。
+//
+// ★★ 2026-10-13 制作人裁定：JS 运行时首包上限 **200 KB → 2 MB（2048 KB）**。
+//    理由与该表的性质有关：M0-TECH-02 §1.3 自标【待定】——
+//    "具体数值须在 M5（局外界面成型）与 M7（资源替换）后填入实测值"。
+//    M5 已完成，该行本就到期重填；本次裁定即重填。
+//    该裁定**不修改** docs/01 §7.3 的任何冻结项（C-13 只规定机制，未规定数值）。
+//
+//    ⚠ 提高上限**不会让游戏变慢** —— 它移除的是一个保护，不是增加负担。因此这里保留
+//    WARN_BROTLI_KB 预警线：《流程文档》第 14 章把「首包体积超标导致流失」登记为风险 R03，
+//    取消硬线而不留任何可见信号，等于把 R03 的应对策略一并删掉。
+//    预警线只打印，不阻断。
 //
 // 用法：先 npm run build，再 node tools/measure-bundle.mjs
 import fs from 'node:fs';
@@ -14,7 +27,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const DIST = path.join(ROOT, 'dist');
 
-const BUDGET_BROTLI_KB = 200;      // M0-TECH-02 规定的 JS 运行时首包上限
+const BUDGET_BROTLI_KB = 2048;     // 2026-10-13 制作人裁定：200 → 2048（2 MB）。硬上限，超标阻断。
+const WARN_BROTLI_KB = 512;        // 预警线：不阻断，只在超过时提醒（R03 的可观测性）
 const M0_BASELINE_BROTLI_KB = 106.7; // M0-6 实测最小骨架
 
 if (!fs.existsSync(DIST)) {
@@ -82,10 +96,16 @@ const firstRaw = KB(sum(first, 'raw'));
 console.log('');
 console.log(`★ 首包合计        raw ${firstRaw} KB | gzip ${firstGz} KB | brotli ${firstBr} KB`);
 console.log(`  分包合计        brotli ${KB(sum(asyncChunks, 'brotli'))} KB（不计入首包）`);
-console.log(`  门禁上限        ${BUDGET_BROTLI_KB} KB brotli`);
+console.log(`  门禁上限        ${BUDGET_BROTLI_KB} KB brotli（2 MB，2026-10-13 裁定）`);
+console.log(`  预警线          ${WARN_BROTLI_KB} KB brotli（只提醒，不阻断）`);
 console.log(`  M0 基线         ${M0_BASELINE_BROTLI_KB} KB brotli`);
 console.log(`  相对 M0 基线    ${firstBr >= M0_BASELINE_BROTLI_KB ? '+' : ''}${(firstBr - M0_BASELINE_BROTLI_KB).toFixed(1)} KB`);
 console.log(`  门禁余量        ${(BUDGET_BROTLI_KB - firstBr).toFixed(1)} KB`);
+// 换算参考：本项目实测 brotli 压缩比约 4.3:1，上限 2 MB 对应约 8.5 MB raw。
+// 流程文档 §9.2 要求"冷启动到大厅可交互 4G ≤ 20 秒"、"首包 ≤ 30 MB" ——
+// 逼近预警线时这两条要一并复核，别只看门禁过没过。
+console.log(`  （参考：按实测压缩比换算，2 MB brotli ≈ ${(BUDGET_BROTLI_KB * 4.26 / 1024).toFixed(1)} MB raw；`
+  + `预警线 ≈ ${(WARN_BROTLI_KB * 4.26 / 1024).toFixed(1)} MB raw）`);
 
 const outDir = path.join(ROOT, 'results');
 fs.mkdirSync(outDir, { recursive: true });
@@ -97,6 +117,7 @@ const entry = {
   firstBrotliKB: firstBr,
   asyncBrotliKB: KB(sum(asyncChunks, 'brotli')),
   budgetKB: BUDGET_BROTLI_KB,
+  warnKB: WARN_BROTLI_KB,
   pass: firstBr <= BUDGET_BROTLI_KB,
 };
 fs.appendFileSync(record, JSON.stringify(entry) + '\n', 'utf8');
@@ -106,4 +127,10 @@ if (firstBr > BUDGET_BROTLI_KB) {
   console.error(`\n  [FAIL] 首包 brotli ${firstBr} KB 超过上限 ${BUDGET_BROTLI_KB} KB`);
   process.exit(1);
 }
-console.log(`\n  [PASS] 首包 brotli ${firstBr} KB，在预算内`);
+if (firstBr > WARN_BROTLI_KB) {
+  console.warn(
+    `\n  [WARN] 首包 brotli ${firstBr} KB 已超过预警线 ${WARN_BROTLI_KB} KB（未越硬上限，不阻断）。\n` +
+      `         风险登记 R03「首包体积超标导致流失」—— 建议复核流程文档 §9.2 的冷启动指标。`
+  );
+}
+console.log(`\n  [PASS] 首包 brotli ${firstBr} KB，在预算内（上限 ${BUDGET_BROTLI_KB} KB）`);

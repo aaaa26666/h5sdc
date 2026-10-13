@@ -54,7 +54,9 @@ import { createSettings } from './ui/settings.js';
 import { sanitizeBindings, formatKey, actionLabel } from './core/keybinds.js';
 import {
   buildRaidKit,
+  buildCarry,
   takeLoadout,
+  loadoutRequirements,
   setAmmo,
   setConsumable,
   updatePreset,
@@ -63,7 +65,7 @@ import {
   setActivePreset,
   ammoOnHand,
 } from './core/loadout.js';
-import { stashSort, stashSummary, stashAdd } from './core/stash.js';
+import { stashSort, stashSummary, stashAdd, stashTotalOf } from './core/stash.js';
 import { buy as shopBuy, sell as shopSell } from './core/shop.js';
 import { acceptQuest, claimQuest, abandonQuest } from './core/quests.js';
 import { learnSkill, respec, applyExp } from './core/progression.js';
@@ -277,16 +279,33 @@ let scheduler = null;
 let aiManager = null;
 let weaponSys = null;
 let weaponRng = null;
-let consumables = null;
 let footstepsAccum = 0;
 /** 本页面内局内世界被创建 / 销毁的次数（DEV 断言用：证明"重建"真的发生了） */
 let worldBuilds = 0;
 let worldDisposals = 0;
 
-// 消耗品定义表来自配置，与局无关；库存（consumables）每局重置。
+// 消耗品定义表来自配置，与局无关。
 const consumableDefs = cfg.consumables;
 function consumableDef(id) {
   return consumableDefs.find((c) => c.id === id) || null;
+}
+
+/**
+ * ★ M6：消耗品存量**数背包网格**，不再另存一份计数。
+ *
+ * 为什么把 `consumables = {bandage:3}` 这个对象删掉：M6 起弹药与药品是摆在网格里的物体，
+ * 只要还留一个计数器，就迟早出现"背包里明明有绷带、HUD 说没有"这种两套账。
+ * 网格是唯一真值，这里是它唯一的读取口。
+ */
+function consumableCount(id) {
+  return inventory ? inventory.countOf(id) : 0;
+}
+
+/** 全部消耗品的存量（给快照/界面用）。同样是**数网格**，不是读一份副本。 */
+function consumablesSnapshot() {
+  const out = {};
+  for (const d of consumableDefs) out[d.id] = consumableCount(d.id);
+  return out;
 }
 
 // ---------------- 武器与战斗统计 ----------------
@@ -367,9 +386,17 @@ function enterRaidWorld(kit) {
   // M5-5：负重上限与安全箱档位来自 raidKit（技能与任务解锁都会改它们）。
   inventory = createInventory(cfg, { kit });
   extract = createExtract(cfg, level, raidRoot);
+  // ★ M6-2：新一局开始前清空"已留尸体"的记录。
+  //   不清的话，上一局死掉的 AI id（ai_0…ai_15 会复用同样的编号）会被当成"已处理"，
+  //   本局对应编号的 AI 死掉时**不会留尸体** —— 一个只在第二局才出现的静默缺陷。
+  corpseSpawned.clear();
   loot = createLoot(cfg, level, raidRoot, {
     // M5-5：搜刮速度倍率（搜刮熟练技能）由 raidKit 传入；缺省时等价于配置基线
     kit,
+    // ★ M6-2：为尸体预留实例槽位。上限 = 本局 AI 总数（含 Boss）。
+    //   刻意**不写死常量** —— AI 配额一改，写死的值就会静默不够用，
+    //   而"尸体生不出来"不会报错，只会让人以为"击杀本来就不掉东西"。
+    corpseSlots: (cfg.aiSpawn.totalCount || 0) + (cfg.aiSpawn.bossCount || 0),
     /**
      * 开箱（或拾取遗留）：逐件尝试入包，装不下的**留在容器里**而不是凭空消失。
      * 容量与负重因此成为真约束 —— 这正是"搜"这个字的核心取舍。
@@ -417,8 +444,8 @@ function enterRaidWorld(kit) {
 
   aiManager = createAiManager({ cfg, level, scene: raidRoot, scheduler, player });
 
-  // 消耗品库存（M5-3 起来自这一局的配装，不再是配置表里写死的固定携带）
-  consumables = { ...kit.loadout.consumables };
+  // ★ M6：消耗品与弹药不再另存计数 —— 它们就在 inventory 的网格里（见 consumableCount）。
+  //   此前这里是 `consumables = { ...kit.loadout.consumables }`，那一份是真值的副本。
 
   // 武器随机流每局重取。它是**确定性**的（同一个全局种子），因此重开一局的
   // 后坐力抖动序列与上一局完全一致 —— 这是可复现性（测试依赖它），
@@ -430,6 +457,11 @@ function enterRaidWorld(kit) {
     player,
     rng: weaponRng,
     kit,
+    // ★ M6：备弹来自背包网格（销 [M5-TEMP-11] 的后半）。武器系统不再自己存一份 reserve。
+    ammoStore: {
+      total: (caliber) => inventory.ammoTotalOf(caliber),
+      take: (caliber, rounds) => inventory.takeAmmo(caliber, rounds),
+    },
     emit(ev) {
       switch (ev.type) {
         case 'fire':
@@ -451,6 +483,9 @@ function enterRaidWorld(kit) {
           if (ev.killed) {
             combatStats.kills++;
             aiManager.noteKill();
+            // ★ M6-2：尸体不在这里生成 —— 统一由 syncCorpses() 按"死亡"这个事实处理。
+            //   挂在武器事件上会漏掉不走武器路径的死亡（调试夹具就是如此，见 syncCorpses 的说明），
+            //   于是变成"两处各自决定要不要掉东西"，迟早分叉。
             audio.kill();
             hud.killNotice(ev.target ? ev.target.tier.label : '敌人', ev.zone === 'head');
           }
@@ -500,6 +535,28 @@ function syncKills() {
 }
 
 /**
+ * M6-2：为"刚死掉"的 AI 留下可搜刮的尸体。
+ *
+ * ★ 为什么在这里、而不是挂在武器的 hit 事件上：
+ *   调试接口 `killOneAi` 走的是 AI 自己的 `applyHitFrom`，**绕过武器事件** ——
+ *   项目里 [M4-BUG-01] 已经因为这个踩过一次（AI 确实死了，但累计击杀数是 0）。
+ *   尸体属于"死亡"这件事的后果，所以挂在**死亡这个事实**上：
+ *   无论怎么死的（武器、夹具、将来的其它来源），都只在这一处产生尸体，
+ *   不存在"某条路径忘了掉东西"的可能。
+ *
+ * 幂等：用 Set 记住已经处理过的 id，每帧调用是安全的。
+ */
+const corpseSpawned = new Set();
+function syncCorpses() {
+  if (!loot) return;
+  for (const a of aiManager.ais) {
+    if (!a.isDead || corpseSpawned.has(a.id)) continue;
+    corpseSpawned.add(a.id);
+    loot.spawnCorpse(a.position.x, a.position.z, level.floorOfY(a.position.y), a.tier.id);
+  }
+}
+
+/**
  * 拆一局：释放局内世界的全部资源，并把句柄清空。
  *
  * 顺序是有讲究的，三步不能换：
@@ -536,7 +593,6 @@ function leaveRaidWorld() {
   aiManager = null;
   weaponSys = null;
   weaponRng = null;
-  consumables = null;
   resetRaidState();
 
   worldDisposals++;
@@ -592,10 +648,11 @@ function raidView(nowMs) {
     health: player.vitals.health,
     maxHealth: player.vitals.maxHealth,
     armor: player.vitals.armor,
-    weaponLabel: w.def.label,
+    // ★ M6：两个武器槽都可能是空的（缺件进局的合法状态，见 weapon.js 的 NO_WEAPON）。
+    weaponLabel: w.def.id ? w.def.label : '空手',
     magazine: w.magazine,
     reserve: w.reserve,
-    weaponStatus: weaponSys.state_text ? weaponSys.state_text() : weaponStatusText(w),
+    weaponStatus: w.def.id ? weaponStatusText(w) : '没有武器',
     remainingMs: t.remainingMs,
     // M4-5：超时告警由这里判定，阈值来自配置表（tunables.raid.warningThresholdMs）。
     // hud 只负责把这个布尔值画出来 —— 它不该知道"多少秒算危险"这种策划数值。
@@ -604,7 +661,15 @@ function raidView(nowMs) {
     // M3-5：背包是二维网格 + 负重，HUD 要显示的是"还能装多少"而不是"捡了几件"
     lootCount: inventory.count,
     lootValue: inventory.value(),
-    bagText: `背包 ${inventory.usedSlots()}/${inventory.totalSlots()} 格 · ${inventory.weightKg().toFixed(1)}/${inventory.weightLimitKg}kg`,
+    // ★ M6：这三个数字必须分开报 —— 它们回答的是三个不同的问题：
+    //   ① 一共占了几格 / 有多少格（含弹挂的第二张网格）；
+    //   ② 其中几格是**自己带进来的**（弹药药品），玩家据此知道"我真正能装战利品的还剩几格"；
+    //   ③ 战利品净重 / 上限（负重上限来自所装的背包，不再是一个固定值）。
+    //   只报"背包 6/12 格"会让玩家以为还有 6 格能装，而其中 4 格是自己的子弹与绷带。
+    bagText:
+      `背包 ${inventory.usedSlots()}/${inventory.totalSlots() + inventory.rigTotalSlots()} 格` +
+      ` · 自带 ${inventory.kitSlots()}` +
+      ` · 战利品 ${inventory.weightKg().toFixed(1)}/${inventory.weightLimitKg}kg`,
     // ★ M5-6 销账 [M4-TEMP-4]：任务追踪不再占位 —— 数据来自进局时的 raidKit.quests，
     //   而 raidKit 是 core/quests.js 的 questTrackerView 产物（纯函数，可单测）。
     //   制作人裁定：**全部列出**（最多 maxActive 条），每条形如"开 8 个民用箱 3/8"。
@@ -622,7 +687,7 @@ function raidView(nowMs) {
     // 起始那一帧进度恰好是 0，用进度判显隐会让进度条晚一帧才出现（[M6-BUG-02] 的伴生现象）。
     useActive: player.isUsing(),
     consumableText:
-      `3 绷带(${consumables.bandage}) · 4 急救包(${consumables.medkit})` +
+      `3 绷带(${consumableCount('bandage')}) · 4 急救包(${consumableCount('medkit')})` +
       // ★ [M6-BUG-01] 满血时把"两件医疗品此刻都用不了"**常驻**写在 HUD 上：
       //   满血拒绝是设计（不浪费道具），但玩家必须看得出这是设计而不是坏了 ——
       //   只靠按键时弹一次提示，他很容易错过（尤其顺序按 3、4 都没反应时）。
@@ -660,7 +725,7 @@ let damagedThisFrame = false;
  */
 function tryUseConsumable(actionKey, id, label, nowMs) {
   if (!input.pressedAction(actionKey)) return false;
-  const owned = consumables ? consumables[id] || 0 : 0;
+  const owned = consumableCount(id);
   if (owned <= 0) {
     hud.toast(`没有${label}了`, true);
     return false;
@@ -676,7 +741,14 @@ function tryUseConsumable(actionKey, id, label, nowMs) {
     hud.toast(`${label}此刻无法生效（生命已满或已到可治上限）`);
     return false;
   }
-  consumables[id] = owned - 1;
+  // ★ M6：从网格里**真的拿走一个**（销 [M5-TEMP-11]）。takeItem 返回实际拿到的数量，
+  //   在这里它必然为 1 —— 但用它而不是假设为 1，理由与弹药一致：
+  //   网格是另一份状态，账必须以实际扣减为准。
+  const used = inventory.takeItem(id, 1);
+  if (used <= 0) {
+    hud.toast(`${label}没有取到（背包状态不一致）`, true);
+    return false;
+  }
   audio.consume();
   return true;
 }
@@ -732,6 +804,10 @@ function frame(nowMs) {
     }
 
     // ---- AI ----
+    // M6-2：先结算上一帧的死亡（留尸体），再让 AI 跑本帧。
+    // 放在 update 之前是为了拿到"上一帧结束时已经死掉"的准确快照 ——
+    // 放在之后也不会错，只是那一帧里尸体与死亡不同步。
+    syncCorpses();
     aiManager.update(dt, t, {
       raidStartAt: raidStartAtMs,
       onPlayerHit(info) {
@@ -911,7 +987,10 @@ function writeCheckpoint(elapsedMs) {
     buildCheckpoint({
       raidId,
       elapsedMs,
-      inventory: inventory.items,
+      // ★ M6：快照只装**战利品**。自己带的弹药药品由 `taken` 那条账管（阵亡即丢、撤离按剩余还回），
+      //   塞进快照的后果是：断线补结算时它们被算进"损失估值"（看起来丢了一堆自己的子弹），
+      //   而且"开局快照必须是空的"这条断言会被 5 件自带品顶掉 —— 一条检查变成了永远为假。
+      inventory: inventory.lootItems,
       combat: {
         kills: combatStats.kills,
         aiTotal: aiManager.totalCount,
@@ -946,7 +1025,11 @@ function startRaid(nowMs) {
   //   必须在 flow.startRaid **之前**：状态一旦进入 RAID，主循环的下一帧就会
   //   开始推进局内逻辑，而那一刻 world 还没装好。
   //   同时它会复位跨局残留状态（见 resetRaidState）。
-  enterRaidWorld(buildRaidKit(profile, cfg));
+  //
+  // ★ M6：用 takeLoadout 给的 `effectiveLoadout` 与 `carry` 建包 ——
+  //   局内手上/包里的东西必须是**仓库真的拿得出**的那一份。
+  //   直接用档案里的配装会让"配装里留了已卖掉的枪/子弹"变成凭空的物资。
+  enterRaidWorld(buildRaidKit(profile, cfg, { loadout: takenRes.effectiveLoadout, carry: takenRes.carry }));
 
   // 新的一局开始，上局的残留快照到此为止（正常情况下上面那一步已经清掉了）。
   raidId = `r${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -1025,16 +1108,24 @@ function endRaid(reason, nowMs) {
   input.exitLock();
 }
 
-/** 本局剩余的弹药（按口径）与消耗品 —— 撤离时要把"没用完的"还回仓库。 */
+/**
+ * 本局剩余的弹药（按口径）与消耗品 —— 撤离时要把"没用完的"还回仓库。
+ *
+ * ★ M6：只报**自己带进来的**还剩多少（kitAmmoOf / kitCountOf）。
+ *   捡到的同口径弹药/药品走战利品结算（inventory.settle），
+ *   若在这里一并报出去，同一批子弹会被还两次（一次当行头、一次当战利品）。
+ */
 function currentRemaining() {
   const ammo = {};
   for (const cal of cfg.equipment.ammo.carryCalibers) {
-    // 局外（补结算路径）没有 weaponSys：剩余一律按 0 算。
+    // 局外（补结算路径）没有 inventory：剩余一律按 0 算。
     // 这是**正确**的口径而不是兜底 —— 刷新意味着这一局已经中断（按未撤离处理），
     // 而"未撤离"本来就不把配装还回仓库。
-    ammo[cal] = weaponSys ? weaponSys.reserveOf(cal) : 0;
+    ammo[cal] = inventory ? inventory.kitAmmoOf(cal) : 0;
   }
-  return { ammo, consumables: { ...consumables } };
+  const cons = {};
+  for (const d of consumableDefs) cons[d.id] = inventory ? inventory.kitCountOf(d.id) : 0;
+  return { ammo, consumables: cons };
 }
 
 /** 把这一局的事实整理成 core/settlement.js 需要的形状（任务推进与统计都用它）。 */
@@ -1427,14 +1518,29 @@ if (import.meta.env.DEV) {
     const ITEMS = [
       ['pistol_p9', 1], ['rifle_m4', 1], ['smg_v9', 1], ['shotgun_m590', 1], ['dmr_sr25', 1],
       ['vest2', 2], ['vest3', 2], ['helmet2', 2], ['helmet3', 2],
+      // ★ M6：携行具也进"富配装"。**必须给**：M6 起弹药与药品要占背包格，
+      //   而不给背包时的兜底只有 3×2=6 格 —— 这套行头（弹药 3 格 + 绷带 1 + 急救包 2）
+      //   正好把它占满，于是"捡到战利品并产生估值"这条断言会因为**没地方放**而失败，
+      //   而失败原因看起来像"掉落坏了"。给一只标准背包才是"装备齐全的玩家"的真实状态。
+      ['bp_medium', 1], ['rig_light', 1],
       ['ammo_556', 300], ['pistol_mag', 180], ['ammo_762', 120], ['ammo_12ga', 80],
       ['bandage', 6], ['medkit', 4],
     ];
     let p = profile;
+    // ★ M6：**从空仓库重建**，而不是往上叠。
+    //   叠的后果实测过：仓库（10×12）会被一局局returnToLobby/阵亡留下的东西填满，
+    //   于是 stashAdd 悄悄丢掉新加的背包与弹挂（leftover 被忽略），下一局进战区
+    //   就变成"没有背包、兜底 6 格"，一连串断言跟着失败 —— 而失败信息看起来像
+    //   "弹药没带对 / 掉落坏了"。夹具必须是**确定的**，不能依赖前一组留下了什么。
+    let stash = [];
+    let dropped = 0;
     for (const [ref, n] of ITEMS) {
       const itemId = cfg.equipmentDefs[ref] ? cfg.equipmentDefs[ref].itemId : ref;
-      p = { ...p, stash: stashAdd(p.stash, itemId, n, cfg).stash };
+      const add = stashAdd(stash, itemId, n, cfg);
+      stash = add.stash;
+      dropped += add.leftover;
     }
+    p = { ...p, stash };
     const preset = p.loadouts[0];
     const lo = {
       ...preset,
@@ -1442,6 +1548,10 @@ if (import.meta.env.DEV) {
       secondary: 'pistol_p9',
       body: 'vest3',
       head: 'helmet3',
+      // ★ M6：连背包与弹挂一起装上。"富配装"必须是一只真能装东西的包，
+      //   否则容量瓶颈会把后面所有"搜刮 → 估值"的断言压成"背包满了"。
+      backpack: 'bp_medium',
+      rig: 'rig_light',
       ammo: { '5.56': 120, '9mm': 60 },
       consumables: { bandage: 3, medkit: 2 },
     };
@@ -1449,7 +1559,157 @@ if (import.meta.env.DEV) {
     profile = p;
     saveProfileNow();
     refreshLobby();
-    return { stash: profile.stash.length };
+    return { stash: profile.stash.length, dropped };
+  }
+
+  /**
+   * ★ M6-1：按 id 授予**指定**武器 + 对应口径弹药，并装到它自己的槽位上。
+   *
+   * 为什么不能只靠 grantTestKit：那套"富配装"固定给 rifle_m4 / pistol_p9 / smg_v9 /
+   * shotgun_m590 / dmr_sr25 这 5 把老枪。武器表从 5 把扩到 30 把之后，
+   * "表里有、玩家拿不到、或拿到也开不了火（口径没带对）"这类缺陷会**完全漏掉**——
+   * 它们恰恰是纯逻辑断言看不见的那一类（纯逻辑只验表，不验进局路径）。
+   *
+   * @param {string} ref 武器 id（weapons.json 的 id）
+   * @param {number} [rounds] 授予的弹药发数（默认 120）
+   */
+  function grantWeapon(ref, rounds = 120) {
+    const def = cfg.equipmentDefs[ref];
+    if (!def) throw new Error(`[__m2] 未知武器 ${ref}`);
+    const w = cfg.weapons.find((x) => x.id === ref);
+    if (!w) throw new Error(`[__m2] ${ref} 不在武器表里`);
+    const ammoRow = cfg.ammo.find((a) => a.id === w.ammoType);
+    if (!ammoRow) throw new Error(`[__m2] ${ref} 的口径 ${w.ammoType} 不在口径表里`);
+
+    let p = profile;
+    let dropped = 0;
+    const give = (itemId, n) => {
+      const add = stashAdd(p.stash, itemId, n, cfg);
+      p = { ...p, stash: add.stash };
+      dropped += add.leftover;
+    };
+    give(def.itemId, 1);
+    // 弹药按**口径对应的物品**给（弹匣/盒），与商店和配装走同一条路径
+    give(ammoRow.lootItemId, rounds);
+    // ★ M6：连背包一起给并装上。没有背包时兜底只有 3×2=6 格，而 120 发弹药本身就是 2 格，
+    //   再叠上医疗品就满了 —— 于是"备弹"会读成 0，看起来像"弹药没带对"，
+    //   实际原因是**装不下**。装备齐全的玩家必须有一只包。
+    give('bp_medium', 1);
+
+    const preset = p.loadouts[0];
+    const slotKey = w.slot === 1 ? 'primary' : 'secondary';
+    // ★ M6：弹药**只装这一把的口径**（与上面"清空另一槽"同一个语义），且装上一只背包。
+    //   累加会在连测 4 把时把 4 个口径的弹药堆在一起，把 6 格的兜底背包撑爆 ——
+    //   那时失败信息看起来像"弹药没带"，实际是容量问题。
+    const carry = { [w.ammoType]: rounds };
+    // ★ 另一槽**清空**：本夹具的语义是"只装这一把"，不是"在现有配装上替换一格"。
+    //   不清空的后果实测过：连测 4 把时，测副武器那轮手上仍是上一轮的主武器，
+    //   断言读出"局内 dmr_g28"——夹具残留被当成产品缺陷。清空后断言才无歧义。
+    //   （primary=null + secondary 有枪是合法配装：起始配装本来就是 primary 为空。）
+    const lo = { ...preset, primary: null, secondary: null, backpack: 'bp_medium', [slotKey]: ref, ammo: carry };
+    p = { ...p, loadouts: [lo], activeLoadoutId: lo.id };
+    profile = p;
+    saveProfileNow();
+    refreshLobby();
+    return { equipped: ref, slot: slotKey, ammoType: w.ammoType, rounds, dropped };
+  }
+
+  /**
+   * ★ M6：把**当前配装所需**的东西补齐到仓库里（只补不删，不改配装本身）。
+   *
+   * 为什么需要它：M6 起背包、弹挂与弹药是**真的从仓库取走**的装备 ——
+   * 上一局没撤离就丢了。而端到端里大多数组测的是武器/技能/搜刮，
+   * 不该被"上局把包丢了"干扰（丢了之后会退回 6 格的兜底包，容量一变，
+   * 负重上限与"能装几件"都跟着变，失败信息还看不出原因）。
+   *
+   * 刻意**不重置配装**：这样"在大厅把主武器换成霰弹枪"之类的断言仍然成立 ——
+   * 补齐的是那把霰弹枪，而不是把它换回 M4。
+   * @returns {{added:number}}
+   */
+  function restockLoadout() {
+    const reqs = loadoutRequirements(activeLoadout(profile), cfg);
+    let stash = profile.stash;
+    let added = 0;
+    for (const r of reqs) {
+      if (!(r.count > 0)) continue;
+      const have = stashTotalOf(stash, r.itemId, cfg);
+      if (have >= r.count) continue;
+      const add = stashAdd(stash, r.itemId, r.count - have, cfg);
+      stash = add.stash;
+      added += add.added;
+    }
+    profile = { ...profile, stash };
+    saveProfileNow();
+    refreshLobby();
+    return { added };
+  }
+
+  /**
+   * 清空仓库（只留配装引用）。用来验证"缺件也允许进局"这条裁定**真的能跑**：
+   * 仓库空了之后进战区必须是"空手 + 兜底背包"，而不是崩溃或凭空给一把枪。
+   */
+  function clearStash() {
+    profile = { ...profile, stash: [] };
+    saveProfileNow();
+    refreshLobby();
+    return { stash: 0 };
+  }
+
+  /**
+   * ★ M6：装上指定的背包与弹挂（并把它们补进仓库）。
+   * 端到端要验证"换一只包 → 局内容量跟着变"，而这一步玩家本身是在大厅做的；
+   * 夹具直接改配装，是为了让断言落点只在**局内读数**上。
+   */
+  function equipCarry(backpackId, rigId) {
+    const p = profile;
+    const lo = p.loadouts[0];
+    const next = { ...lo, backpack: backpackId || null, rig: rigId || null };
+    let stash = p.stash;
+    for (const id of [backpackId, rigId]) {
+      if (!id) continue;
+      const def = cfg.equipmentDefs[id];
+      if (!def) throw new Error(`[__m2] 未知携行具 ${id}`);
+      if (stashTotalOf(stash, def.itemId, cfg) <= 0) stash = stashAdd(stash, def.itemId, 1, cfg).stash;
+    }
+    profile = { ...p, stash, loadouts: [next], activeLoadoutId: next.id };
+    saveProfileNow();
+    refreshLobby();
+    return { backpack: next.backpack, rig: next.rig };
+  }
+
+  /**
+   * ★ M6：把配装的弹药/消耗品设成指定的量（并补进仓库），返回**这一份配装**的投放结果。
+   * 用来验证"装不下会被报出来"：它返回的 overflow 就是玩家在大厅该看到的那个列表。
+   */
+  function stuffLoadout(ammo, consumables) {
+    const p = profile;
+    const lo = { ...p.loadouts[0], ammo: { ...(ammo || {}) }, consumables: { ...(consumables || {}) } };
+    let stash = p.stash;
+    // 仓库先按需求补齐，这样 overflow 只反映"装不下"，而不是"仓库里没有"
+    for (const r of loadoutRequirements(lo, cfg)) {
+      const have = stashTotalOf(stash, r.itemId, cfg);
+      if (have < r.count) stash = stashAdd(stash, r.itemId, r.count - have, cfg).stash;
+    }
+    profile = { ...p, stash, loadouts: [lo], activeLoadoutId: lo.id };
+    saveProfileNow();
+    refreshLobby();
+    const plan = buildCarry(lo, cfg);
+    return { overflow: plan.overflow, placements: plan.placements };
+  }
+
+  /**
+   * ★ M6：当前武器口径在**网格里**还剩多少发（备弹的唯一真值）。
+   * 断言"换弹真的从网格扣了子弹"必须读它，而不是读 HUD 上的数字 ——
+   * HUD 的数字是派生量，读它等于用结论证明结论。
+   */
+  function ammoInGrid() {
+    const w = weaponSys.active();
+    if (!w.def.id) return { caliber: null, total: 0, magazine: 0 };
+    return {
+      caliber: w.def.ammoType,
+      total: inventory.ammoTotalOf(w.def.ammoType),
+      magazine: w.magazine,
+    };
   }
 
   /**
@@ -1522,6 +1782,12 @@ if (import.meta.env.DEV) {
           ? lobby.el.interruptedNotice.getClientRects().length > 0
           : false,
         views: lobbyViews,
+        /**
+         * ★ M6：进战区前的简报（纯函数产物，界面显示的就是它）。
+         * 暴露它是为了让端到端能断言"装不下这件事在**进战区之前**就告诉玩家了" ——
+         * 只看局内的话，玩家已经站在战区里，那时才发现少带已经晚了。
+         */
+        briefing: buildRaidBriefing(cfg, buildRaidKit(profile, cfg)),
       };
     },
     /** 进局时用的配装快照（断言"局内用的就是局外配的"要靠它） */
@@ -1537,6 +1803,41 @@ if (import.meta.env.DEV) {
       return lastRaidSummary;
     },
     grantTestKit,
+    restockLoadout,
+    clearStash,
+    equipCarry,
+    stuffLoadout,
+    ammoInGrid,
+    grantWeapon,
+    /**
+     * ★ M6-2 测试隔离：让全部 AI 停止更新（不移动、不开火）。**不是产品功能**。
+     *
+     * 存在的理由：AI 由 7 名扩到 16 名后，冒烟里"连续开火测武器机制"的那几组
+     * 会被循声聚拢的 AI 打死 —— 而那几组断言的是后坐力/开镜/切枪，
+     * 本来就不该依赖"自由开火还能活"。这是一条从未言明的**隐含假设**，密度一变就碎。
+     * 显式化它：不测 AI 的组先声明要"安静的世界"，测 AI 的组显式打开。
+     *
+     * 注意它**不削弱任何断言**：standDown 时 AI 依然存活、依然可被击中掉血。
+     */
+    aiStandDown(v) {
+      aiManager.setStandDown(v);
+      return aiManager.standDown;
+    },
+    /**
+     * ★ M6-2：列出本局的可搜刮尸体（诊断与断言用）。
+     * 为什么要它：尸体是**运行时生成**的容器，位置与内容都不在地图表里，
+     * 靠快照里的一个计数证不了"尸体落在被杀的那只 AI 脚下、且带的是它那一档的掉落"。
+     */
+    corpseList() {
+      if (!loot) return [];
+      return loot.containers
+        .filter((c) => c.type === 'corpse')
+        .map((c) => ({
+          x: +c.x.toFixed(3), z: +c.z.toFixed(3), floor: c.floor,
+          tierId: c.tierId, opened: c.opened,
+          items: c.items.map((i) => i.id),
+        }));
+    },
     /**
      * 测试用：给档案加经验（技能点随升级发放）。
      * 走与结算**同一条**路径（core/progression.js 的 applyExp）——
@@ -1700,8 +2001,11 @@ if (import.meta.env.DEV) {
         weapon: (() => {
           const w = weaponSys.active();
           return {
+            // ★ M6：空手时 id/label 有明确取值（null / 空手），而不是靠"一定有枪"。
+            //   端到端因此能断言"缺件进局不会崩，且状态是可读的"。
             id: w.def.id,
             label: w.def.label,
+            hasWeapon: !!w.def.id,
             magazine: w.magazine,
             reserve: w.reserve,
             reloading: w.reloading,
@@ -1741,14 +2045,20 @@ if (import.meta.env.DEV) {
           total: loot.containers.length,
           // 字段名沿用（smoke.mjs 的"搜到物品并产生估值"断言依赖它），
           // 数据源从 loot 内部数组换成 M3-5 的 inventory。
-          inventory: inventory.count,
+          // ★ M6：口径仍是**战利品件数**（不含自己带的弹药药品）——
+          //   若把它改成"全部条目"，"新局背包为空"这类断言会被自带品顶掉，
+          //   也就是一条检查悄悄变成永远为假。
+          inventory: inventory.lootCount,
           value: inventory.value(),
           bag: { used: inventory.usedSlots(), total: inventory.totalSlots(),
-                 weightKg: +inventory.weightKg().toFixed(2), limitKg: inventory.weightLimitKg },
+                 rigTotal: inventory.rigTotalSlots(),
+                 kitSlots: inventory.kitSlots(), lootSlots: inventory.lootSlots(),
+                 weightKg: +inventory.weightKg().toFixed(2), limitKg: inventory.weightLimitKg,
+                 backpackId: inventory.backpack.id, rigId: inventory.rig ? inventory.rig.id : null },
           safe: { value: inventory.safeValue(), tier: inventory.safeTier.id },
           byType: loot.countByType(),
         },
-        consumables: { ...consumables },
+        consumables: consumablesSnapshot(),
         // M4-1：开放状态随撤离点一起暴露，端到端断言才能验证"条件点在该开的时候开"。
         extract: extract.zones.map((z) => ({
           x: z.x, z: z.z, r: z.radius, progress: z.progress, floor: z.floor,
@@ -1779,6 +2089,8 @@ if (import.meta.env.DEV) {
         // M5-8：画质档位实际生效的参数（断言读它，而不是读"我以为设成了什么"）
         quality: qualityState,
         decals: decals.placedTotal,
+        // M6-2：可搜刮的尸体数（断言击杀真的掉东西用）
+        corpses: loot ? loot.corpseCount() : 0,
         level: { W: level.W, cell: level.cell, free: level.free.length, walls: level.wallCount,
                  cover: level.coverList.length, stepHeight: level.stepHeight },
       };
@@ -1864,16 +2176,35 @@ if (import.meta.env.DEV) {
       const alive = aiManager.ais.filter((a) => !a.isDead);
       if (!alive.length) return null;
       const a = alive[Math.min(aiIndex, alive.length - 1)];
+      // ★ M6-2：目标 AI **可能在二层**（M6-2 起二层也布 AI）。本夹具原先有两处分层盲区：
+      //   ① 可走性用扁平的 `level.isBlockedCell`（只有第 0 层）
+      //   ② 落位后玩家的 y 在第 0 层
+      //   于是"玩家在一层、AI 在二层"时，32 个角度候选**全部**因为楼板挡住视线而失败，
+      //   夹具返回 null，冒烟在 `shot.aiId` 上崩掉（表现为"测试执行未中断"失败）。
+      //   现在按目标 AI 所在的层判定可走性、并把玩家传送到**同一层**。
+      const floor = level.floorOfY(a.position.y);
       const targetY = a.position.y + cfg.hitZones.chest.centerY;
-      for (let k = 0; k < 32; k++) {
-        const ang = (k / 32) * Math.PI * 2;
-        const x = a.position.x + Math.cos(ang) * dist;
-        const z = a.position.z + Math.sin(ang) * dist;
-        if (level.isBlockedCell(Math.floor(x / level.cell), Math.floor(z / level.cell))) continue;
-        if (!level.hasLineOfSight(x, cfg.player.eyeHeight, z, a.position.x, targetY, a.position.z)) continue;
-        this.teleport(x, z);
-        this.aimAt(a.position.x, targetY, a.position.z);
-        return { x, z, dist, angleDeg: Math.round((ang * 180) / Math.PI), aiId: a.id, tier: a.tier.id };
+      const eyeY = level.floorBaseY(floor) + cfg.player.eyeHeight;
+      const CELLS = level.W * level.H;
+      const navBlocked = level.nav.blocked;
+      const walkableAt = (cx, cz) =>
+        cx >= 0 && cz >= 0 && cx < level.W && cz < level.H &&
+        navBlocked[floor * CELLS + cz * level.W + cx] === 0;
+      // 距离也备几档：16 名 AI 会让"某个 AI 周围 12m 恰好没有合法落点"变得常见
+      for (const d of [dist, dist * 0.7, dist * 1.4]) {
+        for (let k = 0; k < 32; k++) {
+          const ang = (k / 32) * Math.PI * 2;
+          const x = a.position.x + Math.cos(ang) * d;
+          const z = a.position.z + Math.sin(ang) * d;
+          if (!walkableAt(Math.floor(x / level.cell), Math.floor(z / level.cell))) continue;
+          if (!level.hasLineOfSight(x, eyeY, z, a.position.x, targetY, a.position.z)) continue;
+          this.teleport(x, z, floor);
+          this.aimAt(a.position.x, targetY, a.position.z);
+          return {
+            x, z, dist: d, angleDeg: Math.round((ang * 180) / Math.PI),
+            aiId: a.id, tier: a.tier.id, floor,
+          };
+        }
       }
       return null;
     },
@@ -2207,9 +2538,24 @@ if (import.meta.env.DEV) {
       player.state.alive = player.vitals.health > 0;
       return player.vitals.health;
     },
-    grantConsumables(bandage, medkit) {
-      consumables.bandage += bandage;
-      consumables.medkit += medkit;
+    /**
+     * 增发消耗品（测试夹具）。
+     * ★ M6：往**网格里真的放**（而不是改一个计数）—— 夹具必须走产品同一条路径，
+     *   否则"网格满了放不下"这类缺陷会被夹具掩盖掉。
+     * @returns {{bandage:number, medkit:number, rejected:number}} 实际放进去的数量
+     */
+    grantConsumables(bandage = 0, medkit = 0) {
+      const before = consumablesSnapshot();
+      let rejected = 0;
+      for (const [id, n] of [['bandage', bandage], ['medkit', medkit]]) {
+        const def = cfg.itemDefs[id];
+        if (!def) continue;
+        for (let i = 0; i < n; i++) {
+          if (!inventory.tryAdd(def).ok) rejected++;
+        }
+      }
+      const after = consumablesSnapshot();
+      return { bandage: after.bandage - before.bandage, medkit: after.medkit - before.medkit, rejected };
     },
     /** 传送到离所有存活 AI 最远的可站位置，用于在"安全"前提下测治疗/结算 */
     teleportToSafeSpot() {

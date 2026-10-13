@@ -691,19 +691,52 @@
   "aiSpawns": [
     {
       "zone": "contested",
-      "count": 4
+      "count": 7,
+      "floor": 0,
+      "tiers": {
+        "scav": 30,
+        "guard": 40,
+        "elite": 15,
+        "heavy": 15
+      }
     },
     {
       "zone": "res_west_n",
-      "count": 1
+      "count": 3,
+      "floor": 0,
+      "tiers": {
+        "scav": 70,
+        "guard": 25,
+        "elite": 5
+      }
     },
     {
       "zone": "res_north_e",
-      "count": 1
+      "count": 3,
+      "floor": 0,
+      "tiers": {
+        "scav": 70,
+        "guard": 25,
+        "elite": 5
+      }
     },
     {
       "zone": "res_south",
-      "count": 1
+      "count": 2,
+      "floor": 0,
+      "tiers": {
+        "scav": 45,
+        "guard": 35,
+        "elite": 12,
+        "heavy": 8
+      }
     }
-  ]
+  ],
+  "bossSpawns": [
+    {
+      "zone": "contested",
+      "floor": 0
+    }
+  ],
+  "_m6_2Note": "M6-2：AI 7→15；contested 区加权精英与重装。此图是**黄金基准对照物**，改布点后需重跑几何基准确认未受影响。"
 }

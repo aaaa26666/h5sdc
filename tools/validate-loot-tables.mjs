@@ -19,8 +19,10 @@ import { fileURLToPath } from 'node:url';
 // 这个脚本统计的是"理论分布"，运行时掉落的是"实际分布"；
 // 若两边各有一套算法，DoD ① 的比对就毫无意义 —— 对不上时无法区分是数值问题还是算法分叉。
 import { mulberry32 } from '../src/core/rng.js';
-import { packGrid } from '../src/core/packing.js';
+import { packGrid, packIntoGrid, createGrid, markArea } from '../src/core/packing.js';
 import { pickRarity, normalizedWeights, dataKeys, indexByRarity } from '../src/core/lootTable.js';
+import { resolveBackpack } from '../src/core/lootTable.js';
+import { planCarry } from '../src/core/carry.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -33,6 +35,10 @@ const JSON_OUT = argv.includes('--json') ? argv[argv.indexOf('--json') + 1] : nu
 const TABLE = argv.includes('--table')
   ? path.resolve(argv[argv.indexOf('--table') + 1])
   : path.join(ROOT, 'src', 'config', 'loot.json');
+// ★ M6：携行具表也可注入（同一套理由 —— 校验规则必须能被证明抓得住坏表）。
+const CARRY_PATH = argv.includes('--carry')
+  ? path.resolve(argv[argv.indexOf('--carry') + 1])
+  : path.join(ROOT, 'src', 'config', 'carry.json');
 
 // 单局时限从**配置表**读，不在这里硬编码。
 // M3-1b-2 ④ 把时限从 240s 上调到覆盖"容器密度提高后的搜刮预算"，
@@ -63,6 +69,12 @@ if (!fs.existsSync(TABLE)) {
   process.exit(2);
 }
 const T = JSON.parse(fs.readFileSync(TABLE, 'utf8'));
+
+// ★ M6：`T.backpack` 现在只是一个**引用**（capacity 的唯一真值是 src/config/carry.json）。
+//   本工具直读 loot.json（为了支持 --table 注入坏表），因此看不到 config/index.js 的派生，
+//   必须在这里显式解析 —— 用的是与运行时**同一个** resolveBackpack，不另写一份。
+const CARRY = JSON.parse(fs.readFileSync(CARRY_PATH, 'utf8'));
+T.backpack = resolveBackpack(T, CARRY);
 
 console.log('\n================ M3 掉落权重表校验与统计 ================');
 console.log('  数据源: src/config/loot.json');
@@ -183,7 +195,63 @@ console.log('\n—— ③ 数值合法性 ——');
   const bp = T.backpack;
   check('背包是合法网格', Number.isInteger(bp.w) && Number.isInteger(bp.h) && bp.w > 0 && bp.h > 0,
     `${bp.w}x${bp.h}`);
-  check('背包声明格数与 w×h 一致', bp._slots === bp.w * bp.h, `${bp._slots} vs ${bp.w * bp.h}`);
+  // ★ M6：slots 现在是**声明值**（来自 carry.json），不再是 loot.json 里的 _slots。
+  //   刻意保留这条检查：若把 slots 改成由 w×h 派生，它就永远为真、等于没有检查。
+  check('背包声明格数与 w×h 一致', bp.slots === bp.w * bp.h, `${bp.slots} vs ${bp.w * bp.h}`);
+
+  // ---- ★ M6 携行具表（carry.json）：容量的唯一真值 ----
+  //   这一节刻意**直读表**、不经过 config/index.js —— 因为要支持 --carry 注入坏表，
+  //   验证"规则本身抓不抓得住"。与 config 的 validateCarry 有重复之处，但两者的职责不同：
+  //   config 守运行时，这里守"表本身是否自洽"，且能对着坏表证明自己有效。
+  {
+    const bps = CARRY.backpacks || [];
+    const rigs = CARRY.rigs || [];
+    const itemCategories = new Set(T.items.map((i) => i.category));
+    check('携行具 id 唯一（背包与弹挂合计）',
+      new Set([...bps.map((b) => b.id), ...rigs.map((r) => r.id)]).size === bps.length + rigs.length,
+      `${bps.length} 背包 / ${rigs.length} 弹挂`);
+
+    const badSlots = bps.filter((b) => b.slots !== b.capacityW * b.capacityH);
+    check('每只背包声明的 slots 等于 capacityW×capacityH',
+      badSlots.length === 0,
+      badSlots.map((b) => `${b.id} ${b.slots}≠${b.capacityW * b.capacityH}`).join(', ') || '全部一致');
+
+    // 容量梯度：格数与负重上限都必须**严格递增**，否则"换更大的包"是负收益
+    const ladder = [...bps].sort((a, b) => a.capacityW * a.capacityH - b.capacityW * b.capacityH);
+    let ladderBad = null;
+    for (let i = 1; i < ladder.length; i++) {
+      const prev = ladder[i - 1], cur = ladder[i];
+      if (cur.capacityW * cur.capacityH <= prev.capacityW * prev.capacityH) {
+        ladderBad = `${cur.id} 格数不大于 ${prev.id}`;
+      }
+      if (cur.weightLimitKg <= prev.weightLimitKg) {
+        ladderBad = `${cur.id} 负重上限(${cur.weightLimitKg}) 不高于 ${prev.id}(${prev.weightLimitKg})`;
+      }
+    }
+    check('背包梯度：格数与负重上限都随档位严格递增（每一档都真的更强）',
+      ladderBad === null,
+      ladderBad || ladder.map((b) => `${b.id} ${b.capacityW * b.capacityH}格/${b.weightLimitKg}kg`).join(' < '));
+
+    const badAccept = rigs.filter((r) => !Array.isArray(r.accepts) || r.accepts.length === 0
+      || r.accepts.some((c) => !itemCategories.has(c)));
+    check('弹挂的 accepts 非空且类别都真实存在（否则它只是第二只背包）',
+      badAccept.length === 0,
+      badAccept.map((r) => `${r.id} [${(r.accepts || []).join(',')}]`).join(', ') || '全部合法');
+
+    const d = CARRY.defaults && CARRY.defaults.backpack;
+    check('兜底背包存在且是合法网格（"没装备背包"是真实可达的状态）',
+      !!d && d.w > 0 && d.h > 0 && d.weightLimitKg > 0,
+      d ? `${d.w}x${d.h} / ${d.weightLimitKg}kg` : '缺失');
+
+    if (d) {
+      check('兜底背包严格弱于最弱的真背包（否则没人会买第一只包）',
+        d.w * d.h < Math.min(...bps.map((b) => b.capacityW * b.capacityH))
+        && d.weightLimitKg < Math.min(...bps.map((b) => b.weightLimitKg)),
+        `兜底 ${d.w * d.h}格/${d.weightLimitKg}kg < 最弱真背包 ` +
+          `${Math.min(...bps.map((b) => b.capacityW * b.capacityH))}格/` +
+          `${Math.min(...bps.map((b) => b.weightLimitKg))}kg`);
+    }
+  }
 
   const tiers = T.safeContainer.tiers;
   check('安全箱档位以 1x2 起步（新账号）',
@@ -315,7 +383,7 @@ console.log('\n—— ⑤ 单局收益区间（蒙特卡洛 ' + RUNS + ' 次/档
 // mulberry32 / pickRarity / packGrid 已迁到 src/core（rng.js / lootTable.js / packing.js），
 // 本脚本改为从那里导入 —— 见文件头的"算法同源"说明。
 
-function simulateRaid(containerCounts, rnd) {
+function simulateRaid(containerCounts, rnd, prefill = null) {
   // 第一步：把地上的东西全部收集起来
   const ground = [];
   for (const [cid, n] of Object.entries(containerCounts)) {
@@ -340,7 +408,22 @@ function simulateRaid(containerCounts, rnd) {
   //   若按"地上全拿走"算收益，区间是假的。
   ground.sort((a, b) => b.value / b.vol - a.value / a.vol);
   const { w: bw, h: bh, weightLimitKg } = T.backpack;
-  const bp = packGrid(bw, bh, ground, weightLimitKg);
+  // ★ M6：`prefill` 是"自己带进来的弹药与药品占掉的格"。带上它跑一遍，
+  //   就是"实际能带走的收益"——与不带它的"参考装载"对照，量化 M6 的容量变化。
+  let bp;
+  if (prefill && prefill.length) {
+    const g = createGrid(bw, bh);
+    for (const p of prefill) markArea(g, p.x, p.y, p.w, p.h, true);
+    const res = packIntoGrid(g, ground, weightLimitKg);
+    bp = {
+      placed: res.placed,
+      value: res.placed.reduce((a, p) => a + p.item.value, 0),
+      weightKg: res.weightKg,
+      vol: res.placed.reduce((a, p) => a + p.item.vol, 0),
+    };
+  } else {
+    bp = packGrid(bw, bh, ground, weightLimitKg);
+  }
   const carried = bp.placed.map((p) => p.item);
 
   // 第三步：安全箱。玩家会把**最值钱的**塞进去 ——
@@ -448,6 +531,90 @@ for (const t of T.raidTargets) {
   );
   check(`${t.label} 的中位收益落在设计目标区间内`, inBand,
     `中位 ${p50} vs 目标 ${t.valueMin}~${t.valueMax}`);
+}
+
+// ============================================================
+// ⑤-b ★ M6：携行件占格对收益的**实测**影响
+//
+// 为什么必须量出来而不是"知道大概会少一点"：M6 起弹药与药品真的占背包格，
+// 而上面 ⑤ 的收益目标区间是按**参考装载**（装满战利品、不带自己的东西）算的。
+// 两者的差额就是"实际玩到手的收益比 DoD 低多少" —— 这个数字必须摆在评审面前，
+// 否则"收益达标"这句话在真实配装下可能不成立，而没人知道差多少。
+// ============================================================
+console.log('\n—— ⑤-b 携行件占格的影响（口径：参考装载 vs 带上起始配装的携行件）——');
+{
+  let plan = null;
+  let parseError = null;
+  try {
+    const EQUIP = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'config', 'equipment.json'), 'utf8'));
+    const WEAPONS = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'config', 'weapons.json'), 'utf8'));
+    const COMBAT = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'config', 'combat.json'), 'utf8'));
+    const itemDefs = {};
+    for (const it of T.items) itemDefs[it.id] = it;
+    plan = planCarry({
+      loadout: EQUIP.starterLoadout,
+      carry: CARRY,
+      ammo: (WEAPONS.ammo || []).map((a) => ({ id: a.id, itemId: a.lootItemId })),
+      consumables: COMBAT.consumables || [],
+      itemDefs,
+    });
+  } catch (e) {
+    parseError = e;
+  }
+
+  if (!plan) {
+    // 刻意不做兜底：读不到起始配装就等于这条测量没做，
+    // 而"没做"必须说出来，不能静默跳过（跳过会让报告看起来一切正常）。
+    check('携行件占格影响可测量（能读到起始配装与携行具表）', false,
+      parseError ? parseError.message : '未知原因');
+  } else {
+    const cells = plan.placements.reduce((a, p) => a + p.w * p.h, 0);
+    const total = T.backpack.w * T.backpack.h;
+    check('起始携行件确实占格（否则"M6 起弹药药品进网格"没有落地）',
+      cells > 0 && plan.placements.length > 0,
+      `${plan.placements.length} 件 / ${cells} 格（参考装载共 ${total} 格）`);
+    check('起始携行件不溢出参考背包（溢出会静默少带）',
+      plan.overflow.length === 0,
+      plan.overflow.map((o) => `${o.itemId}×${o.count}`).join('、') || '无溢出');
+
+    if (cells > 0 && plan.overflow.length === 0) {
+      const deltas = [];
+      for (const t of T.raidTargets) {
+        const rndA = mulberry32(20260301);
+        const rndB = mulberry32(20260301);
+        const plain = [];
+        const withKit = [];
+        for (let i = 0; i < RUNS; i++) {
+          plain.push(simulateRaid(t.containers, rndA).total);
+          withKit.push(simulateRaid(t.containers, rndB, plan.placements).total);
+        }
+        plain.sort((a, b) => a - b);
+        withKit.sort((a, b) => a - b);
+        const p50a = quantile(plain, 0.5);
+        const p50b = quantile(withKit, 0.5);
+        deltas.push({ label: t.label, p50a, p50b, drop: p50a > 0 ? 1 - p50b / p50a : 0 });
+      }
+      for (const d of deltas) {
+        console.log(
+          `  ${d.label.padEnd(18)} 参考装载中位 ${String(d.p50a).padStart(6)} → 带携行件 ${String(d.p50b).padStart(6)}` +
+            `  （−${(d.drop * 100).toFixed(1)}%）`
+        );
+      }
+      // 只对"最贪"那一档做一条真断言：它的中位收益必须仍然高于"正常搜索"的参考中位。
+      // 这是"风险回报单调"这条设计意图在**真实配装**下是否还成立的最小检验。
+      const greedy = deltas[deltas.length - 1];
+      const normal = deltas[deltas.length - 2] || deltas[0];
+      check('带上携行件后，"贪"的中位收益仍高于"正常搜索"（风险回报单调没有被容量吃掉）',
+        greedy.p50b > normal.p50a,
+        `贪(带携行件) ${greedy.p50b} > 正常(参考) ${normal.p50a}`);
+      const worst = deltas.reduce((a, b) => (b.drop > a.drop ? b : a), deltas[0]);
+      warn(
+        `携行件占 ${cells} 格使中位收益下降 ${(worst.drop * 100).toFixed(1)}%（最严重的一档：${worst.label}）。` +
+          ` 这是 M6 容量化的**必然结果**（参考装载不带自己的弹药药品），` +
+          ` 但 DoD 的收益区间是按参考装载定的 —— 是否需要把目标区间下调或把口径改为"带携行件"，请评审裁定`
+      );
+    }
+  }
 }
 
 // 风险回报单调性：越贪，期望收益(收益x存活率)应该越高，否则"贪"没有动机

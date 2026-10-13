@@ -16,10 +16,15 @@ export const CHECKPOINT_VERSION = 1;
 
 /** 单个物品在快照里的形态：只留结算需要的东西，不塞整个 item 定义 */
 function itemToSnapshot(e) {
+  const units = e.item.unitsPerItem || 1;
+  const count = Number.isFinite(e.count) ? e.count : units;
+  const unitValue = e.item.unitValue !== undefined ? e.item.unitValue : e.item.value;
   return {
     id: e.item.id,
     label: e.item.label,
-    value: e.item.value,
+    // ★ M6：一格可以只装半盒（打剩 30 发），因此入仓单位数与估值都按这一格实际剩多少算。
+    count,
+    value: unitValue * count,
     rarity: e.item.rarity || null,
     inSafe: !!e.inSafe,
   };
@@ -86,6 +91,9 @@ export function sanitizeCheckpoint(raw) {
     items.push({
       id: it.id,
       label: it.label,
+      // count 是 M6 新增字段：旧快照没有它 → 保持 undefined，
+      // 结算侧会退回"一件 = unitsPerItem 个存储单位"的老口径（见 core/settlement.js）。
+      count: isFiniteNum(it.count) ? it.count : undefined,
       value: it.value,
       rarity: typeof it.rarity === 'string' ? it.rarity : null,
       inSafe: !!it.inSafe,
@@ -121,8 +129,10 @@ export function checkpointToFacts(cp, rarityTable = []) {
     containersTotal: cp.combat.containersTotal,
     shotsFired: cp.combat.shotsFired,
     health: cp.combat.health,
-    kept: kept.map((i) => ({ item: i })),
-    lost: lost.map((i) => ({ item: i })),
+    // inSafe 一并带上：结算结果里的"保险箱保住了这几件"依赖它，
+    // 而它原本挂在 item 上（那是快照的存储形态），不是结算条目的形态。
+    kept: kept.map((i) => ({ item: i, count: i.count, inSafe: true })),
+    lost: lost.map((i) => ({ item: i, count: i.count, inSafe: false })),
     keptValue: sum(kept),
     lostValue: sum(lost),
     safeValue: sum(kept),

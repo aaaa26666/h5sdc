@@ -215,7 +215,7 @@ UA 样式表用 `[hidden] { display: none }` 实现 `hidden`，**但 WHATWG HTML
 |---|---|---|---|---|
 | M5-TEMP-9 | `config/equipment.json`（`durabilityRules._weaponNote`） | 武器**没有耐久**，弹匣内子弹也不单独持久化：每次进局都是满弹匣 | 武器耐久与弹匣状态随件持久化（要求仓库条目带"这一件"的状态） | 中 |
 | M5-TEMP-10 | `config/equipment.json`（`durabilityRules._tempNote`）、`core/shop.js` 的破甲分支 | 护甲耐久**不做局外持久化**：每次进局满耐久、撤离不回写损耗 | 同上（按件追踪）。表与接口（`brokenSellRatio` / `armorMinDurability`）已就位，只差数据模型 | 中 |
-| M5-TEMP-11 | `config/equipment.json`（`ammo._m6Note` / `consumables`） | 制作人的原始意图是"弹药与消耗品只要背包格子塞得下"（即**占网格的物体**）。M5 先按"取消数量上限，但仍是不占格的数字"实现 | 把弹药与消耗品网格化：射击 / 治疗从背包网格扣减。涉及 `weapon` / `player` / `inventory` 三个局内模块 | 中 |
+| M5-TEMP-11 | `config/equipment.json`（`ammo._m6Note` / `consumables`） | 制作人的原始意图是"弹药与消耗品只要背包格子塞得下"（即**占网格的物体**）。M5 先按"取消数量上限，但仍是不占格的数字"实现 | **M6 已销账**（见 `docs/19-M6-3-携行具容量化报告.md`）：弹药与消耗品改为**真的摆在背包/弹挂网格里**；备弹数与药品数是数网格得出的派生量，射击/换弹与治疗都从网格扣减。原先 `consumables = {bandage:3}` 与 `reserve = {口径:发数}` 这两份**副本**已删除 | 中 |
 
 ## 七、M5-2 ~ M5-7 已销账的项
 
@@ -238,7 +238,7 @@ UA 样式表用 `[hidden] { display: none }` 实现 `hidden`，**但 WHATWG HTML
 | 触屏控件（虚拟摇杆与按钮） | **未做** | **M8**（多设备适配）。制作人裁定 Q2：M5 不做控件，只保留 `touchLayout` 设置项与能力检测的位置 |
 | 鼠标键（开火 / 开镜）改键 | **未做** | **M6**。制作人裁定 R4：M5 只支持键盘改键；`MOUSE_BINDINGS` 仍固定 |
 | 护甲耐久与武器弹匣的局外持久化 | **未做**（M5-TEMP-9/10） | **M6** |
-| 弹药与消耗品"占背包网格" | **未做**（M5-TEMP-11） | **M6**（涉及 weapon / player / inventory 三个局内模块） |
+| 弹药与消耗品"占背包网格" | **M6 已销账**（M5-TEMP-11） | 见 `docs/19-M6-3-携行具容量化报告.md` |
 | 技能树的 requires / minLevel 门槛 | **表里刻意没有** | 制作人裁定取消门槛。校验器与 `canLearn` 仍支持这两个**可选**字段，恢复时只改表 |
 | 钥匙类撤离条件（M4-TEMP-2） | 未做 | M6 任务线内容 |
 | 门禁卡的任务线发放（M3-TEMP-4 另一半） | 未做 | M6 |

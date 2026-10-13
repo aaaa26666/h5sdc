@@ -12,20 +12,27 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const SRC = path.join(ROOT, 'src', 'config', 'loot.json');
+const CARRY_SRC = path.join(ROOT, 'src', 'config', 'carry.json');
 const TMP = path.join(ROOT, '.loot-inject');
 
 const base = JSON.parse(fs.readFileSync(SRC, 'utf8'));
+const carryBase = JSON.parse(fs.readFileSync(CARRY_SRC, 'utf8'));
 const clone = () => JSON.parse(JSON.stringify(base));
+const cloneCarry = () => JSON.parse(JSON.stringify(carryBase));
 
-function runValidator(table) {
+function runValidator(table, carry = carryBase) {
   fs.mkdirSync(TMP, { recursive: true });
   const p = path.join(TMP, 'table.json');
+  const cp = path.join(TMP, 'carry.json');
   fs.writeFileSync(p, JSON.stringify(table, null, 2), 'utf8');
+  fs.writeFileSync(cp, JSON.stringify(carry, null, 2), 'utf8');
   // 用 process.execPath 而不是 'node'：后者依赖 PATH，换台机器可能指向别的版本，
   // 而"校验器跑在哪个 node 上"不该是这个脚本的变量。
-  const r = spawnSync(process.execPath, [path.join(HERE, 'validate-loot-tables.mjs'), '--table', p, '--runs', '2000'], {
-    encoding: 'utf8',
-  });
+  const r = spawnSync(
+    process.execPath,
+    [path.join(HERE, 'validate-loot-tables.mjs'), '--table', p, '--carry', cp, '--runs', '2000'],
+    { encoding: 'utf8' }
+  );
   // ★ 子进程起不来时必须显式炸掉。
   //   它会表现为 status=null、stdout 为空，与"校验器跑了但一条都没拦下"完全一样 ——
   //   把"根本没跑"当成"跑了却漏掉"，是比漏掉更糟的错误结论。
@@ -106,6 +113,37 @@ const cases = [
     expect: null, // 这一条只确认不崩，不值得为它单设规则
     mutate: (t) => { t.raidTargets[0].valueMin = 999999; },
   },
+  // ---- ★ M6 携行具表（carry.json）----
+  {
+    name: '背包声明的 slots 与 capacityW×capacityH 不一致',
+    expect: '每只背包声明的 slots 等于 capacityW×capacityH',
+    mutate: (t, c) => { c.backpacks[0].slots = 7; },
+  },
+  {
+    name: '背包梯度被破坏（大包的负重上限反而更小）',
+    expect: '背包梯度：格数与负重上限都随档位严格递增',
+    mutate: (t, c) => { c.backpacks[2].weightLimitKg = 5; },
+  },
+  {
+    name: '弹挂 accepts 里是拼错的类别名',
+    expect: '弹挂的 accepts 非空且类别都真实存在',
+    mutate: (t, c) => { c.rigs[0].accepts = ['ammo', 'medcial']; },
+  },
+  {
+    name: '兜底背包不存在（"没装备背包"时无处可放）',
+    expect: '兜底背包存在且是合法网格',
+    mutate: (t, c) => { delete c.defaults.backpack; },
+  },
+  {
+    name: '兜底背包被调得比最弱的真背包还大（没人会买第一只包）',
+    expect: '兜底背包严格弱于最弱的真背包',
+    mutate: (t, c) => { c.defaults.backpack = { w: 8, h: 8, weightLimitKg: 40 }; },
+  },
+  {
+    name: '背包引用的 id 在携行具表里不存在（参考装载悬空）',
+    expect: null, // 由 resolveBackpack 抛错拦下，不是 [FAIL] 条目
+    mutate: (t) => { t.backpack.referenceId = 'bp_nope'; },
+  },
 ];
 
 console.log('\n================ 掉落表校验规则的注入自检 ================');
@@ -116,12 +154,17 @@ let fail = 0;
 
 for (const c of cases) {
   const t = clone();
-  c.mutate(t);
-  const r = runValidator(t);
+  const carry = cloneCarry();
+  c.mutate(t, carry);
+  const r = runValidator(t, carry);
   if (c.expect === null) {
-    // 只要求"注入后确实有变化"，不崩即可
-    console.log(`  ${r.code !== 0 || r.failed.length ? '✓' : '·'} ${c.name}（不设专用规则；失败项 ${r.failed.length} 个）`);
-    if (r.failed.length) pass++;
+    // 只要求"注入后确实有变化"，不崩即可。
+    // 判据是"校验器**反应了**"——非零退出码也算（例如 resolveBackpack 直接抛错）。
+    // 早先只认 [FAIL] 条目，于是"抛错拦下"的用例既不计通过也不计漏掉，被静默吞掉一条。
+    const reacted = r.code !== 0 || r.failed.length > 0;
+    if (reacted) pass++;
+    else fail++;
+    console.log(`  ${reacted ? '✓' : '✗'} ${c.name}（不设专用规则；退出码 ${r.code}，失败项 ${r.failed.length} 个）`);
     continue;
   }
   const hit = r.failed.some((f) => f.startsWith(c.expect));
@@ -137,7 +180,7 @@ for (const c of cases) {
 }
 
 // 恢复确认：原表必须 0 失败
-const clean = runValidator(base);
+const clean = runValidator(base, carryBase);
 console.log(`\n  原表复跑：失败 ${clean.failed.length} 项（必须为 0）`);
 if (clean.failed.length === 0) pass++;
 else fail++;

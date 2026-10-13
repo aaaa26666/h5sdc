@@ -37,6 +37,8 @@ export function createNewProfile(cfg, nowMs = 0, opts = {}) {
       secondary: starter.secondary,
       body: starter.body,
       head: starter.head,
+      backpack: starter.backpack ?? null,
+      rig: starter.rig ?? null,
       ammo: starter.ammo,
       consumables: starter.consumables,
     },
@@ -187,6 +189,18 @@ export function sanitizeLoadoutShape(raw, cfg) {
     }
     return id;
   };
+  // ★ M6：携行具两个槽（背包 / 弹挂）。收敛规则与武器/护甲同源 ——
+  //   按槽位的 accepts 白名单判定，不在这里另写一份"哪些 id 是背包"的名单。
+  const pickCarry = (id, slotId, field) => {
+    if (id === null || id === undefined) return null;
+    const spec = (eq.slots || []).find((s) => s.id === slotId);
+    const d = wDef(id);
+    if (!d || !spec || !spec.accepts.includes(d.kind)) {
+      repairs.push(`loadout.${field}:unknown-carry`);
+      return null;
+    }
+    return id;
+  };
 
   // 弹药与消耗品：★ 制作人裁定（M5-3）**不设数量上限** —— 只校验口径/道具合法与非负整数。
   // 真正约束携带量的是负重三档（core/loadout.js 的 overweightBand）与仓库库存。
@@ -222,6 +236,8 @@ export function sanitizeLoadoutShape(raw, cfg) {
       secondary: pickWeapon(src.secondary, 2, 'secondary'),
       body: pickArmor(src.body, 'chest', 'body'),
       head: pickArmor(src.head, 'head', 'head'),
+      backpack: pickCarry(src.backpack, 'backpack', 'backpack'),
+      rig: pickCarry(src.rig, 'rig', 'rig'),
       ammo,
       consumables,
     },

@@ -149,11 +149,31 @@ export function createPanels(handlers = {}) {
       : '';
     const nextNote = v.nextAtKg !== null ? ` · 距下一档 ${v.toNextKg.toFixed(2)}kg` : '';
 
+    // ★ M6：携行具容量 + "装不下"的明确警告。
+    //   进战区前就要让玩家看到，因为局内再发现少带已经晚了（无法退出重配）。
+    const c = v.carry;
+    const carryLine = c
+      ? `<div class="slot-line">
+        <span class="k">携行</span>
+        <span class="v">${esc(c.backpack.label)} ${c.backpack.w}×${c.backpack.h}` +
+        `${c.rig ? ` ＋ ${esc(c.rig.label)} ${c.rig.w}×${c.rig.h}` : ''}` +
+        ` · 自带 ${c.kitSlots} 格 · 剩 ${c.freeSlots} 格装战利品</span>
+      </div>`
+      : '';
+    const overflowNote = c && c.overflow.length
+      ? `<p class="warn" style="margin-top:6px">
+          装不下（**不会**带进战区）：${c.overflow.map((o) => `${esc(o.itemId)} ×${o.count}`).join('、')}
+          —— 请换更大的背包/弹挂，或减少携带量
+        </p>`
+      : '';
+
     el.loadout.innerHTML = `
       ${presetLine}
       ${slotLines}
       ${v.ammo.length ? `<div class="row"><span class="k">弹药</span><span class="muted">一格 ＝ 一次「＋」</span></div>${ammoLines}` : ''}
       ${consumableLines}
+      ${carryLine}
+      ${overflowNote}
       <div class="slot-line">
         <span class="k">负重</span>
         <span class="${owCls}">${v.weightKg.toFixed(2)} kg · ${esc(v.band.label)}${owNote}${nextNote}</span>
