@@ -21,7 +21,7 @@ import { stashSummary, stashValue, stashWeight } from './stash.js';
 import { stockView, sellPriceOf } from './shop.js';
 import { questStates } from './quests.js';
 import { levelFromExp, skillModifiers, skillLevel, canLearn, respecCost, spentPoints } from './progression.js';
-import { itemDef } from './items.js';
+import { itemDef, equipmentDef } from './items.js';
 import { ACTIONS, isRebindable, resolveBindings } from './keybinds.js';
 import { dataKeys } from './lootTable.js';
 
@@ -58,12 +58,33 @@ function loadoutPanel(profile, cfg) {
 
   const slots = cfg.equipment.slots
     .filter((s) => !s.disabled)
-    .map((s) => ({
-      id: s.id,
-      label: s.label,
-      current: lo[s.id] || null,
-      options: availableForSlot(profile, s.id, cfg),
-    }));
+    .map((s) => {
+      const eq = lo[s.id] ? equipmentDef(lo[s.id], cfg) : null;
+      // 装备的**物品形状**（拖到仓库时幽灵元素要按它画）。它来自 dropping 表的物品视图，
+      // 界面不自己换算 —— 装备 id 与物品 id 不总相同（武器 dmr_sr25 ↔ rifle_sr25）。
+      const itemShape = eq ? itemDef(eq.itemId, cfg) : null;
+      return {
+        id: s.id,
+        label: s.label,
+        current: lo[s.id] || null,
+        // ★ M6-3：装备格上要写"格内装备名与重量"。名字与重量都在这里取好 ——
+        //   界面去 itemDef/equipmentDef 里自己查，就是第二处"装备表怎么读"的实现。
+        currentLabel: eq ? eq.label : null,
+        currentWeightKg: eq ? eq.weightKg : 0,
+        currentW: itemShape ? itemShape.w : 0,
+        currentH: itemShape ? itemShape.h : 0,
+        // 拖放的说明与提示要能说出"仓库里现成有哪些可选"。这**替代了旧的下拉框**：
+        // 下拉框被删掉之后，玩家仍需要知道"这个东西我手上有"，否则只能盲拖。
+        options: availableForSlot(profile, s.id, cfg),
+        // 背包 / 弹挂这两格的容量来自**所装备的那一只**（与局内是同一条 buildCarry 口径）。
+        capacity:
+          s.id === 'backpack'
+            ? { w: carry.backpack.w, h: carry.backpack.h, weightLimitKg: carry.backpack.weightLimitKg, source: carry.backpack.source }
+            : s.id === 'rig' && carry.rig
+              ? { w: carry.rig.w, h: carry.rig.h, accepts: carry.rig.accepts.slice() }
+              : null,
+      };
+    });
 
   const ammo = cfg.ammo
     .filter((a) => cfg.equipment.ammo.carryCalibers.includes(a.id))
@@ -90,6 +111,11 @@ function loadoutPanel(profile, cfg) {
     weightKg: itemDef(c.id, cfg) ? itemDef(c.id, cfg).weightKg : 0,
   }));
 
+  // ★ M6-3：负重条的刻度必须来自配置表（最后一个"有上限"的档位），
+  //   且**比例只在这里算一次** —— 界面里再除一次，就是第二处负重口径。
+  const bands = cfg.equipment.overweight.bands;
+  const scaleMaxKg = bands.reduce((m, b) => (b.maxKg != null && b.maxKg > m ? b.maxKg : m), 0);
+
   return {
     presetId: lo.id,
     presetName: lo.name,
@@ -109,6 +135,13 @@ function loadoutPanel(profile, cfg) {
       label: ow.band.label,
       speedScale: ow.band.speedScale,
       noSprint: ow.band.noSprint,
+    },
+    weightBar: {
+      bandIndex: ow.index,
+      bandCount: bands.length,
+      scaleMaxKg,
+      ratio: scaleMaxKg > 0 ? Math.min(1, ow.weightKg / scaleMaxKg) : 0,
+      overweight: ow.index > 0,
     },
     nextAtKg: ow.nextAtKg,
     toNextKg: ow.toNextKg,
@@ -140,6 +173,9 @@ function stashPanel(profile, cfg, ui) {
       y: e.y,
       w: e.rotated ? def.h : def.w,
       h: e.rotated ? def.w : def.h,
+      // ★ M6-3：朝向是**数据的真值**，界面不该反推。用 `w !== def.w` 反推朝向等于把
+      //   itemShape 又实现了一遍，而且对正方形物品（1×1 的弹药盒）根本推不出来。
+      rotated: !!e.rotated,
       // 按**存储单位**估值与计重（弹药的一件是一盒 60 发）
       value: def.unitValue * e.count,
       weightKg: def.unitWeightKg * e.count,

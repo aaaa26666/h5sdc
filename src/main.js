@@ -59,12 +59,13 @@ import {
   loadoutRequirements,
   setAmmo,
   setConsumable,
-  updatePreset,
   addPreset,
   removePreset,
   setActivePreset,
   ammoOnHand,
 } from './core/loadout.js';
+// ★ M6-3：拖放的**唯一**落点判定与落库（判定与落库是同一条代码，dryRun 只是要不要交出新档案）。
+import { dropItem, freeSpotFor } from './core/dragDrop.js';
 import { stashSort, stashSummary, stashAdd, stashTotalOf } from './core/stash.js';
 import { buy as shopBuy, sell as shopSell } from './core/shop.js';
 import { acceptQuest, claimQuest, abandonQuest } from './core/quests.js';
@@ -142,6 +143,33 @@ let qualityState = null;
 let raidQuestLines = [];
 
 /**
+ * ★ M6-3：拖放的判定与落库**只走这一个函数**（dryRun 只决定"要不要交出档案"）。
+ *
+ * 为什么必须是一个函数：拖动中的红/绿提示（preview）与松手时的实际结果（commit）
+ * 若各判一次，就会出现"看着能放、一松手又弹回去"这类最难解释的界面缺陷。
+ * 判定本身在 core/dragDrop.js，它再转给 stashMoveTo / stashAddAt / slotAcceptsItem /
+ * equipFromStash / unequipToStash —— 界面这层**一个格子碰撞都没有算**。
+ *
+ * 注意这里把界面送来的 w/h/count 全部丢掉：那是画幽灵元素用的**显示信息**，
+ * 不是判定依据。判定一律按 uid / slotId 从档案里取真值（界面给的数字不可信）。
+ */
+function dragDrop(source, target, rotated, dryRun) {
+  const src =
+    source && source.kind === 'stash'
+      ? { kind: 'stash', uid: source.uid }
+      : source && source.kind === 'slot'
+        ? { kind: 'slot', slotId: source.slotId }
+        : null;
+  const tgt =
+    target && target.kind === 'stash'
+      ? { kind: 'stash', x: target.x, y: target.y }
+      : target && target.kind === 'slot'
+        ? { kind: 'slot', slotId: target.slotId }
+        : null;
+  return dropItem(profile, profile.activeLoadoutId, src, tgt, !!rotated, cfg, { dryRun });
+}
+
+/**
  * M5：局外面板的动作接线。
  *
  * 所有动作都走 `mutate()`：成功 → 落库并重绘大厅；失败 → 把**原因**显示出来。
@@ -149,12 +177,16 @@ let raidQuestLines = [];
  * 而后者是可解释的（core 已经算好了 reason），不显示出来等于把可解释的错误扔掉。
  */
 const panels = createPanels({
-  // ---- 配装 ----
+  // ---- 装备页：预设（★ M6-3 说明见下）----
+  //
+  // ★ M6-3 裁定：`slotSelect`（**下拉框**配装表单）已删除 —— 槽位改为拖放，
+  //   留着一排下拉框就是 docs/18 §五 点名的"看起来还能用"的死入口。
+  //   但 `presetSelect / presetAdd / presetRemove` **保留**：它们是**预设计数**的宿主，
+  //   而弹药与消耗品的 ± 步进器是"每套预设各一份"的计数（需求明确要求保留步进控件）。
+  //   删掉预设选择器会让步进器失去作用对象 —— 那是把一个功能改坏，不是清理死入口。
   presetSelect: (d) => mutate((p) => setActivePreset(p, d.id)),
   presetAdd: () => mutate((p) => addPreset(p, cfg)),
   presetRemove: () => mutate((p) => removePreset(p, p.activeLoadoutId, cfg)),
-  slotSelect: (d, node) =>
-    mutate((p) => updatePreset(p, p.activeLoadoutId, { [d.slot]: node.value || null }, cfg)),
   ammoInc: (d) =>
     mutate((p) => {
       const lo = activeLoadout(p);
@@ -183,6 +215,20 @@ const panels = createPanels({
       const step = Number(d.step);
       return setConsumable(p, lo.id, d.id, Math.max(0, (lo.consumables[d.id] || 0) - step), cfg);
     }),
+
+  // ---- 装备页：拖放（判定与落库都交给 core/dragDrop.js 的同一个函数）----
+  dropPreview: (source, target, rotated) => dragDrop(source, target, rotated, true),
+  dropCommit: (source, target, rotated) => {
+    const res = dragDrop(source, target, rotated, false);
+    if (!res.ok) return res; // 由拖动层翻成人话提示（它才知道这次拖动是从哪到哪）
+    profile = res.profile;
+    saveProfileNow();
+    refreshLobby();
+    lobby.toast('');
+    return { ok: true };
+  },
+  /** 落点非法：把 core 的原因串翻成人话（界面不显示机器串）。 */
+  dropReject: (reason) => lobby.toast(`放不下：${reasonText(reason)}`, true),
 
   // ---- 仓库 ----
   stashSort: (d) => {
@@ -1248,9 +1294,8 @@ function settleInterruptedRaid(showIt) {
 function showLobby() {
   // ★ M5-3：简报显示的是**玩家当前配装**（同一个 buildRaidKit，局内用的也是它 ——
   //   因此不存在"大厅说带这把枪、进局却是另一把"的可能）。
-  lobby.render(buildRaidBriefing(cfg, buildRaidKit(profile, cfg)));
-  // M5：局外读数与五个面板每次显示都重绘 —— 它们都是纯函数产物（同一份档案
-  // 必然得到同一份视图），因此重绘不存在状态漂移，而"进战区前的数值必须是最新的"。
+  // ★ M6-3：简报的渲染搬进了 refreshLobby()（见那里的注释）—— 它现在是装备页的一部分，
+  //   而装备页会被拖放改档案，简报必须跟着重算，否则"刚拖上去的枪"在简报里看不到。
   refreshLobby();
   // [M5-BUG-01] "上局未正常结束"提示的可见性**只在这里推导**：由"是否还有待结算快照"决定。
   //   收口前它由 settleInterruptedRaid() / startRaid() / 初始化段各自手写（共 4 处），
@@ -1262,9 +1307,12 @@ function showLobby() {
   lobby.show(true);
 }
 
-/** 重绘大厅的局外读数与五个面板（档案变过就调它）。 */
+/** 重绘大厅的简报、档案读数与四个面板（档案变过就调它）。 */
 function refreshLobby() {
   lobbyViews = buildLobbyViews(profile, cfg, { selectedUids: lobbyUi.selectedUids });
+  // 简报在这里重绘，而不是只在 showLobby 里 —— M6-3 起简报与装备面板同页，
+  // 而拖放一次就会改配装；不重算的话玩家会看到"面板上换了枪、简报里还是旧的"。
+  lobby.render(buildRaidBriefing(cfg, buildRaidKit(profile, cfg)));
   lobby.renderStats(lobbyViews.stats);
   panels.renderAll(lobbyViews);
 }
@@ -1713,6 +1761,17 @@ if (import.meta.env.DEV) {
   }
 
   /**
+   * ★ M6-3：仓库里第一块 w×h 的空位（拖放的端到端夹具用）。
+   *
+   * 为什么需要它：端到端要"把某件东西拖到某个空格"，就必须知道哪一格是空的。
+   * 若在测试里按坐标自己推算空闲，等于把 packing 的边界规则又实现了一遍 ——
+   * 而测试的价值恰恰在于它独立于实现。这里问的是落点判定的**同一个谓词**。
+   */
+  function freeStashSpot(w, h) {
+    return freeSpotFor(profile.stash, Number(w), Number(h), cfg);
+  }
+
+  /**
    * ★ M5-1：局外（大厅）没有局内世界，但仍要给出**同形状**的快照。
    *
    * 为什么不能直接抛错或返回 null：端到端在开局前会反复轮询
@@ -1783,6 +1842,11 @@ if (import.meta.env.DEV) {
           : false,
         views: lobbyViews,
         /**
+         * ★ M6-3：拖动中的状态（拖动源 / 落点 / 朝向 / 判定结果）。
+         * 端到端断言读它，而不是去读幽灵元素的像素位置 —— 位置是排版，判定才是行为。
+         */
+        drag: panels.drag ? panels.drag.state() : null,
+        /**
          * ★ M6：进战区前的简报（纯函数产物，界面显示的就是它）。
          * 暴露它是为了让端到端能断言"装不下这件事在**进战区之前**就告诉玩家了" ——
          * 只看局内的话，玩家已经站在战区里，那时才发现少带已经晚了。
@@ -1808,6 +1872,7 @@ if (import.meta.env.DEV) {
     equipCarry,
     stuffLoadout,
     ammoInGrid,
+    freeStashSpot,
     grantWeapon,
     /**
      * ★ M6-2 测试隔离：让全部 AI 停止更新（不移动、不开火）。**不是产品功能**。

@@ -1970,12 +1970,49 @@ async function runM5Groups() {
       const tabs = await page.evaluate(() =>
         Array.from(document.querySelectorAll('#lobbyTabs .tab')).map((t) => t.dataset.tab)
       );
-      check('★ M5 大厅有五个局外面板入口（销 M5-TEMP-3）',
-        ['loadout', 'stash', 'shop', 'skills', 'quests'].every((t) => tabs.includes(t)),
+      // ★ M6-3（docs/18 §3.3）：配装与仓库**合并**成「装备」，页签由 6 个变 4 个。
+      //   注意方案原文写的是"由 5 个变 4 个"—— 它数的是 M5 的五个面板入口（配装/仓库/商店/
+      //   技能/任务），没有把**简报**那个页签算进去。简报不能删（撤离点开放规则、单局时限、
+      //   敌方数量都在里面），所以它并入了装备页顶部，页签因此是 6→4 而不是 5→4。
+      check('★ M5/M6-3 大厅恰好四个面板入口（销 M5-TEMP-3；M6-3 把配装与仓库合并为「装备」）',
+        ['gear', 'shop', 'skills', 'quests'].every((t) => tabs.includes(t)) && tabs.length === 4,
         tabs.join('/'));
 
+      // ★ M6-3 反向断言（docs/18 §五 的风险表点名的那一条）：
+      //   旧页签与**下拉框配装表单**必须彻底消失。留着"看起来还能用"的死入口，
+      //   玩家会以为配装还能那样配 —— 那比没有这个入口更糟。
+      const legacy = await page.evaluate(() => ({
+        oldTabs: Array.from(document.querySelectorAll('#lobbyTabs .tab'))
+          .map((t) => t.dataset.tab)
+          .filter((t) => t === 'loadout' || t === 'stash' || t === 'brief'),
+        oldBodies: ['tabLoadout', 'tabStash', 'tabBrief'].filter((id) => document.getElementById(id)).length,
+        selects: document.querySelectorAll('select').length,
+        changeHooks: document.querySelectorAll('[data-act-change]').length,
+      }));
+      check('★ M6-3 旧页签与其面板容器已从 DOM 消失（配装/仓库/简报）',
+        legacy.oldTabs.length === 0 && legacy.oldBodies === 0, JSON.stringify(legacy));
+      check('★ M6-3 旧的下拉框配装表单彻底消失（页面里连一个 <select> 都没有）',
+        legacy.selects === 0 && legacy.changeHooks === 0, JSON.stringify(legacy));
+      {
+        // DOM 数量为 0 只证明"这一帧没渲染"。**源码**里也不能留活代码 ——
+        // 允许在注释里提 slotSelect（那是在解释"为什么删掉它"），按非注释行判定。
+        const hits = [];
+        for (const rel of ['src/ui/panels.js', 'src/main.js', 'src/ui/lobby.js']) {
+          const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+          for (const line of text.split('\n')) {
+            if (!/slotSelect|renderLoadout|ammoInc|consInc/.test(line)) continue;
+            if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+            // 步进器（ammoInc / consInc）是**预设计数**、明确保留，不算残留
+            if (/ammoInc|consInc|ammoDec|consDec/.test(line)) continue;
+            hits.push(`${rel}: ${line.trim().slice(0, 70)}`);
+          }
+        }
+        check('★ M6-3 源码里没有 slotSelect / renderLoadout 的活代码（只允许解释性注释）',
+          hits.length === 0, hits.join(' | ') || '零命中');
+      }
+
       const bodies = {};
-      for (const tab of ['loadout', 'stash', 'shop', 'skills', 'quests']) {
+      for (const tab of ['gear', 'shop', 'skills', 'quests']) {
         await page.click(`#lobbyTabs .tab[data-tab="${tab}"]`);
         await sleep(60);
         bodies[tab] = await page.evaluate(
@@ -1990,12 +2027,13 @@ async function runM5Groups() {
           tab
         );
       }
-      check('★ M5 五个面板分别可切换且都画出了内容（不是空壳）',
+      check('★ M5/M6-3 四个面板分别可切换且都画出了内容（不是空壳）',
         Object.entries(bodies).every(([, v]) => v.on && v.text.length > 0),
         Object.entries(bodies).map(([k, v]) => `${k}:${v.text.length}`).join(' '));
       const views = await page.evaluate(() => window.__m2.lobby().views);
-      check('M5 仓库面板显示的估值 = lobbyView 的产物（同一份数字）',
-        bodies.stash.text.includes(String(views.stash.summary.value)),
+      // ★ M6-3：仓库不再有独立页签，它的数字现在画在**装备页**里（同一个 stashPanel 产物）。
+      check('M5/M6-3 装备页里的仓库读数和 = lobbyView 的产物（同一份数字）',
+        bodies.gear.text.includes(String(views.stash.summary.value)),
         `面板含 ${views.stash.summary.value}`);
       check('M5 商店面板显示的货币 = 档案货币',
         bodies.shop.text.includes(String(views.shop.currency)),
@@ -2088,29 +2126,41 @@ async function runM5Groups() {
     }
     await page.evaluate(() => window.__m2.grantTestKit());
     // ---- ④ 局内用的就是局外配的（销 M5-TEMP-2 的直接证据）----
-    await page.click('#lobbyTabs .tab[data-tab="loadout"]');
+    // ★ M6-3：这一步原来是"用槽位下拉框选主武器"，而下拉框已按 docs/18 §五 删除 ——
+    //   现在走**拖放**（玩家真实路径：从仓库把枪拖到主武器格）。
+    //   于是这两条 M5-3 的既有断言顺带变成了"拖放真的改到了局内配装"的端到端证据。
+    await page.click('#lobbyTabs .tab[data-tab="gear"]');
     await sleep(80);
-    await page.select('#tabLoadout select[data-act-change="slotSelect"][data-slot="primary"]', 'rifle_m4');
-    await sleep(150);
+    // 先把 7.62 弹药配进预设，否则换枪后"备弹"会是 0 —— 那会让断言读起来像"弹药没带对"
+    await page.evaluate(() => window.__m2.stuffLoadout({ '7.62': 120 }, { bandage: 3, medkit: 2 }));
+    await sleep(80);
+    const drag1 = await dragStashItemToSlot('rifle_sr25', 'primary');
+    await sleep(180);
     const lo1 = await page.evaluate(() => window.__m2.profile().loadout);
-    check('夹具成立：大厅把主武器改成 M4', lo1.primary === 'rifle_m4', `primary=${lo1.primary}`);
+    check('★ M6-3 从仓库把枪拖到主武器格＝装备（旧的槽位下拉框已被拖放取代）',
+      !!drag1.ok && lo1.primary === 'dmr_sr25',
+      `primary=${lo1.primary} drag=${JSON.stringify(drag1)}`);
+    check('★ M6-3 拖上去的那把枪**离开了仓库**（不是复制一份挂在身上）',
+      (await page.evaluate(() => window.__m2.profile().stash.filter((e) => e.itemId === 'rifle_sr25').length)) === 0,
+      'rifle_sr25 仍在仓库里');
 
     await startRaidFromLobby();
     const s1 = await snap();
     const kit1 = await page.evaluate(() => window.__m2.raidKit());
     check('★ M5-3 局内主武器 = 局外配装（不再是写死的 startLoadout）',
-      s1.weapon.id === 'rifle_m4' && kit1.loadout.primary === 'rifle_m4',
+      s1.weapon.id === 'dmr_sr25' && kit1.loadout.primary === 'dmr_sr25',
       `局内 ${s1.weapon.id} · kit ${kit1.loadout.primary}`);
     check('★ M5-3 局内护甲 = 局外配装（含档位）',
       s1.player.armor.body.id === kit1.loadout.armor.body,
       `局内 ${s1.player.armor.body.id} vs kit ${kit1.loadout.armor.body}`);
-    const cal1 = s1.weapon.id === 'rifle_m4' ? '5.56' : '9mm';
+    // 口径：口径名从武器表反查，不写死（换枪之后写死的 5.56 会让这条断言变成"读了个 undefined"）
+    const cal1 = config.weapons.find((w) => w.id === s1.weapon.id).ammoType;
     check('★ M5-3 弹药储备 = 配装里的发数（按口径从仓库取走）',
       s1.weapon.reserve === kit1.loadout.ammo[cal1],
-      `reserve=${s1.weapon.reserve} 期望 ${kit1.loadout.ammo[cal1]}`);
+      `${cal1} reserve=${s1.weapon.reserve} 期望 ${kit1.loadout.ammo[cal1]}`);
     const taken = await page.evaluate(() => window.__m2.raidTaken());
     check('★ M5-3 进局扣件清单里有主武器与弹药（撤离要把没用完的还回来）',
-      Array.isArray(taken) && taken.some((t) => t.itemId === 'rifle_m4') && taken.length >= 3,
+      Array.isArray(taken) && taken.some((t) => t.itemId === 'rifle_sr25') && taken.length >= 3,
       `${taken ? taken.length : 0} 项`);
 
     // 回大厅：必须先结束这一局（`returnToLobby` 现在也会兜底结算，但显式 abandon
@@ -2121,15 +2171,20 @@ async function runM5Groups() {
     await sleep(200);
 
     // 换枪再进局 → 局内随之改变（证明"配装只有一份数据"）。
-    // 注意选**主武器槽**里的枪（shotgun_m590 是 slot:1）；smg_v9 是 slot:2，
-    // 它出现在副武器槽 —— 界面按槽位过滤，这本身就是一条要被守住的规则。
+    // 注意拖的是**主武器槽**里的枪（shotgun_m590 是 slot:1）；smg_v9 是 slot:2，
+    // 拖到主武器格必须被拒（slotAcceptsItem 的武器槽号校验）—— 那条反向断言在
+    // 下面的 M6-3 组里，这里只测"换了枪，局内跟着换"。
     await page.evaluate(() => window.__m2.grantTestKit());
-    await page.click('#lobbyTabs .tab[data-tab="loadout"]');
+    await page.click('#lobbyTabs .tab[data-tab="gear"]');
     await sleep(80);
-    await page.select('#tabLoadout select[data-act-change="slotSelect"][data-slot="primary"]', 'shotgun_m590');
-    await sleep(150);
+    await page.evaluate(() => window.__m2.stuffLoadout({ '12ga': 120 }, { bandage: 3, medkit: 2 }));
+    await sleep(80);
+    const drag2 = await dragStashItemToSlot('shotgun_m590', 'primary');
+    await sleep(180);
     const lo2 = await page.evaluate(() => window.__m2.profile().loadout);
-    check('夹具成立：大厅把主武器换成霰弹枪', lo2.primary === 'shotgun_m590', `primary=${lo2.primary}`);
+    check('★ M6-3 再拖一把枪上去：换装成功（原来那件还回仓库）',
+      !!drag2.ok && lo2.primary === 'shotgun_m590',
+      `primary=${lo2.primary} drag=${JSON.stringify(drag2)}`);
     await startRaidFromLobby();
     const s2 = await snap();
     check('★ M5-3 换一把枪后，局内主武器随之改变（没有第二份配装数据）',
@@ -2350,7 +2405,8 @@ async function runM5Groups() {
         active.includes('q1_first_extract'), JSON.stringify(active));
 
       // 打一局并成功撤离（q1 的目标就是"成功撤离"）
-      await page.click('#lobbyTabs .tab[data-tab="brief"]');
+      // ★ M6-3：简报并入装备页，这里点回装备页即可（简报始终可见）。
+      await page.click('#lobbyTabs .tab[data-tab="gear"]');
       await startRaidFromLobby();
       // 必须选一个**已开放**的撤离点：teleportToExtract() 取的是第一个点，
       // 而时间门槛点在半场之前是灰的（站上去不计时）。这是夹具口径，不是产品问题。
@@ -2771,15 +2827,383 @@ async function runM6CarryGroup() {
 
       // 界面上真的写出来了 —— 数据里有、界面没画等于没告诉玩家
       const panelText = await page.evaluate(() =>
-        document.getElementById('tabLoadout').innerText.replace(/\s+/g, ' '));
-      check('★ M6 配装面板画出了携行容量与"装不下"警告（不是只在数据里有）',
+        document.getElementById('tabGear').innerText.replace(/\s+/g, ' '));
+      check('★ M6 装备面板画出了携行容量与"装不下"警告（不是只在数据里有）',
         /携行/.test(panelText) && /装不下/.test(panelText),
         panelText.slice(0, 140));
+      // ★ M6-3：槽位不再是下拉框，而是**装备格**（`data-drop-slot`）。
+      //   用这个钩子是因为它同时是 DOM 身份与拖放落点的身份 —— 用文案匹配（"背包"）会
+      //   在改文案时静默失效，而这里要守的是"这个槽位真的能被拖上去"。
       const slotIds = await page.evaluate(() =>
-        Array.from(document.querySelectorAll('#tabLoadout select[data-act-change="slotSelect"]'))
-          .map((s) => s.dataset.slot));
-      check('★ M6 配装面板出现背包与弹挂两个槽位（新槽位真的能配）',
-        slotIds.includes('backpack') && slotIds.includes('rig'), slotIds.join('/'));
+        Array.from(document.querySelectorAll('#gearBody [data-drop-slot]')).map((s) => s.dataset.slot));
+      check('★ M6/M6-3 六个装备格都画出来了（头/身/主武器/副武器/背包/弹挂）',
+        ['head', 'body', 'primary', 'secondary', 'backpack', 'rig'].every((s) => slotIds.includes(s)),
+        slotIds.join('/'));
+    }
+  }
+}
+
+// ============================================================
+// ★ M6-3：装备页（配装＋仓库合并）的拖放端到端
+//
+// 纯逻辑已经把"落点合不合法"守住了（tools/unit-tests.mjs 的 M6-3 一节，逐例比对
+// 预览/落库并断言入参不被改动）。这里只补**纯逻辑看不见的那一层**：
+// 指针事件真的接到控制器上、格子坐标真的从 DOM 矩形算对、R 真的在拖动中换形、
+// 落库真的写进档案。
+//
+// 为什么事件要**分多步**派发：Chrome 的 pointerdown/pointermove 是从鼠标输入合成的，
+// 一次 move 到终点再 up 也能跑通，但那样测不出"拖动中"的状态（幽灵形状、红色提示、
+// R 换形都发生在中途）。所以口径是 move → move → down → 多次 move → (R) → move → up。
+// 已实测无头下 CDP 的鼠标输入**会**产生 pointer 事件（见下面 ⓪ 的夹具自检）——
+// 万一哪天不产生了，那条自检会先红，而不是让整组断言变成"拖不动"。
+// ============================================================
+
+/** 装备页的几何：仓库网格矩形、格边长、每个装备格的中心。 */
+async function gearGeometry() {
+  return page.evaluate(() => {
+    const gear = document.getElementById('tabGear');
+    // 先滚到可见：page.mouse.move 用**视口坐标**，不会像 elementHandle.click 那样自动滚动。
+    // 不滚的话坐标可能落在视口外（表现为"拖不动"，而失败信息里看不出原因）。
+    gear.scrollIntoView({ block: 'start' });
+    const body = document.getElementById('gearBody');
+    const grid = body.querySelector('[data-drop-grid]');
+    const cell = parseFloat(getComputedStyle(grid).getPropertyValue('--cell')) || 30;
+    const r = grid.getBoundingClientRect();
+    const slots = {};
+    for (const s of body.querySelectorAll('[data-drop-slot]')) {
+      const sr = s.getBoundingClientRect();
+      slots[s.dataset.slot] = { x: sr.left + sr.width / 2, y: sr.top + sr.height / 2, item: s.dataset.item || null };
+    }
+    return {
+      grid: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
+      cell,
+      slots,
+      vh: window.innerHeight,
+    };
+  });
+}
+
+/** 某个格的中心（视口坐标）。口径与 ui/dragdrop.js 的 cellFromPoint 相反：那边是"点→格"。 */
+const cellPoint = (g, x, y) => ({ x: g.grid.left + (x + 0.5) * g.cell, y: g.grid.top + (y + 0.5) * g.cell });
+
+/**
+ * 分多步派发一次拖放。`beforeUp` 在松手**之前**执行 —— "拖动中"的断言（形状、红色提示）
+ * 只能在这里读，松手之后就什么都没有了。
+ */
+async function pointerDrag(from, to, opts = {}) {
+  const steps = opts.steps || 5;
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.move(from.x + 2, from.y + 2);
+  await page.mouse.down();
+  for (let i = 1; i <= steps; i++) {
+    await page.mouse.move(from.x + ((to.x - from.x) * i) / steps, from.y + ((to.y - from.y) * i) / steps);
+    await sleep(15);
+  }
+  if (opts.pressR) await page.keyboard.press('KeyR');
+  await page.mouse.move(to.x, to.y);
+  await sleep(20);
+  if (opts.beforeUp) await opts.beforeUp();
+  await page.mouse.up();
+  await sleep(120);
+}
+
+/** 仓库里某件东西的落点信息（uid 是真值，用于"是否真的离开了仓库"这类断言）。 */
+async function stashEntry(itemId) {
+  return page.evaluate((id) => {
+    const e = window.__m2.profile().stash.find((x) => x.itemId === id);
+    return e ? { uid: e.uid, x: e.x, y: e.y, rotated: !!e.rotated, count: e.count } : null;
+  }, itemId);
+}
+
+/** 把仓库里某件东西拖到某个装备格（替代原来的槽位下拉框：玩家真实路径）。 */
+async function dragStashItemToSlot(itemId, slotId) {
+  const g = await gearGeometry();
+  const e = await stashEntry(itemId);
+  if (!e) return { ok: false, reason: 'not-in-stash' };
+  if (!g.slots[slotId]) return { ok: false, reason: 'no-such-slot-in-dom' };
+  await pointerDrag(cellPoint(g, e.x, e.y), { x: g.slots[slotId].x, y: g.slots[slotId].y });
+  return { ok: true, uid: e.uid, to: slotId };
+}
+
+/** 把仓库里某件东西拖到某个格（用于仓库内移动 / 非法落点）。 */
+async function dragStashItemToCell(itemId, cell, opts = {}) {
+  const g = await gearGeometry();
+  const e = await stashEntry(itemId);
+  if (!e) return { ok: false, reason: 'not-in-stash' };
+  await pointerDrag(cellPoint(g, e.x, e.y), cellPoint(g, cell.x, cell.y), opts);
+  return { ok: true, uid: e.uid, from: e };
+}
+
+async function runM63DragGroup() {
+  // 组名同时带 M6-3 与 M5 —— 因为 `--only=<子串>` 是按**组名子串**过滤的，
+  // 带上 M5 之后 `--only=m5` 也能跑到这一组（否则改一行界面只能跑全量）。
+  if (m5Group('★ M6-3 / M5-3 装备页（配装＋仓库合并）拖放')) {
+    await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    await page.evaluate(() => window.__m2.grantTestKit());
+    await sleep(150);
+
+    // ---- ⓪ 夹具自检：无头下 CDP 鼠标输入必须真的产生 pointer 事件 ----
+    await page.evaluate(() => {
+      window.__m63evt = { down: 0, move: 0, up: 0 };
+      const root = document.getElementById('gearBody');
+      root.addEventListener('pointerdown', () => { window.__m63evt.down++; }, true);
+      window.addEventListener('pointermove', () => { window.__m63evt.move++; }, true);
+      window.addEventListener('pointerup', () => { window.__m63evt.up++; }, true);
+    });
+
+    // ---- ① 简报并入装备页，且**内容一条不少** ----
+    {
+      const brief = await page.evaluate(() => {
+        const body = document.getElementById('lobbyBody');
+        return {
+          exists: !!body,
+          visible: !!body && body.getClientRects().length > 0,
+          inGear: !!body && document.getElementById('tabGear').contains(body),
+          text: body ? body.innerText.replace(/\s+/g, ' ') : '',
+          tab: window.__m2.lobby().tab,
+        };
+      });
+      check('★ M6-3 简报并入装备页顶部后**仍然可见**（没有为了合并页面把它删掉）',
+        brief.exists && brief.visible && brief.inGear, JSON.stringify({ ...brief, text: undefined }));
+      // 这六类信息是进战区前唯一的权威来源，一条都不能少
+      const KEYS = ['战区', '单局时限', '资源分区', '敌方', '撤离点', '携行', '安全箱'];
+      const missing = KEYS.filter((k) => !brief.text.includes(k));
+      check('★ M6-3 简报的七类信息全部还在（战区/时限/分区/敌方/撤离点/携行/安全箱）',
+        missing.length === 0, missing.join(',') || brief.text.slice(0, 90));
+      check('★ M6-3 撤离点的**开放规则**仍在界面上（合并页面时最容易被丢掉的那条）',
+        brief.text.includes(`共 ${config.extract.zones.length} 个`) && /常驻开放/.test(brief.text)
+        && /过半|累计淘汰/.test(brief.text),
+        brief.text.slice(0, 120));
+      check('M6-3 默认落在装备页（简报就在它顶部）', brief.tab === 'gear', `tab=${brief.tab}`);
+    }
+
+    // ---- ② 左半边：六个装备格，写名字与重量，空格写"空" ----
+    {
+      const slots = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('#gearBody [data-drop-slot]')).map((s) => ({
+          id: s.dataset.slot,
+          item: s.dataset.item || null,
+          text: s.innerText.replace(/\s+/g, ' ').trim(),
+        })));
+      const labels = config.equipment.slots.filter((s) => !s.disabled).map((s) => s.label);
+      check('★ M6-3 左半边是六个装备格（头/身/主武器/副武器/背包/弹挂），每个都写着槽位名',
+        slots.length === 6 && labels.every((l) => slots.some((s) => s.text.includes(l))),
+        slots.map((s) => `${s.id}:${s.text.slice(0, 10)}`).join(' | '));
+      const filled = slots.filter((s) => s.item);
+      check('★ M6-3 已装备的格子里写着装备名与重量（不是只有一个图标）',
+        filled.length > 0 && filled.every((s) => /\d+\.\d+kg/.test(s.text)),
+        filled.map((s) => `${s.id}:${s.text}`).join(' | '));
+      // 空格必须写"空"：只画一个虚线框，玩家分不清"没装备"与"没画出来"
+      await page.evaluate(() => window.__m2.equipCarry(null, null));
+      await sleep(120);
+      const empties = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('#gearBody [data-drop-slot]'))
+          .filter((s) => !s.dataset.item)
+          .map((s) => s.innerText.replace(/\s+/g, ' ')));
+      check('★ M6-3 空格显示「空」（摘掉背包与弹挂之后那两个格必须是空的）',
+        empties.length >= 2 && empties.every((t) => t.includes('空')), empties.join(' | '));
+    }
+
+    // ---- ③ 负重条：刻度来自 core（界面不自己算比例）----
+    {
+      const bar = await page.evaluate(() => {
+        const el = document.querySelector('#gearBody .weightbar');
+        if (!el) return null;
+        return { band: el.dataset.band, overweight: el.dataset.overweight, width: el.querySelector('i').style.width };
+      });
+      const v = await page.evaluate(() => window.__m2.lobby().views.loadout);
+      // 口径：浏览器会把 style.width 规范化（"33.0%" → "33%"），所以比**数值**不比字符串 ——
+      // 字符串比较会把"格式化差异"误报成"刻度算错了"。
+      check('★ M6-3 负重条画出来了，刻度与 core 的档位/比例一致（界面不做除法）',
+        !!bar && bar.band === v.band.id
+        && Math.abs(parseFloat(bar.width) - v.weightBar.ratio * 100) < 0.05,
+        `${JSON.stringify(bar)} vs ratio=${v.weightBar.ratio}`);
+    }
+
+    // ---- ④ 仓库内拖动：落点合法 → 坐标真的变了 ----
+    {
+      await page.evaluate(() => window.__m2.grantTestKit());
+      await sleep(120);
+      const spot = await page.evaluate(() => window.__m2.freeStashSpot(2, 3));
+      const r = await dragStashItemToCell('bp_medium', spot, {
+        beforeUp: async () => {
+          const st = await page.evaluate(() => window.__m2.lobby().drag);
+          check('★ M6-3 拖动中的状态可观测（dragging/落点/判定），不是靠看幽灵元素的像素',
+            st.dragging === true && st.target && st.target.kind === 'stash'
+            && st.target.x === spot.x && st.target.y === spot.y && st.verdict.ok === true,
+            JSON.stringify(st));
+        },
+      });
+      const after = await page.evaluate((u) => {
+        const e = window.__m2.profile().stash.find((x) => x.uid === u);
+        return e ? { x: e.x, y: e.y } : null;
+      }, r.uid);
+      check('★ M6-3 仓库内自由拖动：落点合法时坐标真的写进档案',
+        !!after && after.x === spot.x && after.y === spot.y,
+        `${JSON.stringify(r.from)} → ${JSON.stringify(after)} 期望 ${JSON.stringify(spot)}`);
+    }
+
+    // ---- ⑤ 非法落点：被占用 / 越界 → 回原位 + 可读原因 ----
+    {
+      const bp = await stashEntry('bp_medium');
+      const other = await page.evaluate((u) => {
+        const e = window.__m2.profile().stash.find((x) => x.uid !== u);
+        return { uid: e.uid, x: e.x, y: e.y };
+      }, bp.uid);
+      await dragStashItemToCell('bp_medium', { x: other.x, y: other.y });
+      const after = await stashEntry('bp_medium');
+      const toast = await page.evaluate(() => window.__m2.lobby().toastText);
+      check('★ M6-3 落点被占用：条目**回原位**（坐标一字未动）',
+        !!after && after.x === bp.x && after.y === bp.y, `(${bp.x},${bp.y}) → (${after.x},${after.y})`);
+      check('★ M6-3 落点被占用：给出**可读的原因**（不是"拖过去没反应"）',
+        /占着|占/.test(toast), toast || '（没有提示）');
+
+      // 越界：把 2 格宽的东西拖到最后一列 → 2+9 > 10
+      await dragStashItemToCell('bp_medium', { x: config.economy.stash.w - 1, y: 0 });
+      const after2 = await stashEntry('bp_medium');
+      const toast2 = await page.evaluate(() => window.__m2.lobby().toastText);
+      check('★ M6-3 落点越界：回原位且提示"超出仓库边界"',
+        !!after2 && after2.x === bp.x && after2.y === bp.y && /边界/.test(toast2), toast2 || '（没有提示）');
+    }
+
+    // ---- ⑥ 拖动中按 R 旋转 90°：幽灵换形、落点重算、rotated 一起提交 ----
+    {
+      const e = await stashEntry('medkit'); // 2×1 的急救包：旋转前后形状不同
+      const spot = await page.evaluate(() => window.__m2.freeStashSpot(1, 2));
+      const r = await dragStashItemToCell('medkit', spot, {
+        pressR: true,
+        beforeUp: async () => {
+          const st = await page.evaluate(() => window.__m2.lobby().drag);
+          check('★ M6-3 拖动中按 R：幽灵元素实时换形（2×1 → 1×2），判定跟着重算',
+            st.dragging === true && st.rotated === true && st.shape.w === 1 && st.shape.h === 2,
+            JSON.stringify(st));
+          // 红色提示：class 就够（这是状态，不是像素位置）
+          const ghostBad = await page.evaluate(() => {
+            const g = document.querySelector('#dragLayer .drag-ghost');
+            return g ? g.className : null;
+          });
+          check('M6-3 拖动中有幽灵元素跟随，且按合法性上色（ok/bad 两个 class 之一）',
+            !!ghostBad && /drag-ghost/.test(ghostBad), String(ghostBad));
+        },
+      });
+      const after = await page.evaluate((u) => {
+        const x = window.__m2.profile().stash.find((y) => y.uid === u);
+        return x ? { x: x.x, y: x.y, rotated: !!x.rotated } : null;
+      }, r.uid);
+      check('★ M6-3 落位时把 rotated 一起提交（朝向是数据，不是界面状态）',
+        !!after && after.x === spot.x && after.y === spot.y && after.rotated === true,
+        JSON.stringify(after));
+    }
+
+    // ---- ⑦ 拖动中的红色提示：非法朝向 ----
+    {
+      // 把 2×1 的急救包拖到**最右列**：正放 2 宽会越界 —— 于是判定为红（bad）。
+      // 这条守的是"非法朝向的落点用红色提示"这件事真的接到判定上了。
+      const e = await stashEntry('medkit');
+      if (e) {
+        await dragStashItemToCell('medkit', { x: config.economy.stash.w - 1, y: 11 }, {
+          beforeUp: async () => {
+            const st = await page.evaluate(() => window.__m2.lobby().drag);
+            const cls = await page.evaluate(() => {
+              const g = document.querySelector('#dragLayer .drag-ghost');
+              return g ? g.className : null;
+            });
+            check('★ M6-3 非法落点：判定为不合法，幽灵元素上色为 bad（红）',
+              st.verdict && st.verdict.ok === false && !!cls && /bad/.test(cls),
+              `verdict=${JSON.stringify(st.verdict)} class=${cls}`);
+          },
+        });
+        const after = await stashEntry('medkit');
+        check('★ M6-3 非法落点松手后仍在原位（红色提示与"回原位"是同一次判定）',
+          !!after && after.x === e.x && after.y === e.y, `(${e.x},${e.y}) → (${after.x},${after.y})`);
+      }
+    }
+
+    // ---- ⑧ 仓库 → 装备格：合法与三种非法 ----
+    {
+      const ok = await dragStashItemToSlot('shotgun_m590', 'primary');
+      const lo = await page.evaluate(() => window.__m2.profile().loadout);
+      check('★ M6-3 从仓库拖到装备格＝穿上（落库到配装，且那一格离开仓库）',
+        !!ok.ok && lo.primary === 'shotgun_m590'
+        && (await page.evaluate(() => window.__m2.profile().stash.filter((e) => e.itemId === 'shotgun_m590').length)) === 0,
+        `primary=${lo.primary}`);
+
+      // 武器槽号不匹配：smg_v9 是 slot:2，拖到主武器格必须被拒
+      const bad1 = await dragStashItemToSlot('smg_v9', 'primary');
+      const t1 = await page.evaluate(() => window.__m2.lobby().toastText);
+      check('★ M6-3 主武器格拒绝副武器（武器槽号校验真的接到了拖放上）',
+        !!bad1.ok && /武器槽不匹配/.test(t1), t1 || '（没有提示）');
+
+      // 部位不匹配：胸甲拖到头盔格
+      const bad2 = await dragStashItemToSlot('vest2', 'head');
+      const t2 = await page.evaluate(() => window.__m2.lobby().toastText);
+      check('★ M6-3 头盔格拒绝胸甲（护甲部位校验真的接到了拖放上）',
+        !!bad2.ok && /部位不匹配/.test(t2), t2 || '（没有提示）');
+
+      // 类别不匹配：步枪拖到背包格
+      const bad3 = await dragStashItemToSlot('rifle_m4', 'backpack');
+      const t3 = await page.evaluate(() => window.__m2.lobby().toastText);
+      check('★ M6-3 背包格拒绝武器（槽位白名单真的接到了拖放上）',
+        !!bad3.ok && /不收武器/.test(t3), t3 || '（没有提示）');
+      const backpack = await page.evaluate(() => window.__m2.profile().loadout.backpack);
+      check('★ M6-3 三次非法拖放之后配装**没变**（背包仍是原来那只）',
+        backpack === 'bp_medium', `backpack=${backpack}`);
+    }
+
+    // ---- ⑨ 装备格 → 仓库：落在玩家指定的那一格 ----
+    {
+      // 先腾空仓库：grantTestKit 塞了 31 条（约 102/120 格），一只 2×5 的霰弹枪
+      // 可能连一块连续空位都找不到 —— 那样"夹具不成立"会被误读成"脱下功能坏了"。
+      // 夹具必须是确定的：空仓库 + 一件穿在身上的装备 = 落点唯一。
+      await page.evaluate(() => window.__m2.clearStash());
+      await sleep(120);
+      const g = await gearGeometry();
+      // 形状从**物品视图**取（装备 id 与物品 id 不总相同，中间隔着一层 lootItemId 映射）
+      const d = config.itemDefs[config.equipmentDefs['shotgun_m590'].itemId];
+      const spot = await page.evaluate(([w, h]) => window.__m2.freeStashSpot(w, h), [d.w, d.h]);
+      if (spot && g.slots.primary.item) {
+        await pointerDrag({ x: g.slots.primary.x, y: g.slots.primary.y }, cellPoint(g, spot.x, spot.y));
+        const lo = await page.evaluate(() => window.__m2.profile().loadout);
+        const back = await stashEntry('shotgun_m590');
+        check('★ M6-3 从装备格拖回仓库：落在指定的那一格，且槽位清空',
+          lo.primary === null && !!back && back.x === spot.x && back.y === spot.y,
+          `primary=${lo.primary} 落点=${JSON.stringify(back)} 期望 ${JSON.stringify(spot)}`);
+      } else {
+        check('★ M6-3 从装备格拖回仓库：落在指定的那一格，且槽位清空', false,
+          `夹具不成立：freeStashSpot=${JSON.stringify(spot)} primary.item=${g.slots.primary.item}`);
+      }
+    }
+
+    // ---- ⑩ 没位移的松手 = 点击（仓库的批量出售选择仍走原路径）----
+    {
+      const g = await gearGeometry();
+      const before = await page.evaluate(() => window.__m2.lobby().views.stash.selectedCount);
+      // 用仓库里的**第一件**（上一步刚把霰弹枪脱回来），不写死 itemId ——
+      // 写死会让"上一步换了别的东西"变成一条无法解释的失败。
+      const e = await page.evaluate(() => {
+        const s = window.__m2.profile().stash[0];
+        return s ? { uid: s.uid, x: s.x, y: s.y } : null;
+      });
+      if (e) {
+        const p = cellPoint(g, e.x, e.y);
+        await page.mouse.move(p.x, p.y);
+        await page.mouse.down();
+        await page.mouse.up();
+        await sleep(150);
+      }
+      const after = await page.evaluate(() => window.__m2.lobby().views.stash.selectedCount);
+      check('★ M6-3 单击（无位移）仍然切换选中 —— 拖动与点选没有互相吃掉',
+        !!e && after === before + 1, `${before} → ${after}（条目 ${e ? e.uid : '无'}）`);
+      check('M6-3 单击之后没有留下拖动状态（手势已经收尾）',
+        (await page.evaluate(() => window.__m2.lobby().drag)).dragging === false);
+    }
+
+    // ---- ⑪ 夹具自检：CDP 鼠标输入确实产生了 pointer 事件 ----
+    {
+      const evt = await page.evaluate(() => window.__m63evt);
+      check('夹具成立：无头下 CDP 鼠标输入真的产生 pointer 事件（整组拖放的前提）',
+        evt.down >= 1 && evt.move >= 3 && evt.up >= 1, JSON.stringify(evt));
     }
   }
 }
@@ -2791,10 +3215,12 @@ try {
   if (ONLY) {
     await runM5Groups();
     await runM6CarryGroup();
+    await runM63DragGroup();
   } else {
     await runLegacyGroups();
     await runM5Groups();
     await runM6CarryGroup();
+    await runM63DragGroup();
   }
 
   // ============================================================

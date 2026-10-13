@@ -110,6 +110,11 @@ import { applyRaidToProfile } from '../src/core/settlement.js';
 import { buildRaidResult } from '../src/core/raidResult.js';
 import { createInventory } from '../src/gameplay/inventory.js';
 import { planCarry, resolveCarrySpecs } from '../src/core/carry.js';
+// ★ M6-3：拖放的落点判定（唯一路径）与指针几何。两者都是纯函数：
+// 前者不碰 DOM，后者只做算术 —— 因此端到端的"拖得动吗"之外，规则本身能在秒级反馈里逐个守住。
+import { dropItem, freeSpotFor } from '../src/core/dragDrop.js';
+import { cellFromPoint, wrapOffset } from '../src/ui/dragdrop.js';
+import { reasonText } from '../src/ui/panels.js';
 
 let pass = 0;
 const failures = [];
@@ -4118,6 +4123,281 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     check('★ M6 阵亡口径：仓库只剩安全箱保住的那一盒（自带的 90 发全丢，不会被还回来）',
       got2 === config.itemDefs[ammoItemId].unitsPerItem,
       `仓库 ${got2} 发（自带剩 90 发全部丢失，只有保险箱里那 60 发回来）`);
+  }
+}
+
+// ============================================================
+// ★ M6-3：装备页拖放（落点判定唯一路径 + 指针几何）
+//
+// 界面批次最容易出的两类缺陷都在这里用纯函数守住：
+//   ① **预览与落库不一致** —— 拖动中显示"能放"，松手却弹回去（或反过来）。做法是把
+//      同一组输入同时喂给 dryRun 与落库，断言两者的 ok/reason 逐字相同；
+//   ② **非法落点动了数据** —— 被拒时**没有**新档案交出来，调用方因此不可能改坐标（回原位）。
+//
+// 另外两条是"注入自检"：非整数落点必须被抓住（[M6-BUG-04]），
+// 以及 core 能给出的每一个拒绝原因都必须有中文文案（界面不显示机器串）。
+// ============================================================
+{
+  // 一份**确定**的仓库：2×2 背包 + 步枪 + 胸甲 + 一盒弹药。
+  // 刻意不用随机/上一条测试留下的东西 —— 夹具必须是确定的（docs/19 §八 第 4 条）。
+  const fixture = () => {
+    const base = createNewProfile(config, 0);
+    let st = stashAdd([], 'bp_small', 1, config).stash;
+    st = stashAdd(st, 'rifle_m4', 1, config).stash;
+    st = stashAdd(st, 'vest2', 1, config).stash;
+    st = stashAdd(st, 'pistol_mag', 60, config).stash;
+    st = stashNormalize(st, config).stash;
+    // 主武器**空着**，这样"从仓库拖到主武器格"是一次真实的状态变化
+    return { ...base, stash: st, loadouts: [{ ...base.loadouts[0], primary: null }] };
+  };
+  const byItem = (p, id) => p.stash.find((e) => e.itemId === id);
+  const shapeOf = (id) => itemDef(id, config);
+
+  /**
+   * 用例表：src/tgt 按**新鲜档案**求值（uid 会随规范化重排，不能跨档案复用）。
+   * wantOk=false 时必须给出期望原因 —— 只断言"被拒"会让原因串退化也没人发现。
+   */
+  const CASES = [
+    {
+      name: '仓库→空格',
+      src: (p) => ({ kind: 'stash', uid: byItem(p, 'bp_small').uid }),
+      tgt: (p) => {
+        const d = shapeOf('bp_small');
+        const s = freeSpotFor(p.stash, d.w, d.h, config);
+        return { kind: 'stash', x: s.x, y: s.y };
+      },
+      wantOk: true,
+    },
+    {
+      name: '仓库→别人占着的格',
+      src: (p) => ({ kind: 'stash', uid: byItem(p, 'bp_small').uid }),
+      tgt: (p) => {
+        const r = byItem(p, 'rifle_m4');
+        return { kind: 'stash', x: r.x, y: r.y };
+      },
+      wantOk: false,
+      reason: 'occupied',
+    },
+    {
+      name: '仓库→越界（格子数不够）',
+      src: (p) => ({ kind: 'stash', uid: byItem(p, 'bp_small').uid }),
+      tgt: () => ({ kind: 'stash', x: config.economy.stash.w, y: 0 }),
+      wantOk: false,
+      reason: 'out-of-bounds',
+    },
+    {
+      name: '仓库→主武器格',
+      src: (p) => ({ kind: 'stash', uid: byItem(p, 'rifle_m4').uid }),
+      tgt: () => ({ kind: 'slot', slotId: 'primary' }),
+      wantOk: true,
+    },
+    {
+      name: '仓库→背包格（槽位不收武器）',
+      src: (p) => ({ kind: 'stash', uid: byItem(p, 'rifle_m4').uid }),
+      tgt: () => ({ kind: 'slot', slotId: 'backpack' }),
+      wantOk: false,
+      reason: 'slot-rejects:weapon',
+    },
+    {
+      name: '仓库→头盔格（部位不匹配）',
+      src: (p) => ({ kind: 'stash', uid: byItem(p, 'vest2').uid }),
+      tgt: () => ({ kind: 'slot', slotId: 'head' }),
+      wantOk: false,
+      reason: 'wrong-cover',
+    },
+    {
+      name: '仓库→副武器格（武器槽号不匹配）',
+      src: (p) => ({ kind: 'stash', uid: byItem(p, 'rifle_m4').uid }),
+      tgt: () => ({ kind: 'slot', slotId: 'secondary' }),
+      wantOk: false,
+      reason: 'wrong-weapon-slot',
+    },
+    {
+      name: '没落在任何落点上',
+      src: (p) => ({ kind: 'stash', uid: byItem(p, 'bp_small').uid }),
+      tgt: () => null,
+      wantOk: false,
+      reason: 'no-target',
+    },
+    {
+      name: '装备格之间互换',
+      src: () => ({ kind: 'slot', slotId: 'primary' }),
+      tgt: () => ({ kind: 'slot', slotId: 'secondary' }),
+      wantOk: false,
+      reason: 'slot-to-slot',
+    },
+  ];
+
+  let agreed = 0;
+  let mutated = 0;
+  let dryLeaked = 0;
+  for (const c of CASES) {
+    const p = fixture();
+    const src = c.src(p);
+    const tgt = c.tgt(p);
+    const snapshot = JSON.stringify(p);
+    const dry = dropItem(p, p.activeLoadoutId, src, tgt, false, config, { dryRun: true });
+    const real = dropItem(p, p.activeLoadoutId, src, tgt, false, config);
+    // 纯函数必须**不动入参**：档案是外部输入（localStorage 里可能是一份正在被别处引用的对象），
+    // 拖放改到一半就地改了它，就会出现"操作失败了但东西已经挪了"这种无法回滚的状态。
+    if (JSON.stringify(p) !== snapshot) mutated++;
+    // dryRun 绝不交出档案：否则调用方可能顺手把它装上，"预览"就成了"落库"。
+    if (dry.profile !== undefined) dryLeaked++;
+    const same = dry.ok === real.ok && dry.reason === real.reason;
+    if (same) agreed++;
+    check(`★ M6-3 拖放「${c.name}」：预览与落库结论一致，且为${c.wantOk ? '放行' : `拒绝（${c.reason}）`}`,
+      same && real.ok === c.wantOk && (c.wantOk || real.reason === c.reason),
+      `dry=${JSON.stringify(dry)} real=${JSON.stringify(real)}`);
+    if (!c.wantOk) {
+      // "回原位"的可验证含义：**没有**新档案交出来 —— 调用方（main.js 的 dropCommit）
+      // 只在 ok 时替换 profile，因此坐标不可能被改动。
+      check(`★ M6-3 拖放「${c.name}」：被拒时没有新档案（回原位的实现方式）`,
+        real.profile === undefined, real.profile ? '竟然返回了新档案' : '无新档案');
+    }
+  }
+  check('★ M6-3 九类落点的预览/落库结论**逐个**一致（这是"两处各算一次"的结构性防线）',
+    agreed === CASES.length, `${agreed}/${CASES.length}`);
+  check('★ M6-3 判定**不改动入参档案**（失败时不可能留下"改了一半"的状态）',
+    mutated === 0, mutated ? `${mutated} 个用例就地改了入参` : `${CASES.length} 个用例入参逐字节未变`);
+  check('★ M6-3 dryRun 从不交出档案（否则"预览"会被调用方当成落库装上）',
+    dryLeaked === 0, dryLeaked ? `${dryLeaked} 次泄露` : '零泄露');
+  // 拖放不许吞东西：成功的仓库内移动只改坐标，条目多重集合必须完全不变。
+  {
+    const p = fixture();
+    const e = byItem(p, 'bp_small');
+    const d = shapeOf('bp_small');
+    const s = freeSpotFor(p.stash, d.w, d.h, config);
+    const key = (list) => list.map((x) => `${x.itemId}×${x.count}`).sort().join(',');
+    const res = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid: e.uid }, { kind: 'stash', x: s.x, y: s.y }, false, config);
+    const movedOk = res.ok && res.profile.stash.find((x) => x.uid === e.uid).x === s.x;
+    check('★ M6-3 仓库内移动只改坐标：条目多重集合与总量完全不变（不许吞东西）',
+      movedOk && key(res.profile.stash) === key(p.stash), res.ok ? key(res.profile.stash) : res.reason);
+  }
+
+  // ---- 旋转：同一格，朝向不同 → 合法性格不同 ----
+  {
+    const p = fixture();
+    const d = shapeOf('rifle_m4');
+    const W = config.economy.stash.w;
+    const H = config.economy.stash.h;
+    // 摆在右下角：正放（d.w×d.h）会超出下边界，旋转 90°（d.h×d.w）正好塞进右下角
+    const x = W - d.h;
+    const y = H - d.w;
+    const badIfFlat = y + d.h > H;
+    check('夹具成立：这一个落点"正放越界、旋转后合法"（否则旋转断言测不出东西）',
+      badIfFlat && x + d.h <= W, `落点 (${x},${y})，物品 ${d.w}×${d.h}，仓库 ${W}×${H}`);
+    const uid = byItem(p, 'rifle_m4').uid;
+    const flat = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid }, { kind: 'stash', x, y }, false, config, { dryRun: true });
+    const rot = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid }, { kind: 'stash', x, y }, true, config);
+    check('★ M6-3 拖动中按 R 旋转：同一格的判定随之改变（越界 → 合法）',
+      flat.ok === false && flat.reason === 'out-of-bounds' && rot.ok === true,
+      `正放 ${JSON.stringify(flat)} / 旋转 ${JSON.stringify(rot)}`);
+    const moved = rot.profile && rot.profile.stash.find((e) => e.uid === uid);
+    check('★ M6-3 落位时 `rotated` 与坐标一起提交（朝向是数据，不是界面状态）',
+      !!moved && moved.x === x && moved.y === y && moved.rotated === true,
+      moved ? `→ (${moved.x},${moved.y}) rotated=${moved.rotated}` : '没有落库');
+  }
+
+  // ---- 原地旋转仍然合法：落点判定必须排除自己（沿用 packing 的那条既有规则）----
+  {
+    const p = fixture();
+    const e = byItem(p, 'bp_small');
+    const res = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid: e.uid },
+      { kind: 'stash', x: e.x, y: e.y }, !e.rotated, config, { dryRun: true });
+    check('★ M6-3 原地转 90° 仍然合法（占用图排除了自己；否则"转一下"永远失败）',
+      res.ok === true, res.ok ? 'ok' : res.reason);
+  }
+
+  // ---- 装备格 → 仓库：指定落点 ----
+  {
+    // 现实情形：这只背包**已被穿上**，所以它不在仓库里（装备时就从仓库取走了）。
+    // 若仓库里还留着一只同名的，`find(itemId)` 会抓到旧的那一只 —— 断言就成了假绿灯。
+    const base = fixture();
+    const p = {
+      ...base,
+      stash: base.stash.filter((e) => e.itemId !== 'bp_small'),
+      loadouts: [{ ...base.loadouts[0], backpack: 'bp_small' }],
+    };
+    const d = shapeOf('bp_small');
+    const s = freeSpotFor(p.stash, d.w, d.h, config);
+    const res = dropItem(p, p.activeLoadoutId, { kind: 'slot', slotId: 'backpack' },
+      { kind: 'stash', x: s.x, y: s.y }, false, config);
+    const back = res.profile && res.profile.stash.find((e) => e.itemId === 'bp_small');
+    check('★ M6-3 从装备格拖回仓库：落在玩家指定的那一格，且槽位清空',
+      res.ok && res.profile.loadouts[0].backpack === null && !!back && back.x === s.x && back.y === s.y,
+      res.ok ? `→ (${back.x},${back.y}) 期望 (${s.x},${s.y})` : res.reason);
+  }
+
+  // ---- 坏输入（注入自检）----
+  {
+    const p = fixture();
+    const gone = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid: 99999 },
+      { kind: 'stash', x: 0, y: 0 }, false, config, { dryRun: true });
+    check('★ M6-3 拖动源已经不在仓库里（uid 失效）→ unknown-uid，且不会凭空造出物品',
+      gone.ok === false && gone.reason === 'unknown-uid', gone.reason);
+
+    // [M6-BUG-04]：非整数落点必须被**这里**抓住，而不是被 isAreaFree 统一翻成 'occupied'
+    //   （"坐标算错了"显示成"这一格被占着"会把排查带偏一整轮 —— 实测如此）。
+    const half = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid: byItem(p, 'bp_small').uid },
+      { kind: 'stash', x: 1.5, y: 2 }, false, config, { dryRun: true });
+    const nan = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid: byItem(p, 'bp_small').uid },
+      { kind: 'stash', x: NaN, y: 2 }, false, config, { dryRun: true });
+    check('★ [M6-BUG-04] 非整数 / NaN 落点被明确拒绝为 bad-target（不是含糊的"被占用"）',
+      half.ok === false && half.reason === 'bad-target' && nan.ok === false && nan.reason === 'bad-target',
+      `半格=${JSON.stringify(half)} NaN=${JSON.stringify(nan)}`);
+
+    const weird = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid: byItem(p, 'bp_small').uid },
+      { kind: 'moon' }, false, config, { dryRun: true });
+    check('未知落点类型被拒绝（unknown-target）', weird.ok === false && weird.reason === 'unknown-target', weird.reason);
+
+    const noSrc = dropItem(p, p.activeLoadoutId, null, { kind: 'slot', slotId: 'primary' }, false, config, { dryRun: true });
+    check('没有拖动源时被拒绝（no-source）', noSrc.ok === false && noSrc.reason === 'no-source', noSrc.reason);
+  }
+
+  // ---- 指针几何（ui/dragdrop.js 的纯函数）----
+  {
+    const rect = { left: 100, top: 200, right: 400, bottom: 560 }; // 10 列 × 12 行，每格 30px
+    const cell = 30;
+    const mid = cellFromPoint(rect, cell, 100 + 3 * cell + 15, 200 + 5 * cell + 15);
+    check('★ M6-3 指针 → 格坐标：格中心落在期望的格上',
+      mid.x === 3 && mid.y === 5 && mid.inside === true, JSON.stringify(mid));
+
+    // 左上外侧：**不裁剪**，交给 core 去回答"越界"（界面不替它下结论）
+    const out = cellFromPoint(rect, cell, 99, 199);
+    check('★ M6-3 指针在网格左上外侧时坐标为负且 inside=false（**不裁剪** —— 越界由 core 判定）',
+      out.x === -1 && out.y === -1 && out.inside === false, JSON.stringify(out));
+
+    // 右/下边界是开区间：正好落在 right/bottom 上属于"外面"，
+    // 否则贴着右边缘松手会多算出一格，落点会被 core 判成越界（"明明在格子上却说放不下"）。
+    const edge = cellFromPoint(rect, cell, rect.right, rect.bottom);
+    check('★ M6-3 右下边界按**开区间**处理（贴着边缘松手不会多算一格）',
+      edge.inside === false, JSON.stringify(edge));
+
+    const w1 = wrapOffset(0, 1, 2, 1);
+    check('★ M6-3 旋转后把抓住的那一格夹回新形状内（否则幽灵元素会画到指针外面）',
+      w1.dx === 0 && w1.dy === 0, JSON.stringify(w1));
+    const w2 = wrapOffset(-3, 5, 2, 2);
+    check('夹取偏移对负数与超界都收敛到 [0, w-1]×[0, h-1]',
+      w2.dx === 0 && w2.dy === 1, JSON.stringify(w2));
+  }
+
+  // ---- 拒绝原因必须有中文文案（界面不显示机器串）----
+  {
+    const REASONS = [
+      'occupied', 'out-of-bounds', 'no-target', 'no-source', 'bad-target', 'unknown-uid',
+      'unknown-item', 'unknown-target', 'unknown-reason', 'not-equipment', 'no-such-slot',
+      'empty-slot', 'bad-count', 'slot-to-slot', 'wrong-weapon-slot', 'wrong-cover', 'stash-full',
+      'slot-rejects:weapon', 'slot-rejects:armor', 'slot-rejects:backpack', 'slot-rejects:rig',
+    ];
+    const missing = REASONS.filter((r) => {
+      const t = reasonText(r);
+      return !t || t === r;
+    });
+    check('★ M6-3 core 能给出的每个拖放拒绝原因都有中文文案（界面不显示机器串）',
+      missing.length === 0, missing.join(',') || `${REASONS.length} 条全部有文案`);
+    // 注入自检：没有映射的串**会**原样返回 —— 证明上一条不是"reasonText 恰好是恒等函数"。
+    check('注入自检：未映射的串被原样返回（上一条因此是有效检查，不是恒等式的假绿灯）',
+      reasonText('zzz-没有映射-zzz') === 'zzz-没有映射-zzz');
   }
 }
 

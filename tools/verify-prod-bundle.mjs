@@ -61,6 +61,9 @@ const FORBIDDEN = [
   'equipCarry',
   'stuffLoadout',
   'ammoInGrid',
+  // M6-3 界面批次新增的夹具：拖放的端到端需要"仓库里哪一格是空的"，
+  // 而这件事必须问落点判定的同一个谓词（不能由测试自己推算坐标）。
+  'freeStashSpot',
 ];
 
 console.log('\n================ 生产产物校验（调试接口必须已被剔除）================\n');

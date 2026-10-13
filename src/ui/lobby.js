@@ -21,8 +21,15 @@
 
 const $ = (id) => document.getElementById(id);
 
-/** 标签页顺序（同时决定 DOM id：tabBrief / tabLoadout / …） */
-export const TABS = Object.freeze(['brief', 'loadout', 'stash', 'shop', 'skills', 'quests']);
+/**
+ * 标签页顺序（同时决定 DOM id：tabGear / tabShop / …）。
+ *
+ * ★ M6-3：配装与仓库合并为「装备」（docs/18 §3.3），因此这里由 6 个变 4 个。
+ * 简报并入装备页顶部（`#lobbyBody` 原样保留）—— 它不是"第 5 个面板"，
+ * 但它是客观存在的一个页签，删掉它就会丢掉撤离点规则这类进战区前的必需信息。
+ * 这三处必须同时改：TABS、`bodyIdOf` 生成的 id、以及 index.html 里的 `.tab`。
+ */
+export const TABS = Object.freeze(['gear', 'shop', 'skills', 'quests']);
 
 const bodyIdOf = (tab) => `tab${tab[0].toUpperCase()}${tab.slice(1)}`;
 
@@ -52,7 +59,8 @@ export function createLobby() {
 
   const tabEls = el.tabs ? Array.from(el.tabs.querySelectorAll('.tab')) : [];
   let onTab = () => {};
-  let current = 'brief';
+  // 默认页签 = index.html 里带 `.on` 的那一个（M6-3 起是「装备」）。
+  let current = TABS[0];
 
   /** 切换标签页。面板内容由 main.js 渲染（UI 不持有数据）。 */
   function showTab(name) {

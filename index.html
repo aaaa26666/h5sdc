@@ -211,9 +211,57 @@
         border: 1px solid rgba(120,160,180,.3); border-radius: 4px; }
       .grid-item { position: absolute; padding: 2px 3px; font-size: 10px; line-height: 1.15;
         overflow: hidden; border: 1px solid rgba(140,200,225,.55); border-radius: 3px;
-        background: rgba(60,110,150,.35); cursor: pointer; pointer-events: auto; }
+        background: rgba(60,110,150,.35); cursor: grab; pointer-events: auto; user-select: none; }
       .grid-item.on { background: rgba(120,190,240,.55); border-color: #cfe3ea; }
       .grid-item .qty { color: var(--warn); }
+      /* 拖动中被抓走的那一件变暗，让"它已经离开原位"看得出来 */
+      .grid-item.dragging, .equip-slot.dragging { opacity: .35; }
+
+      /* ---- ★ M6-3 装备页（配装 + 仓库合并）----
+         布局是**固定的像素盒**（剪影 300×340），因此装备格的矩形在任何窗口尺寸下都一样 ——
+         端到端要靠这些矩形算拖放坐标，布局随机变化会让那批断言变成"时通时不通"。 */
+      .brief-strip { border-bottom: 1px solid rgba(120,160,180,.25); margin-bottom: 10px; padding-bottom: 6px; }
+      .gear { display: flex; gap: 18px; align-items: flex-start; }
+      .gear-left { flex: 0 0 300px; }
+      .gear-right { flex: 1 1 auto; min-width: 0; }
+      .gear-figure { position: relative; width: 300px; height: 340px; margin-bottom: 6px; }
+      .silhouette { position: absolute; inset: 0; width: 100%; height: 100%;
+        color: #8fc4dd; opacity: .22; pointer-events: none; }
+      .equip-slot { position: absolute; display: flex; flex-direction: column; gap: 1px;
+        padding: 3px 5px; font-size: 10px; line-height: 1.25; overflow: hidden; text-align: left;
+        border: 1px dashed rgba(140,200,225,.45); border-radius: 6px;
+        background: rgba(16,26,34,.74); cursor: grab; pointer-events: auto; user-select: none; }
+      .equip-slot.on { border-style: solid; border-color: rgba(140,200,225,.8); background: rgba(60,110,150,.44); }
+      .slot-head { left: 98px; top: 0; width: 104px; height: 58px; }
+      .slot-body { left: 98px; top: 62px; width: 104px; height: 78px; }
+      .slot-rig { left: 98px; top: 148px; width: 104px; height: 64px; }
+      .slot-backpack { left: 98px; top: 220px; width: 104px; height: 112px; }
+      .slot-primary { left: 0; top: 62px; width: 88px; height: 270px; }
+      .slot-secondary { left: 212px; top: 62px; width: 88px; height: 270px; }
+      .slot-k, .slot-w, .slot-cap { color: var(--dim); }
+      .slot-v { color: var(--ink); }
+      .weight-line, .carry-line, .preset-line { display: flex; justify-content: space-between;
+        align-items: center; gap: 8px; padding: 4px 0;
+        border-bottom: 1px dashed rgba(120,160,180,.16); }
+      .weightbar { height: 8px; background: rgba(255,255,255,.10); border-radius: 4px;
+        overflow: hidden; margin: 4px 0 6px; }
+      .weightbar > i { display: block; height: 100%; background: var(--ok); }
+      .weightbar[data-overweight="1"] > i { background: var(--warn); }
+      .steppers { margin-top: 6px; }
+      .stepper { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 0; }
+      .stepper .grp { display: inline-flex; align-items: center; gap: 4px; }
+      .stepper .num { min-width: 62px; text-align: center; }
+
+      /* 拖动的幽灵元素。位置由 ui/dragdrop.js 用 ev.clientX/clientY（**视口坐标**）写入，
+         所以这里用 position:fixed —— 它与坐标口径自洽，不依赖"宿主元素的包含块恰好也在视口原点"
+         这条隐含前提（今天宿主是 #dragLayer，明天若换成别的容器，absolute 就会静默偏移）。
+         pointer-events:none 是必须的：否则幽灵元素会盖住落点。 */
+      #dragLayer { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
+      .drag-ghost { position: fixed; box-sizing: border-box; padding: 2px 3px; font-size: 10px;
+        line-height: 1.15; overflow: hidden; border: 1px solid rgba(140,200,225,.9);
+        border-radius: 3px; background: rgba(80,150,190,.45); cursor: grabbing; }
+      .drag-ghost.ok { border-color: var(--ok); background: rgba(60,160,110,.35); }
+      .drag-ghost.bad { border-color: var(--bad); background: rgba(190,70,60,.35); }
       .list-scroll { max-height: 300px; overflow: auto; }
       .li-row { display: flex; justify-content: space-between; align-items: center; gap: 10px;
         padding: 4px 0; border-bottom: 1px dashed rgba(120,160,180,.14); }
@@ -283,26 +331,36 @@
              界面只排版 —— 与 M5-1 对简报的口径一致。 -->
         <div id="lobbyStats" class="statsbar"></div>
 
-        <!-- M5：大厅内标签页（制作人裁定）。每个面板只渲染 core/ 的纯函数产物。 -->
+        <!-- M5：大厅内标签页（制作人裁定）。每个面板只渲染 core/ 的纯函数产物。
+             ★ M6-3（docs/18 第 3 批）：**配装与仓库合并**成「装备」页，页签由 6 个变 4 个。
+             原始方案的 §3.3 写的是"由 5 个变 4 个"，它数的是 M5 的**五个面板入口**
+             （配装/仓库/商店/技能/任务），没有把简报算进去 —— 而简报页签是客观存在的第 6 个。
+             简报**不能删**：撤离点开放规则、单局时限、敌方数量与分级是进战区前唯一的权威来源，
+             删掉它等于静默丢信息。因此简报并入「装备」页顶部（`#lobbyBody` 原样保留、
+             始终可见、内容一条不少），见 docs/20 的"口径与裁定"一节。 -->
         <div class="tabs" id="lobbyTabs">
-          <div class="tab on" data-tab="brief">简报</div>
-          <div class="tab" data-tab="loadout">配装</div>
-          <div class="tab" data-tab="stash">仓库</div>
+          <div class="tab on" data-tab="gear">装备</div>
           <div class="tab" data-tab="shop">商店</div>
           <div class="tab" data-tab="skills">技能</div>
           <div class="tab" data-tab="quests">任务</div>
         </div>
 
-        <div class="tabbody on" id="tabBrief">
-          <!-- 战区简报：数值全部由 src/core/briefing.js 从配置表产出，这里只排版 -->
-          <div id="lobbyBody"></div>
-          <!-- §2.6 要求"断线惩罚规则需在首次进入时告知玩家" -->
-          <p class="muted" style="margin-top:14px">
-            ⚠ 断线或关闭页面视为<b>未撤离</b>：除保险箱内的物品外，本局携带物全部损失。
-          </p>
+        <div class="tabbody on" id="tabGear">
+          <!-- 战区简报：数值全部由 src/core/briefing.js 从配置表产出，这里只排版。
+               它排在装备页顶部而不是单独一页 —— 玩家在这一页做的决定（带什么、穿什么）
+               正是由这些数字决定的。两列排版是为了不让它把下面的装备格挤出视口。 -->
+          <div class="brief-strip">
+            <div id="lobbyBody" class="grid2"></div>
+            <!-- §2.6 要求"断线惩罚规则需在首次进入时告知玩家" -->
+            <p class="muted" style="margin-top:8px">
+              ⚠ 断线或关闭页面视为<b>未撤离</b>：除保险箱内的物品外，本局携带物全部损失。
+            </p>
+          </div>
+          <!-- 装备面板本身（配装 + 仓库）。**单独一层容器**是必需的：
+               panels.js 的这个面板用 innerHTML 整块重绘，若直接写 #tabGear，
+               上面那条简报会在每次重绘时被抹掉（简报由 ui/lobby.js 写 #lobbyBody）。 -->
+          <div id="gearBody"></div>
         </div>
-        <div class="tabbody" id="tabLoadout"></div>
-        <div class="tabbody" id="tabStash"></div>
         <div class="tabbody" id="tabShop"></div>
         <div class="tabbody" id="tabSkills"></div>
         <div class="tabbody" id="tabQuests"></div>
@@ -322,6 +380,10 @@
           <div class="row"><span class="warn">注意</span><span class="warn">请勿使用 Ctrl 组合键（浏览器保留，无法拦截）</span></div>
           <div class="row"><span class="k">撤离</span><span>走进撤离区（绿=可用，灰=未开放）并停留 10 秒</span></div>
           <div class="row"><span class="k">暂停 / 设置</span><span>Esc 解锁指针后可打开设置</span></div>
+          <!-- ★ M6-3：装备页的拖放必须写出来。之前的配装是一排下拉框，
+               现在的交互动作完全换了 —— 不写，玩家会以为"仓库里的东西穿不上"。 -->
+          <div class="row"><span class="k">装备页拖放</span><span>左键拖动仓库里的东西：拖到左边装备格＝穿上，拖回网格＝放下；<b>拖动中按 R 旋转 90°</b></span></div>
+          <div class="row"><span class="k">整理 / 出售</span><span>单击仓库条目＝选中（可批量出售）；拖到空格＝移动</span></div>
         </details>
 
         <!-- M4-7：上局中断后，这里出现一条可点击的提示（默认隐藏） -->
@@ -448,6 +510,10 @@
         </div>
       </div>
     </div>
+
+    <!-- ★ M6-3：拖放的幽灵元素挂在这里（fixed 全屏、pointer-events:none），
+         因此 .drag-ghost 的 left/top 直接就是视口坐标，不需要任何换算。 -->
+    <div id="dragLayer"></div>
 
     <script type="module" src="/src/main.js"></script>
   </body>
