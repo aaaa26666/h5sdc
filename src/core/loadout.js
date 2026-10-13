@@ -16,7 +16,7 @@
 // 关于弹药的单位：仓库条目的 `count` 就是**发数**（每格最多 60 发，由物品的 stack 决定），
 // 因此"扣 120 发"与"条目的 count 减 120"是同一件事，不需要换算。
 
-import { stashAdd, stashRemoveItem, stashTotalOf } from './stash.js';
+import { stashAdd, stashRemove, stashRemoveItem, stashTotalOf, stashAddAt } from './stash.js';
 import { itemDef, itemIdOfEquipment, equipmentDef, equipmentIdOfItem, safeTierDef } from './items.js';
 import { skillModifiers } from './progression.js';
 import { sanitizeLoadoutShape, activeLoadout } from './profile.js';
@@ -401,6 +401,93 @@ export function removePreset(profile, presetId, cfg) {
 export function setActivePreset(profile, presetId) {
   if (!profile.loadouts.some((l) => l.id === presetId)) return { ok: false, reason: 'unknown-preset' };
   return { ok: true, profile: { ...profile, activeLoadoutId: presetId } };
+}
+
+// ---------------------------------------------------------------------------
+// ★ M6 拖放：从仓库穿上 / 脱下放回仓库（纯函数）
+//
+// 为什么这两件事要收在这里：装备格的**接受规则**（槽位白名单、武器槽号、护甲部位）
+// 与 core/profile.js 的 sanitizeLoadoutShape 是同一套。若在界面的事件处理里另判一次，
+// 就会出现"拖过去看起来成功了、进局却是空的"——因为收敛时被丢掉了。
+// 这里返回的原因串（slot-rejects:backpack / wrong-cover …）就是给界面直接显示的。
+// ---------------------------------------------------------------------------
+
+/**
+ * 某个槽位是否接受某件物品。
+ * @returns {{ok:boolean, reason?:string, equipmentId?:string}}
+ */
+export function slotAcceptsItem(slotId, itemId, cfg) {
+  const spec = (cfg.equipment.slots || []).find((s) => s.id === slotId);
+  if (!spec || spec.disabled) return { ok: false, reason: 'no-such-slot' };
+  const eqId = equipmentIdOfItem(itemId, cfg);
+  const eq = eqId ? equipmentDef(eqId, cfg) : null;
+  if (!eq) return { ok: false, reason: 'not-equipment' };
+  if (!spec.accepts.includes(eq.kind)) return { ok: false, reason: `slot-rejects:${eq.kind}` };
+  if (eq.kind === 'weapon' && spec.weaponSlot !== undefined && eq.def.slot !== spec.weaponSlot) {
+    return { ok: false, reason: 'wrong-weapon-slot' };
+  }
+  if (eq.kind === 'armor' && spec.armorCovers !== undefined && !eq.def.covers.includes(spec.armorCovers)) {
+    return { ok: false, reason: 'wrong-cover' };
+  }
+  return { ok: true, equipmentId: eqId };
+}
+
+/**
+ * 从仓库把某一条（按 uid）穿到槽位上。**该槽原来那件还回仓库**（不是丢掉）。
+ *
+ * 仓库放不下还回的那件时，整次操作**回滚**并返回 `stash-full` ——
+ * 宁可让玩家先腾地方，也不能悄悄吞掉一件装备。
+ */
+export function equipFromStash(profile, presetId, uid, slotId, cfg) {
+  const entry = profile.stash.find((e) => e.uid === uid);
+  if (!entry) return { ok: false, reason: 'unknown-uid' };
+  const acc = slotAcceptsItem(slotId, entry.itemId, cfg);
+  if (!acc.ok) return acc;
+
+  const lo = profile.loadouts.find((l) => l.id === presetId) || activeLoadout(profile);
+  // 按 uid 取走**一件**（不是按 itemId 取"任意一件"）：玩家拖的是屏幕上那一格
+  const rem = stashRemove(profile.stash, uid, 1, cfg);
+  if (!(rem.removed > 0)) return { ok: false, reason: 'unknown-uid' };
+  let stash = rem.stash;
+
+  const prev = lo[slotId] || null;
+  if (prev) {
+    const add = stashAdd(stash, itemIdOfEquipment(prev, cfg), 1, cfg);
+    if (add.leftover > 0) return { ok: false, reason: 'stash-full' };
+    stash = add.stash;
+  }
+
+  const merged = { ...lo, [slotId]: acc.equipmentId };
+  const { loadout, repairs } = sanitizeLoadoutShape(merged, cfg);
+  const loadouts = profile.loadouts.map((l) => (l.id === lo.id ? loadout : l));
+  return { ok: true, profile: { ...profile, stash, loadouts }, repairs };
+}
+
+/**
+ * 把槽位上的装备脱到仓库。
+ * @param {object|null} cell 指定落点 `{x,y,rotated}`；给 null 时由仓库自己找位置。
+ */
+export function unequipToStash(profile, presetId, slotId, cell, cfg) {
+  const lo = profile.loadouts.find((l) => l.id === presetId) || activeLoadout(profile);
+  const cur = lo[slotId];
+  if (!cur) return { ok: false, reason: 'empty-slot' };
+  const itemId = itemIdOfEquipment(cur, cfg);
+
+  let stash;
+  if (cell) {
+    const r = stashAddAt(profile.stash, itemId, 1, cell.x, cell.y, !!cell.rotated, cfg);
+    if (!r.ok) return r;
+    stash = r.stash;
+  } else {
+    const add = stashAdd(profile.stash, itemId, 1, cfg);
+    if (add.leftover > 0) return { ok: false, reason: 'stash-full' };
+    stash = add.stash;
+  }
+
+  const merged = { ...lo, [slotId]: null };
+  const { loadout, repairs } = sanitizeLoadoutShape(merged, cfg);
+  const loadouts = profile.loadouts.map((l) => (l.id === lo.id ? loadout : l));
+  return { ok: true, profile: { ...profile, stash, loadouts }, repairs };
 }
 
 /** 重命名预设。 */

@@ -52,6 +52,10 @@ import {
   stashTotalOf,
   stashBulkSell,
   stashRemoveItem,
+  stashNormalize,
+  stashMoveTo,
+  stashAddAt,
+  stashCapacity,
 } from '../src/core/stash.js';
 import { itemDef, itemIdOfEquipment, equipmentIdOfItem, equivalentIds } from '../src/core/items.js';
 import {
@@ -81,6 +85,9 @@ import {
   addPreset,
   removePreset,
   setActivePreset,
+  slotAcceptsItem,
+  equipFromStash,
+  unequipToStash,
 } from '../src/core/loadout.js';
 import {
   basePriceOf,
@@ -3895,6 +3902,94 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     check('不传基数时退回参考装载（校验器与旧调用方行为不变）',
       skillModifiers(p, config).weightLimitKg === config.lootTable.backpack.weightLimitKg,
       `${skillModifiers(p, config).weightLimitKg}kg`);
+  }
+  // ---- ⑨ ★ M6 拖放所需的纯逻辑（仓库内移动 / 穿上 / 脱下）----
+  {
+    const p0 = createNewProfile(config, 0);
+    // 一只 2×2 的背包 + 一把 2×4 的步枪 + 60 发弹药
+    let st = stashAdd([], 'bp_small', 1, config).stash;
+    st = stashAdd(st, 'rifle_sr25', 1, config).stash;
+    st = stashAdd(st, 'pistol_mag', 60, config).stash;
+    st = stashNormalize(st, config).stash;
+    const bpEntry = st.find((e) => e.itemId === 'bp_small');
+    const rifleEntry = st.find((e) => e.itemId === 'rifle_sr25');
+
+    // 移到空格：合法，坐标与朝向都落定
+    const mv = stashMoveTo(st, bpEntry.uid, 6, 5, true, config);
+    const moved = mv.ok && mv.stash.find((e) => e.uid === bpEntry.uid);
+    check('★ M6 仓库内移动：落到空格时坐标与朝向都改（拖放的基础）',
+      moved && moved.x === 6 && moved.y === 5 && moved.rotated === true,
+      mv.ok ? `→ (${moved.x},${moved.y}) rotated=${moved.rotated}` : `被拒：${mv.reason}`);
+
+    // 移到被占的格：非法，**原样返回**（不是静默挪到别处）
+    const bad = stashMoveTo(st, bpEntry.uid, rifleEntry.x, rifleEntry.y, false, config);
+    check('★ M6 落点被占用时拒绝并给出原因（不静默挪到别处）',
+      bad.ok === false && bad.reason === 'occupied' && bad.stash === st,
+      `reason=${bad.reason}`);
+
+    // 移出界：非法
+    const oob = stashMoveTo(st, bpEntry.uid, 99, 0, false, config);
+    check('落点越界时拒绝（reason=out-of-bounds）', oob.ok === false && oob.reason === 'out-of-bounds', oob.reason);
+
+    // 自己那一格：必须仍然合法（占用图要排除自己，否则永远和自己重叠）
+    const self = stashMoveTo(st, bpEntry.uid, bpEntry.x, bpEntry.y, !bpEntry.rotated, config);
+    check('★ M6 原地旋转合法（占用图排除了自己，否则"转一下"永远失败）',
+      self.ok === true, self.ok ? 'ok' : self.reason);
+
+    // stashAddAt：指定格放一件
+    const at = stashAddAt(st, 'bandage', 1, 9, 11, false, config);
+    check('stashAddAt 在指定格放下一件（卸下装备的落点用它）',
+      at.ok && at.stash.length === st.length + 1, at.ok ? `uid=${at.uid}` : at.reason);
+    const at2 = stashAddAt(at.stash, 'bandage', 1, 9, 11, false, config);
+    check('stashAddAt 落点被占用时拒绝', at2.ok === false && at2.reason === 'occupied', at2.reason);
+
+    // ---- 穿上 / 脱下 ----
+    const profile1 = { ...p0, stash: st, loadouts: [{ ...p0.loadouts[0], backpack: null }] };
+    const eq = equipFromStash(profile1, profile1.loadouts[0].id, bpEntry.uid, 'backpack', config);
+    const equipped = eq.ok && eq.profile.loadouts[0].backpack === 'bp_small';
+    const stillInStash = eq.ok && eq.profile.stash.some((e) => e.uid === bpEntry.uid);
+    check('★ M6 从仓库拖到装备格：装上了，且那一格从仓库消失',
+      equipped && !stillInStash,
+      eq.ok ? `backpack=${eq.profile.loadouts[0].backpack} 仓库仍有该 uid=${stillInStash}` : `被拒：${eq.reason}`);
+
+    // 部位/槽号不匹配必须被拒
+    const wrongSlot = slotAcceptsItem('backpack', 'rifle_sr25', config);
+    check('槽位白名单：背包槽拒绝步枪（reason=slot-rejects:weapon）',
+      wrongSlot.ok === false && wrongSlot.reason === 'slot-rejects:weapon', wrongSlot.reason);
+    const wrongCover = slotAcceptsItem('head', 'vest2', config);
+    check('护甲部位校验：头盔槽拒绝胸甲（reason=wrong-cover）',
+      wrongCover.ok === false && wrongCover.reason === 'wrong-cover', wrongCover.reason);
+    const wrongWeapon = slotAcceptsItem('secondary', 'rifle_m4', config);
+    check('武器槽号校验：副武器槽拒绝主武器（reason=wrong-weapon-slot）',
+      wrongWeapon.ok === false && wrongWeapon.reason === 'wrong-weapon-slot', wrongWeapon.reason);
+
+    // 换装：原来那件**还回仓库**，不凭空消失
+    let p2 = { ...p0, stash: stashAdd([], 'bp_large', 1, config).stash, loadouts: [{ ...p0.loadouts[0], backpack: 'bp_small' }] };
+    const largeEntry = p2.stash.find((e) => e.itemId === 'bp_large');
+    const swap = equipFromStash(p2, p2.loadouts[0].id, largeEntry.uid, 'backpack', config);
+    check('★ M6 换装时原来那件还回仓库（数量守恒，不凭空消失）',
+      swap.ok && swap.profile.loadouts[0].backpack === 'bp_large'
+      && stashTotalOf(swap.profile.stash, 'bp_small', config) === 1
+      && stashTotalOf(swap.profile.stash, 'bp_large', config) === 0,
+      swap.ok ? `装上 bp_large，仓库里 bp_small=${stashTotalOf(swap.profile.stash, 'bp_small', config)}` : swap.reason);
+
+    // 脱下：放回指定格
+    const off = unequipToStash(swap.profile, swap.profile.loadouts[0].id, 'backpack', { x: 3, y: 7, rotated: false }, config);
+    const back = off.ok && off.profile.stash.find((e) => e.itemId === 'bp_large');
+    check('★ M6 脱下装备放回指定格（玩家点哪就放哪）',
+      !!back && back.x === 3 && back.y === 7 && off.profile.loadouts[0].backpack === null,
+      off.ok ? `→ (${back.x},${back.y})` : off.reason);
+
+    // 仓库满时脱下必须被拒（不能吞掉一件装备）
+    const fullStash = [];
+    let f = fullStash;
+    for (let i = 0; i < 20; i++) f = stashAdd(f, 'rifle_sr25', 1, config).stash;   // 20×8 = 160 > 120 格
+    const fullPlaced = stashUsedSlots(f, config);
+    const p3 = { ...p0, stash: f, loadouts: [{ ...p0.loadouts[0], backpack: 'bp_medium' }] };
+    const offFull = unequipToStash(p3, p3.loadouts[0].id, 'backpack', null, config);
+    check('★ M6 仓库放不下时拒绝脱下（宁可让玩家腾地方，也不吞掉装备）',
+      fullPlaced >= stashCapacity(config) ? (offFull.ok === false && offFull.reason === 'stash-full') : true,
+      `已用 ${fullPlaced}/${stashCapacity(config)} 格 → ${offFull.ok ? '竟然成功了' : offFull.reason}`);
   }
 }
 

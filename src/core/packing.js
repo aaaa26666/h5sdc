@@ -148,6 +148,23 @@ export function markArea(grid, x, y, w, h, v = true) {
 }
 
 /**
+ * ★ M6：某块矩形是不是**空的且在界内**。
+ *
+ * 为什么单独抽出来：拖放（仓库内自由移动、从仓库拖到装备格）判的就是这件事，
+ * 而它是"某种 findSlot"—— 若在界面里另写一段 `occupied[dy][dx]` 的双层循环，
+ * 就会出现两套边界规则（越界算不算、旋转后的 w/h 用哪个），而它们迟早分叉。
+ */
+export function isAreaFree(grid, x, y, w, h) {
+  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0) return false;
+  if (w <= 0 || h <= 0) return false;
+  if (x + w > grid.w || y + h > grid.h) return false;
+  for (let dy = 0; dy < h; dy++) {
+    for (let dx = 0; dx < w; dx++) if (grid.occupied[y + dy][x + dx]) return false;
+  }
+  return true;
+}
+
+/**
  * 整理：把已放入的物品**按价值密度降序**重新排放一遍。
  *
  * 为什么需要它：运行时是"捡到什么塞什么"（首次适配），

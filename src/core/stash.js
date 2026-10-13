@@ -12,7 +12,7 @@
 // 本文件不读配置表对象，只接受调用方传入的 cfg（含 itemDefs / economy.stash），
 // 因此可以在 Node 单测里独立驱动。
 
-import { createGrid, findSlot, markArea } from './packing.js';
+import { createGrid, findSlot, markArea, isAreaFree } from './packing.js';
 import { itemDef, itemShape, equivalentIds } from './items.js';
 
 /** 仓库尺寸（来自经济表）。 */
@@ -354,5 +354,67 @@ export function stashSummary(entries, cfg) {
     weightKg: stashWeight(entries, cfg),
     used: stashUsedSlots(entries, cfg),
     total: stashCapacity(cfg),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ★ M6：拖放所需的两个操作（纯函数）
+//
+// 为什么放在这里而不是写在界面的事件处理里：
+//   ① "这一格放不放得下"必须用**与仓库排放同一套**规则（packing.js 的 isAreaFree），
+//      在界面里另写一段双层循环就会出现两套边界规则，而它们迟早分叉；
+//   ② 非法落点要给出**可读的原因**（越界 / 被占用 / 不是装备），
+//      否则玩家只会看到"拖过去没反应"—— 与 M6-BUG-01 那类"按了没反应"是同一类问题。
+// ---------------------------------------------------------------------------
+
+/**
+ * 把一个条目移动到指定格（可同时改朝向）。
+ *
+ * 刻意**不做交换**：落点被占用就是非法，回原位。理由是"交换"会让"拖到自己身上"
+ * 变成一次难以撤销的两件物品位置变化，而玩家想做的往往只是挪一件。
+ *
+ * @returns {{ok:boolean, reason?:string, stash:Array}}
+ */
+export function stashMoveTo(entries, uid, x, y, rotated, cfg) {
+  const idx = entries.findIndex((e) => e.uid === uid);
+  if (idx < 0) return { ok: false, reason: 'unknown-uid', stash: entries };
+  const def = itemDef(entries[idx].itemId, cfg);
+  if (!def) return { ok: false, reason: 'unknown-item', stash: entries };
+  const sh = itemShape(def, rotated);
+  const { w, h } = stashSize(cfg);
+  if (x < 0 || y < 0 || x + sh.w > w || y + sh.h > h) {
+    return { ok: false, reason: 'out-of-bounds', stash: entries };
+  }
+  // 占用图必须**排除自己**：不排除的话它永远和自己重叠，落点怎么放都非法
+  const grid = stashGrid(entries.filter((e) => e.uid !== uid), cfg);
+  if (!isAreaFree(grid, x, y, sh.w, sh.h)) return { ok: false, reason: 'occupied', stash: entries };
+  return {
+    ok: true,
+    stash: entries.map((e) => (e.uid === uid ? { ...e, x, y, rotated: !!rotated } : { ...e })),
+  };
+}
+
+/**
+ * 在**指定格**放下一件（不找空位、不合并堆叠）—— 拖放落点与"卸下装备放回仓库"用它。
+ * 与 stashAdd 的分工：stashAdd 是"系统塞进去"（自己找位置），本函数是"玩家指定位置"。
+ *
+ * @returns {{ok:boolean, reason?:string, stash:Array, uid?:number}}
+ */
+export function stashAddAt(entries, itemId, count, x, y, rotated, cfg) {
+  const def = itemDef(itemId, cfg);
+  if (!def) return { ok: false, reason: 'unknown-item', stash: entries };
+  if (!(count > 0) || count > def.stack) return { ok: false, reason: 'bad-count', stash: entries };
+  const sh = itemShape(def, rotated);
+  const { w, h } = stashSize(cfg);
+  if (x < 0 || y < 0 || x + sh.w > w || y + sh.h > h) {
+    return { ok: false, reason: 'out-of-bounds', stash: entries };
+  }
+  const grid = stashGrid(entries, cfg);
+  if (!isAreaFree(grid, x, y, sh.w, sh.h)) return { ok: false, reason: 'occupied', stash: entries };
+  const uid = nextUid(entries);
+  return {
+    ok: true,
+    uid,
+    stash: [...entries.map((e) => ({ ...e })), { uid, itemId, count, x, y, rotated: !!rotated }],
   };
 }
