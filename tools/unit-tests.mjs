@@ -3991,6 +3991,55 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
       fullPlaced >= stashCapacity(config) ? (offFull.ok === false && offFull.reason === 'stash-full') : true,
       `已用 ${fullPlaced}/${stashCapacity(config)} 格 → ${offFull.ok ? '竟然成功了' : offFull.reason}`);
   }
+  // ---- ⑩ 整理背包：携行件留在原处，战利品重排，且**一件都不能丢** ----
+  //   为什么单独测它：tidy() 在 M6 被重写过（要同时照顾两张网格与"自带/战利品"两种来源），
+  //   而它最危险的失效方式是"整理完东西少了"——那种缺陷只会在玩了几局之后被玩家发现。
+  {
+    const kit = kitFor({ backpack: 'bp_medium', rig: 'rig_light', ammo: { '9mm': 60 }, consumables: { bandage: 3, medkit: 2 } });
+    const inv = createInventory(config, { kit });
+    const kitBefore = inv.items.map((e) => ({ id: e.item.id, x: e.x, y: e.y, where: e.where }));
+    const tally = (list) => {
+      const m = new Map();
+      for (const e of list) m.set(e.item.id, (m.get(e.item.id) || 0) + (e.count || 1));
+      return m;
+    };
+    const before = tally(inv.items);
+
+    const picks = ['rifle_sr25', 'vest4', 'gold_bar', 'bandage', 'pistol_mag'];
+    let picked = 0;
+    for (const id of picks) {
+      const r = inv.tryAdd(config.itemDefs[id]);
+      if (r.ok) {
+        picked++;
+        before.set(id, (before.get(id) || 0) + (config.itemDefs[id].unitsPerItem || 1));
+      }
+    }
+    const res = inv.tidy();
+    const after = tally(inv.items);
+    const keys = [...new Set([...before.keys(), ...after.keys()])];
+    const lost = keys.filter((k) => (before.get(k) || 0) !== (after.get(k) || 0));
+
+    check('★ M6 整理背包后**内容守恒**（每种物品的数量一件不差）',
+      lost.length === 0,
+      lost.length ? lost.map((k) => `${k} ${before.get(k) || 0}→${after.get(k) || 0}`).join('、')
+        : `捡了 ${picked} 件，整理后 ${inv.items.length} 条，内容一致`);
+
+    const kitAfter = inv.items.filter((e) => e.source === 'kit').map((e) => ({ id: e.item.id, x: e.x, y: e.y, where: e.where }));
+    check('★ M6 整理时**携行件留在原处**（玩家不会以为"整理把我的子弹弄丢了"）',
+      kitAfter.length === kitBefore.length
+      && kitAfter.every((a, i) => a.id === kitBefore[i].id && a.x === kitBefore[i].x && a.y === kitBefore[i].y),
+      kitAfter.map((e) => `${e.id}@${e.x},${e.y}`).join(' '));
+
+    const over = inv.items.filter((e) => (e.count || 1) > (config.itemDefs[e.item.id].stack || 1));
+    check('整理后没有条目超过物品的 stack（一格放多件的前提）', over.length === 0,
+      over.map((e) => `${e.item.id}×${e.count}`).join('、') || '全部合法');
+
+    // 弹挂优先：捡到的弹药/药品应当落进弹挂（只要它还有位置）
+    const rigLoot = inv.items.filter((e) => e.source === 'loot' && e.where === 'rig' && ['ammo', 'medical'].includes(e.item.category));
+    check('★ M6 捡到的弹药/药品优先落进弹挂（与进场投放同一条规则）',
+      rigLoot.length > 0,
+      rigLoot.map((e) => `${e.item.id}@${e.x},${e.y}`).join(' ') || '没有落进弹挂');
+  }
 }
 
 // ============================================================
