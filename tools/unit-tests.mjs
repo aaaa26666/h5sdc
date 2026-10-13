@@ -4040,6 +4040,85 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
       rigLoot.length > 0,
       rigLoot.map((e) => `${e.item.id}@${e.x},${e.y}`).join(' ') || '没有落进弹挂');
   }
+  // ---- ⑪ ★ M6 账目守恒：同一发子弹**不能被还两次** ----
+  //   这是 M6 最高危的一处账目风险：弹药既可能以"没用完的行头"（returnLoadout）
+  //   还回仓库，也可能以"带出的战利品"（inventory.settle → 结算入库）入库 ——
+  //   两者一旦重叠，同一发子弹就会被记两次，而它**不会报错**，只会让经济慢慢通胀。
+  //   单测分别验过两条路，但"两条路叠在一起"只有这一步能验。
+  {
+    const ammoItemId = config.ammo.find((a) => a.id === '9mm').itemId;
+    const rounds = 120;
+    const base = createNewProfile(config, 0);
+    // 仓库 120 发，配装写 120 发
+    const p0 = {
+      ...base,
+      stash: stashAdd([], ammoItemId, rounds, config).stash,
+      loadouts: [{ ...base.loadouts[0], ammo: { '9mm': rounds } }],
+    };
+    const take = takeLoadout(p0, config);
+    const kit = buildRaidKit(take.profile, config, { loadout: take.effectiveLoadout, carry: take.carry });
+    const inv = createInventory(config, { kit });
+    check('★ M6 账目守恒（夹具）：进局时 120 发都在网格里',
+      inv.ammoTotalOf('9mm') === rounds && inv.kitAmmoOf('9mm') === rounds,
+      `总计 ${inv.ammoTotalOf('9mm')} / 自带 ${inv.kitAmmoOf('9mm')}`);
+
+    // 打掉 30 发，再捡到**同一口径**的一盒（60 发）
+    inv.takeAmmo('9mm', 30);
+    inv.tryAdd(config.itemDefs[ammoItemId]);
+    const settle = inv.settle('extract');
+    // main.js 的 currentRemaining() 就是这个口径：只报**自带的**还剩多少
+    const remaining = { ammo: { '9mm': inv.kitAmmoOf('9mm') }, consumables: {} };
+
+    const result = buildRaidResult({
+      reason: 'extracted', outcome: 'extract', elapsedMs: 1000, kills: 0, aiTotal: 0,
+      containersOpened: 0, containersTotal: 0, shotsFired: 30, health: 100,
+      kept: settle.kept, lost: settle.lost,
+      keptValue: settle.keptValue, lostValue: settle.lostValue, safeValue: 0,
+      rarityTable: config.lootTable.rarity,
+    });
+    const applied = applyRaidToProfile(
+      take.profile,
+      { raidId: 'r-ammo-conservation', atMs: 1, result, facts: { kills: 0 }, taken: take.taken, remaining },
+      config
+    );
+    const got = stashTotalOf(applied.profile.stash, ammoItemId, config);
+    const expect = rounds - 30 + 60;
+    check('★ M6 账目守恒：撤离后仓库 = 带走 − 打掉 + 捡到（120−30+60=150，不是 210 也不是 90）',
+      got === expect,
+      `仓库 ${got} 发（期望 ${expect}）= 自带剩 ${inv.kitAmmoOf('9mm')} 还回 + 战利品 ${config.itemDefs[ammoItemId].unitsPerItem} 入库`);
+
+    // 阵亡口径：自带的**全部**丢；捡到的那盒正好被自动装进 1×2 保险箱，所以它保住了。
+    //   （安全箱只排除武器与护甲，弹药属于"可以放进去的小件"—— 这是 M3 的既有裁定。）
+    const inv2 = createInventory(config, { kit });
+    inv2.takeAmmo('9mm', 30);
+    inv2.tryAdd(config.itemDefs[ammoItemId]);
+
+    // ★ 最锋利的一条：**同一个口径**的自带盒与捡到的盒并存时，只有捡到的那盒能进安全箱。
+    //   若这里判错，"带 60 发进局 → 自动塞进保险箱 → 死了还留着"就是零成本刷弹药。
+    const kitBox = inv2.items.find((e) => e.source === 'kit');
+    const lootBox = inv2.items.find((e) => e.source === 'loot');
+    check('★ M6 同一口径下：自带的弹药**不进**安全箱，捡到的才进（否则死亡＝零成本刷弹药）',
+      !!kitBox && !!lootBox && kitBox.inSafe === false && lootBox.inSafe === true,
+      `自带盒 inSafe=${kitBox ? kitBox.inSafe : 'n/a'} / 捡到的盒 inSafe=${lootBox ? lootBox.inSafe : 'n/a'}`);
+
+    const settle2 = inv2.settle('death');
+    const result2 = buildRaidResult({
+      reason: 'dead', outcome: 'death', elapsedMs: 1000, kills: 0, aiTotal: 0,
+      containersOpened: 0, containersTotal: 0, shotsFired: 30, health: 0,
+      kept: settle2.kept, lost: settle2.lost,
+      keptValue: settle2.keptValue, lostValue: settle2.lostValue, safeValue: 0,
+      rarityTable: config.lootTable.rarity,
+    });
+    const applied2 = applyRaidToProfile(
+      take.profile,
+      { raidId: 'r-ammo-death', atMs: 1, result: result2, facts: { kills: 0 }, taken: take.taken, remaining: {} },
+      config
+    );
+    const got2 = stashTotalOf(applied2.profile.stash, ammoItemId, config);
+    check('★ M6 阵亡口径：仓库只剩安全箱保住的那一盒（自带的 90 发全丢，不会被还回来）',
+      got2 === config.itemDefs[ammoItemId].unitsPerItem,
+      `仓库 ${got2} 发（自带剩 90 发全部丢失，只有保险箱里那 60 发回来）`);
+  }
 }
 
 // ============================================================
