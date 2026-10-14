@@ -17,11 +17,27 @@
 // 因此"扣 120 发"与"条目的 count 减 120"是同一件事，不需要换算。
 
 import { stashAdd, stashRemove, stashRemoveItem, stashTotalOf, stashAddAt } from './stash.js';
-import { itemDef, itemIdOfEquipment, equipmentDef, equipmentIdOfItem, safeTierDef } from './items.js';
+import { itemDef, itemIdOfEquipment, equipmentDef, equipmentIdOfItem, safeTierDef, itemShape } from './items.js';
 import { skillModifiers } from './progression.js';
-import { sanitizeLoadoutShape, activeLoadout } from './profile.js';
+import { sanitizeLoadoutShape, activeLoadout, safeSpecOf } from './profile.js';
 import { questTrackerView } from './quests.js';
-import { planCarry } from './carry.js';
+import {
+  CARRY_GRIDS,
+  SPENDABLE_GRIDS,
+  cloneCarry,
+  carrySpecs,
+  carryAddAt,
+  carryMoveTo,
+  carryRemove,
+  carryDeduct,
+  carryTotalOf,
+  carryTotals,
+  carryWeightKg,
+  carryUsedSlots,
+  carryAudit,
+  findCarrySlot,
+  splitIntoBoxes,
+} from './carry.js';
 
 // ★ M6：背包与弹挂进槽位表。它们既是装备（占仓库格、按件取放、阵亡会丢），
 //   也是**局内容量的来源** —— 因此必须和其它装备走同一条"进局扣件 / 撤离还件"的路，
@@ -34,10 +50,27 @@ export function roundWeightKg(caliber, cfg) {
   return a ? a.weightPerRoundKg : 0;
 }
 
+/** 配装的携行网格（存档是外部输入：缺了就补空的，不让下游到处判空）。 */
+export function carryOf(lo) {
+  const c = (lo && lo.carry) || null;
+  return {
+    backpack: Array.isArray(c && c.backpack) ? c.backpack : [],
+    rig: Array.isArray(c && c.rig) ? c.rig : [],
+    safe: Array.isArray(c && c.safe) ? c.safe : [],
+  };
+}
+
+/** 三张网格的规格（保险箱档位来自档案，不在配装里）。 */
+export function carrySpecsFor(lo, profile, cfg) {
+  return carrySpecs(lo, cfg.carry, safeSpecOf(cfg, profile && profile.safeTierUnlocked));
+}
+
 /**
- * 配装负重 = 身上装备 + 弹药 + 消耗品。
+ * 配装负重 = 身上装备 + 携行网格里的全部东西（含保险箱里的 —— 它们也在身上）。
  * 注意它与局内背包的负重上限（loot.json 的 backpack.weightLimitKg）**不是同一个数**：
  * 后者只管搜到的战利品，前者管出发时的行头。两者混用会让"超重"变成说不清的状态。
+ *
+ * ★ M6-4：携行网格是真值，因此这里数网格而不是读一份数字（数字账已删除）。
  */
 export function loadoutWeight(lo, cfg) {
   let kg = 0;
@@ -45,33 +78,98 @@ export function loadoutWeight(lo, cfg) {
     const eq = lo[slot] ? equipmentDef(lo[slot], cfg) : null;
     if (eq) kg += eq.weightKg;
   }
-  for (const [cal, rounds] of Object.entries(lo.ammo || {})) {
-    kg += roundWeightKg(cal, cfg) * rounds;
-  }
-  for (const [id, n] of Object.entries(lo.consumables || {})) {
-    const def = itemDef(id, cfg);
-    if (def) kg += def.weightKg * n;
-  }
+  kg += carryWeightKg(carryOf(lo), cfg.itemDefs);
   return kg;
 }
 
 /**
- * ★ M6：把配装里的弹药与消耗品**摆进网格**（销 [M5-TEMP-11]）。
- *
- * 为什么要在这里算而不是在局内算：容量是**出发前**就定下来的东西。
- * 若等进局再摆，"仓库里明明有 180 发却只带了 120 发"就只能在局内被发现，
- * 而那时玩家已经在战区里了 —— 退出重配是不可能的。
- *
- * @returns {object} core/carry.js 的 planCarry 产物（backpack / rig / placements / overflow）
+ * 网格里每种弹药有多少发（**派生量**，不是另存的一份）。
+ * @returns {{[caliber:string]: number}}
  */
-export function buildCarry(lo, cfg) {
-  return planCarry({
-    loadout: lo,
-    carry: cfg.carry,
-    ammo: cfg.ammo,
-    consumables: cfg.consumables,
-    itemDefs: cfg.itemDefs,
-  });
+export function kitAmmo(lo, cfg) {
+  const out = {};
+  for (const a of cfg.ammo || []) {
+    if (!a.itemId) continue;
+    const n = carryTotalOf(carryOf(lo), a.itemId, SPENDABLE_GRIDS);
+    if (n > 0) out[a.id] = n;
+  }
+  return out;
+}
+
+/** 网格里每种消耗品有几个（同上，派生量）。 */
+export function kitConsumables(lo, cfg) {
+  const out = {};
+  for (const c of cfg.consumables || []) {
+    const n = carryTotalOf(carryOf(lo), c.id, SPENDABLE_GRIDS);
+    if (n > 0) out[c.id] = n;
+  }
+  return out;
+}
+
+/**
+ * ★ M6-4：进局投放 = **玩家自己拖出来的那份网格**（销 [M5-TEMP-11]，也销掉了
+ *   "配装上写个数字、进局再自动摆一遍"这条老路径）。
+ *
+ * 为什么要摆在大厅而不是等进局：容量是**出发前**就定下来的东西。
+ * 若等进局再摆，"我以为带了 180 发、实际只有 120 发"只能在局内被发现 —— 那时已经晚了。
+ * 现在更彻底：带什么由玩家拖，摆不下就根本拖不进去（拖放即校验）。
+ *
+ * @param {object} [opts.profile] 需要它读保险箱档位（第三张网格的尺寸在档案层）
+ * @returns {{backpack, rig, safe, placements, safePlacements, overflow, totalSlots, kitSlots, freeSlots}}
+ */
+export function buildCarry(lo, cfg, opts = {}) {
+  const safeSpec = opts.safeSpec !== undefined ? opts.safeSpec : safeSpecOf(cfg, opts.profile && opts.profile.safeTierUnlocked);
+  const specs = carrySpecs(lo, cfg.carry, safeSpec);
+  const carry = carryOf(lo);
+  const placements = [];
+  const safePlacements = [];
+  for (const name of CARRY_GRIDS) {
+    if (!specs[name]) continue;
+    for (const e of carry[name]) {
+      const def = cfg.itemDefs[e.itemId];
+      if (!def) continue;
+      const sh = itemShape(def, e.rotated);
+      const a = (cfg.ammo || []).find((x) => x.itemId === e.itemId);
+      const row = {
+        itemId: e.itemId,
+        count: e.count,
+        kind: a ? 'ammo' : 'consumable',
+        caliber: a ? a.id : null,
+        grid: name,
+        x: e.x,
+        y: e.y,
+        w: sh.w,
+        h: sh.h,
+        rotated: !!e.rotated,
+        uid: e.uid,
+      };
+      if (name === 'safe') safePlacements.push(row);
+      else placements.push(row);
+    }
+  }
+  const totalSlots = specs.backpack.w * specs.backpack.h + (specs.rig ? specs.rig.w * specs.rig.h : 0);
+  const kitSlots = carryUsedSlots(carry, cfg.itemDefs, SPENDABLE_GRIDS);
+  //
+  // ★ M6-4：`overflow` 改成**进局检查查出来的违规件**。
+  //
+  //   为什么不能再是"投放算法的副产品"：带什么现在是玩家**拖**出来的，
+  //   拖不进去当场就被拦下 —— 于是"装不下"只可能来自**事后变化**
+  //   （换了更小的包、旧存档迁移、外部改档），而那正是 carryAudit 在查的东西。
+  //   留一个恒为空的 overflow 等于留一个**永远为真的假信号**：简报会一直说"没有装不下"。
+  const audit = carryAudit(carry, specs, cfg.itemDefs);
+  return {
+    backpack: specs.backpack,
+    rig: specs.rig,
+    safe: specs.safe,
+    placements,
+    safePlacements,
+    /** 带不进去的那几件（进局前会被拦下）。空 = 确实没有。 */
+    overflow: audit.offenders,
+    audit,
+    totalSlots,
+    kitSlots,
+    freeSlots: Math.max(0, totalSlots - kitSlots),
+  };
 }
 
 /**
@@ -103,23 +201,16 @@ export function overweightBand(lo, cfg) {
 }
 
 /**
- * 这套配装需要从仓库拿走什么。
- * 装备按"件"、弹药按"发"、消耗品按"个" —— 全部与仓库条目的计数单位一致。
+ * 这套配装需要从仓库拿走什么 —— **只有装备**。
+ *
+ * ★ M6-4：弹药与消耗品不再属于这里。它们已经在携行网格里（= 已经在身上），
+ *   拖进去那一步就已经从仓库移走了；再把它列成"需要取走"就会扣第二次。
  */
 export function loadoutRequirements(lo, cfg) {
   const out = [];
   for (const slot of EQUIP_SLOTS) {
     const id = lo[slot];
     if (id) out.push({ itemId: itemIdOfEquipment(id, cfg), count: 1, kind: 'equipment', slot });
-  }
-  for (const [cal, rounds] of Object.entries(lo.ammo || {})) {
-    if (!(rounds > 0)) continue;
-    const a = cfg.ammo.find((x) => x.id === cal);
-    if (!a || !a.itemId) continue;
-    out.push({ itemId: a.itemId, count: rounds, kind: 'ammo', caliber: cal });
-  }
-  for (const [id, n] of Object.entries(lo.consumables || {})) {
-    if (n > 0) out.push({ itemId: id, count: n, kind: 'consumable' });
   }
   return out;
 }
@@ -176,14 +267,13 @@ export function consumableOnHand(profile, itemId, cfg) {
  */
 export function takeLoadout(profile, cfg) {
   const lo = activeLoadout(profile);
-  const plan0 = buildCarry(lo, cfg);
+  const plan0 = buildCarry(lo, cfg, { profile });
   let stash = profile.stash;
   const taken = [];
+  const safeTaken = [];
   const missing = [];
-  // 摆不下的：**不从仓库扣**（扣了就等于凭空消失），原样报给调用方。
-  const overflow = plan0.overflow.map((o) => ({ itemId: o.itemId, count: o.count, kind: o.kind, reason: o.reason }));
 
-  // ---- ① 装备（含背包与弹挂）：按件 ----
+  // ---- ① 装备（含背包与弹挂）：按件，从仓库取 ----
   const equipTaken = new Set();
   for (const slot of EQUIP_SLOTS) {
     const id = lo[slot];
@@ -192,36 +282,26 @@ export function takeLoadout(profile, cfg) {
     const res = stashRemoveItem(stash, itemId, 1, cfg);
     stash = res.stash;
     if (res.removed > 0) {
-      taken.push({ itemId, count: res.removed, kind: 'equipment', caliber: null, slot });
+      taken.push({ itemId, count: res.removed, kind: 'equipment', caliber: null, slot, grid: null });
       equipTaken.add(slot);
     }
     if (res.leftover > 0) missing.push({ itemId, count: 1, kind: 'equipment', slot, missing: res.leftover });
   }
 
-  // ---- ② 携行物品（弹药 / 消耗品）：按**摆进网格的盒数**汇总后扣仓库 ----
-  const agg = new Map();
+  // ---- ② 携行件（弹药 / 消耗品）：**不从仓库取** ----
+  //
+  // ★ M6-4 的口径：它们早就在身上了（拖进网格那一步就已经离开仓库）。
+  //   这里只是记一笔"这一局带进去了什么" —— 结算要靠它算消耗与损失。
+  //   保险箱里的东西单独记一笔：它们**不会被消耗**，阵亡也丢不了，
+  //   混进 taken 会让"打掉的子弹"把箱里的存货也算成消耗。
   for (const p of plan0.placements) {
-    const key = `${p.kind}:${p.itemId}`;
-    const e = agg.get(key) || { itemId: p.itemId, count: 0, kind: p.kind, caliber: p.caliber || null, slot: null };
-    e.count += p.count;
-    agg.set(key, e);
+    taken.push({ itemId: p.itemId, count: p.count, kind: p.kind, caliber: p.caliber, slot: null, grid: p.grid });
   }
-  const gotByItem = new Map();
-  for (const r of agg.values()) {
-    const res = stashRemoveItem(stash, r.itemId, r.count, cfg);
-    stash = res.stash;
-    if (res.removed > 0) taken.push({ ...r, count: res.removed });
-    if (res.leftover > 0) missing.push({ ...r, missing: res.leftover });
-    gotByItem.set(r.itemId, res.removed);
+  for (const p of plan0.safePlacements) {
+    safeTaken.push({ itemId: p.itemId, count: p.count, kind: p.kind, caliber: p.caliber, slot: null, grid: 'safe' });
   }
 
-  // ---- ③ ★ 用**实际拿到的**量重算一次投放 ----
-  //
-  // 为什么必须重算：`plan0` 是按**配装上写的数**摆的，而仓库里可能根本没有那么多。
-  // 若局内按 plan0 建包，玩家就会凭空拿到仓库里没有的弹药/药品/背包 ——
-  // 一个"越穷越赚"的漏洞，而且它只在"配装里留了已卖掉的东西"时才出现。
-  // 这也顺手修掉一个 M5 遗留的同类问题：配装里那把**已经卖掉**的枪
-  // 此前照样会出现在局内（takeLoadout 拿不到，但 raidKit 仍按配装填枪）。
+  // ---- ③ 生效配装：装备按"仓库真的拿得出"的，携行网格原样带上（它本身就是真值）----
   const effLo = {
     ...lo,
     primary: equipTaken.has('primary') ? lo.primary : null,
@@ -230,54 +310,128 @@ export function takeLoadout(profile, cfg) {
     head: equipTaken.has('head') ? lo.head : null,
     backpack: equipTaken.has('backpack') ? lo.backpack : null,
     rig: equipTaken.has('rig') ? lo.rig : null,
-    ammo: {},
-    consumables: {},
+    carry: carryOf(lo),
   };
-  for (const [caliber, want] of Object.entries(lo.ammo || {})) {
-    const a = cfg.ammo.find((x) => x.id === caliber);
-    const got = a && a.itemId ? Math.min(want, gotByItem.get(a.itemId) || 0) : 0;
-    if (got > 0) effLo.ammo[caliber] = got;
-  }
-  for (const [id, want] of Object.entries(lo.consumables || {})) {
-    const got = Math.min(want, gotByItem.get(id) || 0);
-    if (got > 0) effLo.consumables[id] = got;
-  }
-  const carry = buildCarry(effLo, cfg);
+  const carry = buildCarry(effLo, cfg, { profile });
 
-  return { profile: { ...profile, stash }, taken, missing, overflow, carry, effectiveLoadout: effLo };
+  return {
+    profile: { ...profile, stash },
+    taken,
+    safeTaken,
+    missing,
+    overflow: [],
+    carry,
+    effectiveLoadout: effLo,
+  };
 }
 
 /**
- * 撤离：把**没用完的**还回仓库。
+ * ★ M6-4：一局结束后的**携行网格账**。
  *
- * @param {Array} taken takeLoadout 的产物
- * @param {object} remaining 局内剩余 { ammo: {caliber: rounds}, consumables: {itemId: n} }
- *        装备不参与扣减（M5 没有耐久持久化，见 [M5-TEMP-10]），全部原样还回。
- * @returns {{profile:object, returned:Array, consumed:Array, overflow:Array}}
+ * 三条口径（制作人裁定，别当成 bug 改掉）：
+ *   ① 撤离：只从网格里扣掉**真实消耗**（打掉的子弹、用掉的绷带），剩下的仍留在身上，
+ *      由玩家自己决定拖不拖回仓库 —— 不再自动还回（那会把"身上"和"家里"搞混）。
+ *   ② 战利品：先塞回携行网格（弹挂优先），网格塞不下才进仓库，**绝不静默丢弃**。
+ *   ③ 未撤离（阵亡 / 超时 / 放弃 / 断线）：背包与弹挂清空；**保险箱保留** ——
+ *      那就是保险箱存在的理由。
+ *
+ * ★ ④ 装备（武器 / 护甲 / 背包 / 弹挂）：撤离才还回仓库，阵亡则整份丢失。
+ *   它与网格里的东西**不是**同一条账 —— 那些留在身上让玩家自己决定，
+ *   而装备在进局那一刻就已经离开仓库了，不主动还回去就是"凭空少了一把枪"。
+ *
+ * @param {object} input {survived, consumed:[{itemId,count}], loot:[{id,count}],
+ *                        equipment:[{itemId,count}]}
+ * @returns {{profile, stowed:Array, deposited:Array, overflow:Array, returned:Array}}
+ *          stowed = 留在网格里的战利品；deposited = 网格塞不下、进了仓库的；
+ *          returned = 撤离时还回仓库的装备
  */
-export function returnLoadout(profile, taken, remaining, cfg) {
+export function settleCarryAfterRaid(profile, input, cfg) {
+  const { survived, consumed, loot, equipment } = input || {};
+  const lo = activeLoadout(profile);
+  const specs = carrySpecsFor(lo, profile, cfg);
+  let carry = cloneCarry(carryOf(lo));
   let stash = profile.stash;
+  const stowed = [];
+  const deposited = [];
   const returned = [];
-  const consumed = [];
   const overflow = [];
 
-  for (const t of taken) {
-    let back = t.count;
-    if (t.kind === 'ammo') {
-      const left = (remaining && remaining.ammo && remaining.ammo[t.caliber]) || 0;
-      back = Math.min(t.count, Math.max(0, left));
-    } else if (t.kind === 'consumable') {
-      const left = (remaining && remaining.consumables && remaining.consumables[t.itemId]) || 0;
-      back = Math.min(t.count, Math.max(0, left));
+  if (!survived) {
+    // 阵亡：身上的东西全丢（保险箱不动）；装备同样不还 —— 死一次就丢装备。
+    carry.backpack = [];
+    carry.rig = [];
+  } else {
+    // ① 扣消耗：网格是唯一真值，因此"打掉 37 发"就是把网格里的 37 发抹掉
+    for (const c of consumed || []) {
+      if (!(c && c.count > 0)) continue;
+      const r = carryDeduct(carry, c.itemId, c.count, SPENDABLE_GRIDS);
+      carry = r.carry;
     }
-    if (back < t.count) consumed.push({ itemId: t.itemId, count: t.count - back, kind: t.kind });
-    if (back <= 0) continue;
-    const add = stashAdd(stash, t.itemId, back, cfg);
-    if (add.leftover > 0) overflow.push({ itemId: t.itemId, count: add.leftover });
-    stash = add.stash;
-    returned.push({ itemId: t.itemId, count: add.added, kind: t.kind });
+    // ② 装备还回仓库（它们在进局那一刻就从仓库取走了，不还就是凭空消失）
+    for (const e of equipment || []) {
+      if (!(e && e.count > 0)) continue;
+      const add = stashAdd(stash, e.itemId, e.count, cfg);
+      stash = add.stash;
+      if (add.added > 0) returned.push({ itemId: e.itemId, count: add.added });
+      if (add.leftover > 0) overflow.push({ itemId: e.itemId, count: add.leftover });
+    }
   }
-  return { profile: { ...profile, stash }, returned, consumed, overflow };
+
+  // ③ 战利品：撤离时**先身上、后家里**；阵亡时只有安全箱保住的那一批，直接回家。
+  //
+  //   阵亡那条分支必须存在：`kept` 里的东西是**已经带出来**的（安全箱里的），
+  //   而网格刚刚被清空 —— 不在这里落库，它们就凭空消失了。
+  for (const it of loot || []) {
+    const def = cfg.itemDefs[it && it.id];
+    if (!def) continue;
+    // 局内按"件"、身上按"存储单位"：弹药的一件是一盒（unitsPerItem 发）
+    const units = Number.isFinite(it.count) ? it.count : def.unitsPerItem;
+    for (const count of splitIntoBoxes(units, def.stack)) {
+      const slot = survived ? findCarrySlot(carry, def, specs, cfg.itemDefs, SPENDABLE_GRIDS) : null;
+      if (slot) {
+        const r = carryAddAt(carry, slot.name, def.id, count, slot.x, slot.y, slot.rotated, specs, cfg.itemDefs);
+        if (r.ok) {
+          carry = r.carry;
+          stowed.push({ itemId: def.id, count, grid: slot.name });
+          continue;
+        }
+      }
+      const add = stashAdd(stash, def.id, count, cfg);
+      stash = add.stash;
+      if (add.added > 0) deposited.push({ itemId: def.id, count: add.added, grid: 'stash' });
+      if (add.leftover > 0) overflow.push({ itemId: def.id, count: add.leftover });
+    }
+  }
+
+  const loadouts = profile.loadouts.map((l) => (l.id === lo.id ? { ...l, carry } : l));
+  return { profile: { ...profile, stash, loadouts }, carry, stowed, deposited, returned, overflow };
+}
+
+/**
+ * 换上更小（或没有）的携行具时，把放不下的东西**退回仓库**。
+ *
+ * 为什么不能静默丢弃：那些东西是玩家自己一格一格拖进去的，
+ * 凭空消失是最难解释、也最不可原谅的一类缺陷。
+ * 仓库也放不下 → 整次操作**拒绝**（调用方据此回滚），让玩家先腾地方。
+ * @returns {{ok:boolean, reason?:string, carry?:object, stash?:Array}}
+ */
+export function evictCarryOverflow(profile, lo, nextCarry, cfg) {
+  const specs = carrySpecsFor(lo, profile, cfg);
+  let carry = cloneCarry(nextCarry);
+  let stash = profile.stash;
+  // 反复收敛：取走一件之后，后面那些"重叠"的判定可能就成立了
+  for (let guard = 0; guard < 200; guard++) {
+    const audit = carryAudit(carry, specs, cfg.itemDefs);
+    if (audit.ok) return { ok: true, carry, stash };
+    const off = audit.offenders[0];
+    const rm = carryRemove(carry, off.uid);
+    if (!rm.ok) return { ok: false, reason: rm.reason };
+    carry = rm.carry;
+    const add = stashAdd(stash, rm.removed.itemId, rm.removed.count, cfg);
+    if (add.leftover > 0) return { ok: false, reason: 'stash-full' };
+    stash = add.stash;
+  }
+  return { ok: false, reason: 'carry-not-converged' };
 }
 
 /**
@@ -294,7 +448,7 @@ export function buildRaidKit(profile, cfg, opts = {}) {
   const safe = safeTierDef(profile.safeTierUnlocked, cfg);
   // ★ M6：携行具决定局内容量，因此**先**解析携行具，再按它的负重上限算技能加成。
   //   顺序反了的话，换一只更大的背包不会改变负重上限（加成永远按参考背包算）。
-  const carry = opts.carry || buildCarry(lo, cfg);
+  const carry = opts.carry || buildCarry(lo, cfg, { profile });
   const mods = skillModifiers(profile, cfg, { weightBaseKg: carry.backpack.weightLimitKg });
   carry.backpack.weightLimitTotalKg = mods.weightLimitKg;
   return {
@@ -307,17 +461,15 @@ export function buildRaidKit(profile, cfg, opts = {}) {
       backpack: lo.backpack || null,
       rig: lo.rig || null,
       /**
-       * ★ M6：这两个只是**出发行头的账**（负重、大厅与简报的显示）。
-       * 局内**禁止**读它们来决定弹药/药品存量 —— 那会绕开网格，
-       * 回到"M5 的不占格数字"，也就是 [M5-TEMP-11] 本身。
-       * 局内的唯一来源是 `carry`（真值）与 gameplay/inventory.js（运行时）。
+       * ★ M6-4：这两个是**数网格数出来的派生量**（备弹多少发、药品几个）。
+       * 局内**禁止**读它们当真值 —— 真值是网格；它们只用于显示与结算对账。
        */
-      ammo: { ...lo.ammo },
-      consumables: { ...lo.consumables },
+      ammo: kitAmmo(lo, cfg),
+      consumables: kitConsumables(lo, cfg),
       safeTierId: profile.safeTierUnlocked,
       safeTierLabel: safe ? safe.label : null,
     },
-    /** ★ M6：身上真的摆着什么（含格坐标）。局内据此建网格，不再自己猜。 */
+    /** ★ M6-4：身上真的摆着什么（含格坐标，含保险箱）。局内据此建网格，不再自己猜。 */
     carry,
     modifiers: mods,
     overweight: {
@@ -348,28 +500,93 @@ export function updatePreset(profile, presetId, patch, cfg) {
   return { ok: true, profile: { ...profile, loadouts }, repairs };
 }
 
-/** 给某套预设设弹药携带量（按口径，单位：发）。 */
-export function setAmmo(profile, presetId, caliber, rounds, cfg) {
-  if (!cfg.ammo.some((a) => a.id === caliber)) return { ok: false, reason: 'unknown-caliber' };
-  if (!Number.isInteger(rounds) || rounds < 0) return { ok: false, reason: 'bad-count' };
-  const lo = profile.loadouts.find((l) => l.id === presetId);
-  if (!lo) return { ok: false, reason: 'unknown-preset' };
-  const ammo = { ...lo.ammo };
-  if (rounds === 0) delete ammo[caliber];
-  else ammo[caliber] = rounds;
-  return updatePreset(profile, presetId, { ammo }, cfg);
+// ---------------------------------------------------------------------------
+// ★ M6-4 携行网格的拖放（纯函数）
+//
+// 与"仓库 ↔ 装备格"那一组并列：判定与落库都在 core（界面一个格子碰撞都不算），
+// 且**先判后放**用的是同一个 carryCanPlace —— 不会出现"看着能放、松手弹回去"。
+// ---------------------------------------------------------------------------
+
+const presetOf = (profile, presetId) =>
+  (profile.loadouts || []).find((l) => l.id === presetId) || activeLoadout(profile);
+
+/**
+ * 仓库 → 携行网格。**整叠搬走**（拖进背包＝从仓库移走，这就是"算移走"那条裁定）。
+ * 拆分数量另有专门入口（core/stash.js 的 stashSplit），拖放本身不切分堆叠。
+ */
+export function carryPlaceFromStash(profile, presetId, uid, gridName, x, y, rotated, cfg) {
+  const entry = (profile.stash || []).find((e) => e.uid === uid);
+  if (!entry) return { ok: false, reason: 'unknown-uid' };
+  const lo = presetOf(profile, presetId);
+  const specs = carrySpecsFor(lo, profile, cfg);
+  const add = carryAddAt(carryOf(lo), gridName, entry.itemId, entry.count, x, y, rotated, specs, cfg.itemDefs);
+  if (!add.ok) return { ok: false, reason: add.reason };
+  // 落库成功才动仓库：顺序反了会出现"网格里有、仓库里也在"的两份
+  const rem = stashRemove(profile.stash, uid, entry.count, cfg);
+  if (!(rem.removed > 0)) return { ok: false, reason: 'unknown-uid' };
+  const loadouts = profile.loadouts.map((l) => (l.id === lo.id ? { ...l, carry: add.carry } : l));
+  return { ok: true, profile: { ...profile, stash: rem.stash, loadouts }, uid: add.uid, grid: gridName };
 }
 
-/** 给某套预设设消耗品携带量（按物品 id，单位：个）。 */
-export function setConsumable(profile, presetId, itemId, count, cfg) {
-  if (!cfg.consumables.some((c) => c.id === itemId)) return { ok: false, reason: 'unknown-consumable' };
-  if (!Number.isInteger(count) || count < 0) return { ok: false, reason: 'bad-count' };
-  const lo = profile.loadouts.find((l) => l.id === presetId);
-  if (!lo) return { ok: false, reason: 'unknown-preset' };
-  const consumables = { ...lo.consumables };
-  if (count === 0) delete consumables[itemId];
-  else consumables[itemId] = count;
-  return updatePreset(profile, presetId, { consumables }, cfg);
+/** 携行网格 → 仓库（整叠拖回）。`cell` 给 null 时由仓库自己找位置。 */
+export function carryTakeToStash(profile, presetId, uid, cell, cfg) {
+  const lo = presetOf(profile, presetId);
+  const rm = carryRemove(carryOf(lo), uid);
+  if (!rm.ok) return rm;
+  const e = rm.removed;
+  let stash;
+  if (cell) {
+    const r = stashAddAt(profile.stash, e.itemId, e.count, cell.x, cell.y, !!cell.rotated, cfg);
+    if (!r.ok) return r;
+    stash = r.stash;
+  } else {
+    const add = stashAdd(profile.stash, e.itemId, e.count, cfg);
+    if (add.leftover > 0) return { ok: false, reason: 'stash-full' };
+    stash = add.stash;
+  }
+  const loadouts = profile.loadouts.map((l) => (l.id === lo.id ? { ...l, carry: rm.carry } : l));
+  return { ok: true, profile: { ...profile, stash, loadouts }, itemId: e.itemId, count: e.count };
+}
+
+/** 网格内移动 / 跨网格搬运（背包 ↔ 弹挂 ↔ 保险箱）。 */
+export function carryMove(profile, presetId, uid, gridName, x, y, rotated, cfg) {
+  const lo = presetOf(profile, presetId);
+  const specs = carrySpecsFor(lo, profile, cfg);
+  const res = carryMoveTo(carryOf(lo), uid, gridName, x, y, rotated, specs, cfg.itemDefs);
+  if (!res.ok) return { ok: false, reason: res.reason };
+  const loadouts = profile.loadouts.map((l) => (l.id === lo.id ? { ...l, carry: res.carry } : l));
+  return { ok: true, profile: { ...profile, loadouts } };
+}
+
+/**
+ * 进局前的**可携带性检查**（core/carry.js 的 carryAudit + 这里的规格）。
+ * 制作人裁定：类别不合法与超出容量**两类都查**，用一个警告页把 offending 的条目点出来。
+ */
+export function auditCarryBeforeRaid(profile, cfg) {
+  const lo = activeLoadout(profile);
+  const carry = carryOf(lo);
+  const specs = carrySpecsFor(lo, profile, cfg);
+  const audit = carryAudit(carry, specs, cfg.itemDefs);
+  return { ...audit, presetId: lo.id };
+}
+
+/** 把 offending 的那几件**（且只这几件）**退回仓库。仓库放不下就整次拒绝。 */
+export function returnOffendersToStash(profile, offenders, cfg) {
+  const lo = activeLoadout(profile);
+  let carry = cloneCarry(carryOf(lo));
+  let stash = profile.stash;
+  const returned = [];
+  for (const off of offenders || []) {
+    const rm = carryRemove(carry, off.uid);
+    if (!rm.ok) continue;
+    carry = rm.carry;
+    const add = stashAdd(stash, rm.removed.itemId, rm.removed.count, cfg);
+    if (add.leftover > 0) return { ok: false, reason: 'stash-full' };
+    stash = add.stash;
+    returned.push({ itemId: rm.removed.itemId, count: rm.removed.count });
+  }
+  const loadouts = profile.loadouts.map((l) => (l.id === lo.id ? { ...l, carry } : l));
+  return { ok: true, profile: { ...profile, stash, loadouts }, returned };
 }
 
 /** 新增一套预设（复制当前生效的那套作为起点）。 */
@@ -458,9 +675,18 @@ export function equipFromStash(profile, presetId, uid, slotId, cfg) {
   }
 
   const merged = { ...lo, [slotId]: acc.equipmentId };
-  const { loadout, repairs } = sanitizeLoadoutShape(merged, cfg);
-  const loadouts = profile.loadouts.map((l) => (l.id === lo.id ? loadout : l));
-  return { ok: true, profile: { ...profile, stash, loadouts }, repairs };
+  const { loadout, repairs } = sanitizeLoadoutShape(merged, cfg, {
+    safeSpec: safeSpecOf(cfg, profile.safeTierUnlocked),
+  });
+  // ★ M6-4：换上更小（或没有）的背包 / 弹挂时，网格里放不下的东西必须**退回仓库**。
+  //   不这么做的后果是静默丢东西 —— 玩家会看到"我的子弹没了"，而没有任何提示。
+  const withPrev = { ...profile, stash };
+  const evicted = evictCarryOverflow(withPrev, loadout, loadout.carry, cfg);
+  if (!evicted.ok) return { ok: false, reason: evicted.reason };
+  const loadouts = profile.loadouts.map((l) =>
+    l.id === lo.id ? { ...loadout, carry: evicted.carry } : l
+  );
+  return { ok: true, profile: { ...profile, stash: evicted.stash, loadouts }, repairs };
 }
 
 /**
@@ -485,9 +711,17 @@ export function unequipToStash(profile, presetId, slotId, cell, cfg) {
   }
 
   const merged = { ...lo, [slotId]: null };
-  const { loadout, repairs } = sanitizeLoadoutShape(merged, cfg);
-  const loadouts = profile.loadouts.map((l) => (l.id === lo.id ? loadout : l));
-  return { ok: true, profile: { ...profile, stash, loadouts }, repairs };
+  const { loadout, repairs } = sanitizeLoadoutShape(merged, cfg, {
+    safeSpec: safeSpecOf(cfg, profile.safeTierUnlocked),
+  });
+  // ★ M6-4：摘掉背包 / 弹挂会让网格变小（弹挂直接消失），放不下的东西退回仓库。
+  const withPrev = { ...profile, stash };
+  const evicted = evictCarryOverflow(withPrev, loadout, loadout.carry, cfg);
+  if (!evicted.ok) return { ok: false, reason: evicted.reason };
+  const loadouts = profile.loadouts.map((l) =>
+    l.id === lo.id ? { ...loadout, carry: evicted.carry } : l
+  );
+  return { ok: true, profile: { ...profile, stash: evicted.stash, loadouts }, repairs };
 }
 
 /** 重命名预设。 */
@@ -501,27 +735,7 @@ export function renamePreset(profile, presetId, name) {
   return { ok: true, profile: { ...profile, loadouts } };
 }
 
-/** 配装概览（界面唯一的数据来源）：负重、超重档、缺口、逐槽明细。 */
-export function loadoutView(profile, cfg) {
-  const lo = activeLoadout(profile);
-  const ow = overweightBand(lo, cfg);
-  return {
-    presetId: lo.id,
-    presetName: lo.name,
-    primary: lo.primary,
-    secondary: lo.secondary,
-    body: lo.body,
-    head: lo.head,
-    backpack: lo.backpack || null,
-    rig: lo.rig || null,
-    ammo: { ...lo.ammo },
-    consumables: { ...lo.consumables },
-    /** ★ M6：容量来自装备（含兜底），界面的"几×几格 / 几 kg"必须显示这个，而不是参考装载 */
-    carry: buildCarry(lo, cfg),
-    weightKg: ow.weightKg,
-    band: { id: ow.band.id, label: ow.band.label, speedScale: ow.band.speedScale, noSprint: ow.band.noSprint },
-    nextAtKg: ow.nextAtKg,
-    toNextKg: ow.toNextKg,
-    shortfall: loadoutShortfall(lo, profile, cfg),
-  };
-}
+// ★ 删掉了 `loadoutView` 这个函数（此前注释自称"界面唯一的数据来源"，实际**无人调用**，
+//   而且它引用的 `loadoutShortfall` 根本不存在 —— 一调用就抛 ReferenceError）。
+//   界面的唯一数据来源是 core/lobbyView.js 的 buildLobbyViews，留着第二份概览
+//   就是一条"看起来还能用"的死路（而且是一条会崩的死路）。

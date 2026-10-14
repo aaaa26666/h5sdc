@@ -12,19 +12,21 @@
 // localStorage 里的内容是**外部输入**，可能被改坏、可能是旧版本留下的，
 // 直接 JSON.parse 就用的话，一个坏字段能让整个结算界面崩掉。
 
+import { valueReadout } from './items.js';
+
 export const CHECKPOINT_VERSION = 1;
 
 /** 单个物品在快照里的形态：只留结算需要的东西，不塞整个 item 定义 */
 function itemToSnapshot(e) {
   const units = e.item.unitsPerItem || 1;
   const count = Number.isFinite(e.count) ? e.count : units;
-  const unitValue = e.item.unitValue !== undefined ? e.item.unitValue : e.item.value;
   return {
     id: e.item.id,
     label: e.item.label,
     // ★ M6：一格可以只装半盒（打剩 30 发），因此入仓单位数与估值都按这一格实际剩多少算。
     count,
-    value: unitValue * count,
+    // ★ M6-4：估值读数取整（与仓库 / HUD / 结算页共用 core/items.js 的 valueReadout）
+    value: valueReadout(e.item, count),
     rarity: e.item.rarity || null,
     inSafe: !!e.inSafe,
   };

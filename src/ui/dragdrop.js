@@ -46,9 +46,18 @@ export function wrapOffset(dx, dy, w, h) {
   };
 }
 
-/** 旋转后的形状（布局用；朝向的**真值**来自 core 的视图，这里只负责换宽高）。 */
-function shapeFor(src, rotated) {
-  return rotated ? { w: src.h, h: src.w } : { w: src.w, h: src.h };
+/**
+ * 幽灵元素的形状：**基准尺寸**（未旋转）× 朝向。
+ *
+ * ★ 必须用 `baseW/baseH`，不能用视图里那对已经摆好朝向的 `w/h`：
+ *   用后者再按 `rotated` 转一次就是转了两次 —— 实测表现正是
+ *   "**旋转过的物品拖起来时显示未旋转的形状**"（2×3 的旋转件被画成 3×2 的原形）。
+ *   导出它是为了能被单测直接驱动（这条几何只有纯函数才测得准）。
+ */
+export function shapeFor(src, rotated) {
+  const w = src.baseW !== undefined ? src.baseW : src.w;
+  const h = src.baseH !== undefined ? src.baseH : src.h;
+  return rotated ? { w: h, h: w } : { w, h };
 }
 
 /**
@@ -67,7 +76,14 @@ export function createDragLayer(opts) {
   /** 当前这次拖动（null = 没有）。它不是持久状态：松手即销毁。 */
   let drag = null;
 
-  const gridEl = () => root.querySelector('[data-drop-grid]');
+  /**
+   * ★ M6-4：装备页现在有**多张网格**（仓库 / 背包 / 弹挂 / 保险箱）。
+   * `data-drop-grid` 的值是网格名（`stash` / `backpack` / `rig` / `safe`）——
+   *   落点的身份就是它，界面不靠"第几个网格"这种位置去猜。
+   */
+  function gridEl(name) {
+    return name ? root.querySelector(`[data-drop-grid="${name}"]`) : root.querySelector('[data-drop-grid]');
+  }
 
   /** 网格的格边长（px）。来自 CSS 变量 `--cell` —— 界面与判定的格定义只有这一份。 */
   function cellSize(el) {
@@ -77,7 +93,10 @@ export function createDragLayer(opts) {
 
   /**
    * 指针落在哪个落点上。
-   * 装备格优先于仓库网格（两者不重叠，但顺序写死能让"以后挪布局"不改变语义）。
+   * 装备格优先于网格（两者不重叠，但顺序写死能让"以后挪布局"不改变语义）。
+   *
+   * ★ 网格逐个问而不是"取第一个"：背包/弹挂/保险箱/仓库四张网格都在同一个面板上，
+   *   按位置取第一个会让"拖进弹挂"变成"拖进仓库"。
    */
   function hitTest(clientX, clientY) {
     for (const slot of root.querySelectorAll('[data-drop-slot]')) {
@@ -85,21 +104,24 @@ export function createDragLayer(opts) {
         return { kind: 'slot', slotId: slot.dataset.slot };
       }
     }
-    const grid = gridEl();
-    if (grid) {
+    for (const grid of root.querySelectorAll('[data-drop-grid]')) {
       const r = grid.getBoundingClientRect();
-      if (rectContains(r, clientX, clientY)) {
-        const c = cellFromPoint(r, cellSize(grid), clientX, clientY);
-        // 落点 = 指针所在格 − 抓住的那一格：玩家抓的是物品的哪一角，落下去就还是那一角。
-        return { kind: 'stash', x: c.x - drag.grab.dx, y: c.y - drag.grab.dy };
-      }
+      if (!rectContains(r, clientX, clientY)) continue;
+      const name = grid.dataset.dropGrid || 'stash';
+      const c = cellFromPoint(r, cellSize(grid), clientX, clientY);
+      // 落点 = 指针所在格 − 抓住的那一格：玩家抓的是物品的哪一角，落下去就还是那一角。
+      const at = { x: c.x - drag.grab.dx, y: c.y - drag.grab.dy };
+      // 仓库在 core 里叫 'stash'；其余三张叫 'carry' + 网格名（core/dragDrop.js）
+      return name === 'stash'
+        ? { kind: 'stash', grid: 'stash', ...at }
+        : { kind: 'carry', grid: name, ...at };
     }
     return null;
   }
 
-  /** 指针在仓库网格里的格坐标（起拖时算抓取偏移用）。 */
-  function gridCellAt(clientX, clientY) {
-    const grid = gridEl();
+  /** 指针在某张网格里的格坐标（起拖时算抓取偏移用）。 */
+  function gridCellAt(name, clientX, clientY) {
+    const grid = gridEl(name);
     if (!grid) return null;
     const r = grid.getBoundingClientRect();
     if (!rectContains(r, clientX, clientY)) return null;
@@ -107,8 +129,8 @@ export function createDragLayer(opts) {
   }
 
   function grabFor(src, ev) {
-    if (src.kind === 'stash') {
-      const c = gridCellAt(ev.clientX, ev.clientY);
+    if (src.grid) {
+      const c = gridCellAt(src.grid, ev.clientX, ev.clientY);
       if (c) return wrapOffset(c.x - src.x, c.y - src.y, src.w, src.h);
     }
     // 从装备格拖出时没有"格内偏移"可言（装备格不是网格），
@@ -129,7 +151,8 @@ export function createDragLayer(opts) {
   function updateGhost(ev) {
     if (!drag || !drag.ghost) return;
     const sh = shapeFor(drag.src, drag.rotated);
-    const cell = cellSize(gridEl() || root);
+    // 格边长取自**起手那张网格**（拖动途中不随落点变，否则幽灵会在跨网格时跳一下尺寸）
+    const cell = drag.cell || 30;
     const g = drag.ghost;
     g.style.width = `${sh.w * cell}px`;
     g.style.height = `${sh.h * cell}px`;
@@ -153,6 +176,7 @@ export function createDragLayer(opts) {
       startY: ev.clientY,
       px: ev.clientX,
       py: ev.clientY,
+      cell: cellSize(gridEl(src.grid) || root),
       grab: grabFor(src, ev),
       // 起手的朝向 = **当前**朝向（视图给的 rotated），按一次 R 才变成另一个
       rotated: !!src.rotated,
@@ -263,7 +287,7 @@ export function createDragLayer(opts) {
         target: drag.target,
         verdict: drag.verdict,
         shape: sh,
-        source: { kind: drag.src.kind, uid: drag.src.uid ?? null, slotId: drag.src.slotId ?? null },
+        source: { kind: drag.src.kind, uid: drag.src.uid ?? null, slotId: drag.src.slotId ?? null, grid: drag.src.grid ?? null },
       };
     },
   };

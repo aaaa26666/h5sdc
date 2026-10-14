@@ -75,16 +75,21 @@
     "secondary": "pistol_p9",
     "body": "vest2",
     "head": "helmet2",
-    "ammo": {
-      "9mm": 60
-    },
-    "consumables": {
-      "bandage": 3,
-      "medkit": 2
-    },
-    "backpack": null,
-    "rig": null,
-    "_m6Note": "M6：起始不给背包与弹挂（与不给长枪同一口径：新号要自己买）。未装背包时局内容量由 carry.json 的 defaults.backpack 兜底（3x2 / 6kg），刻意很小。"
+  "carry": {
+    "_comment": "★ M6-4：起始就带的东西**直接写在网格里**（不再是 ammo/consumables 两个数字）。携行网格是唯一真值：拖进来才算带在身上，±步进器已取消。",
+    "_whyNote": "坐标是**显式**的：这三件东西的摆法是新账号的第一印象，且 validateCarry 会核对它们塞得进兜底背包（4×3）并至少留 4 格给战利品。",
+    "backpack": [
+      { "itemId": "pistol_mag", "count": 60, "x": 0, "y": 0, "rotated": false },
+      { "itemId": "bandage", "count": 3, "x": 1, "y": 0, "rotated": false },
+      { "itemId": "medkit", "count": 2, "x": 0, "y": 1, "rotated": false }
+    ],
+    "rig": [],
+    "safe": []
+  },
+  "backpack": null,
+  "rig": null,
+  "_m6Note": "M6：起始不给背包与弹挂（与不给长枪同一口径：新号要自己买）。未装背包时局内容量由 carry.json 的 defaults.backpack 兜底（4x3 / 6kg），刻意很小。",
+  "_m64Note": "M6-4：起始携行件改写成网格坐标（9mm 一盒 60 发 + 绷带 3 + 急救包 2，占 3 格）。旧存档里的 ammo/consumables 数字由 core/profile.js 在收敛时一次性迁移成网格。"
   },
   "maxPresets": 4,
   "_maxPresetsNote": "预设方案上限。删除预设必须保持至少一套（否则新账号没有可进局的配装）。",

@@ -22,7 +22,11 @@ import { mulberry32 } from '../src/core/rng.js';
 import { packGrid, packIntoGrid, createGrid, markArea } from '../src/core/packing.js';
 import { pickRarity, normalizedWeights, dataKeys, indexByRarity } from '../src/core/lootTable.js';
 import { resolveBackpack } from '../src/core/lootTable.js';
-import { planCarry } from '../src/core/carry.js';
+// ★ M6-4：起始携行件不再由"数字字典 → 摆放算法"产出，而是**表里写好的网格坐标**。
+//   因此这里改用与运行时同一套判定（carrySpecs + carryAudit），而不是旧的 planCarry：
+//   planCarry 读的是已删除的 loadout.ammo / consumables 数字账，用它只会恒为 0 件。
+import { carrySpecs, carryAudit, CARRY_GRIDS } from '../src/core/carry.js';
+import { itemShape } from '../src/core/items.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -545,19 +549,25 @@ console.log('\n—— ⑤-b 携行件占格的影响（口径：参考装载 vs 
 {
   let plan = null;
   let parseError = null;
+  const itemDefs = {};
+  for (const it of T.items) itemDefs[it.id] = it;
   try {
     const EQUIP = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'config', 'equipment.json'), 'utf8'));
-    const WEAPONS = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'config', 'weapons.json'), 'utf8'));
-    const COMBAT = JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'config', 'combat.json'), 'utf8'));
-    const itemDefs = {};
-    for (const it of T.items) itemDefs[it.id] = it;
-    plan = planCarry({
-      loadout: EQUIP.starterLoadout,
-      carry: CARRY,
-      ammo: (WEAPONS.ammo || []).map((a) => ({ id: a.id, itemId: a.lootItemId })),
-      consumables: COMBAT.consumables || [],
-      itemDefs,
-    });
+    const starter = EQUIP.starterLoadout || {};
+    // 起始配装**没有**背包与弹挂（制作人裁定：新号要自己买）→ 规格走 carry.json 的兜底。
+    // 判定必须与运行时同源（carrySpecs + carryAudit），否则"表里写着的起始三件"
+    // 与"进局真的带着三件"会分叉成两套账。
+    const specs = carrySpecs({ backpack: starter.backpack || null, rig: starter.rig || null }, CARRY, null);
+    const c0 = starter.carry || {};
+    const carry0 = {};
+    for (const n of CARRY_GRIDS) carry0[n] = Array.isArray(c0[n]) ? c0[n] : [];
+    const audit = carryAudit(carry0, specs, itemDefs);
+    plan = {
+      placements: carry0.backpack.concat(carry0.rig),
+      overflow: audit.offenders,
+      audit,
+      specs,
+    };
   } catch (e) {
     parseError = e;
   }
@@ -568,14 +578,21 @@ console.log('\n—— ⑤-b 携行件占格的影响（口径：参考装载 vs 
     check('携行件占格影响可测量（能读到起始配装与携行具表）', false,
       parseError ? parseError.message : '未知原因');
   } else {
-    const cells = plan.placements.reduce((a, p) => a + p.w * p.h, 0);
-    const total = T.backpack.w * T.backpack.h;
+    // 占格按**物品形状**算（网格条目只有坐标与朝向，没有现成的 w/h）。
+    const cells = plan.placements.reduce((a, e) => {
+      const d = itemDefs[e.itemId];
+      if (!d) return a;
+      const sh = itemShape(d, e.rotated);
+      return a + sh.w * sh.h;
+    }, 0);
+    const bp = plan.specs && plan.specs.backpack;
+    const total = bp ? bp.w * bp.h : 0;
     check('起始携行件确实占格（否则"M6 起弹药药品进网格"没有落地）',
       cells > 0 && plan.placements.length > 0,
-      `${plan.placements.length} 件 / ${cells} 格（参考装载共 ${total} 格）`);
-    check('起始携行件不溢出参考背包（溢出会静默少带）',
+      `${plan.placements.length} 件 / ${cells} 格（生效规格 ${bp ? bp.id || '兜底' : '?'} ${total} 格）`);
+    check('起始携行件在生效规格里**放得下且不违规**（越界/重叠都会静默少带）',
       plan.overflow.length === 0,
-      plan.overflow.map((o) => `${o.itemId}×${o.count}`).join('、') || '无溢出');
+      plan.overflow.map((o) => `${o.itemId}×${o.count}:${o.reason}`).join('、') || '无违规');
 
     if (cells > 0 && plan.overflow.length === 0) {
       const deltas = [];

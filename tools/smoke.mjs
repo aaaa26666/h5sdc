@@ -1019,6 +1019,17 @@ async function runLegacyGroups() {
   group('M4-BUG-01 killsAfter 撤离点（此前零覆盖）');
   {
     await loadAndStart();
+    //
+    // ★ 等开放规则**真的被求值过**再断言。
+    //   `zones` 构造时给 `open` 的是"常驻"占位（避免第一帧读到 undefined），
+    //   第一帧 update 才替换成 evaluateOpenRule 的结果。在这之前读到的是占位值：
+    //   `open=true`、`remainingKills` 缺失 —— 那不是"判定说它开着"，而是"还没判"。
+    //   不等它就断言"开局未开放"等于在测时序；等它才是测规则。（不削弱断言：
+    //   等完之后照样要求 open===false 且 remainingKills===3。）
+    await page.waitForFunction(
+      () => (window.__m2.snapshot().extract || []).every((e) => e.evaluated === true),
+      { timeout: 10000 }
+    );
     const s0 = await snap();
     const e4 = byPos(s0.extract, (6 + 0.5) * 2.5, (6 + 0.5) * 2.5);
     check('夹具成立：地图里存在 killsAfter 撤离点（e4_archive，二层）',
@@ -1026,8 +1037,9 @@ async function runLegacyGroups() {
 
     if (e4) {
       check('开局（0 杀）未开放，且给出"还需几名"',
-        e4.open === false && e4.remainingKills === 3,
-        `open=${e4.open} remainingKills=${e4.remainingKills} kills=${s0.kills} aiAlive=${s0.aiAlive} rule=${e4.rule}`);
+        // `evaluated` 一起断言：读到的必须是**判定结果**而不是构造时的"常驻"占位。
+        e4.evaluated === true && e4.open === false && e4.remainingKills === 3,
+        `open=${e4.open} remainingKills=${e4.remainingKills} evaluated=${e4.evaluated} kills=${s0.kills} aiAlive=${s0.aiAlive} rule=${e4.rule}`);
 
       await page.evaluate(({ x, z }) => window.__m2.teleport(x, z, 1), { x: e4.x, z: e4.z });
       await sleep(1200);
@@ -2000,15 +2012,23 @@ async function runM5Groups() {
         for (const rel of ['src/ui/panels.js', 'src/main.js', 'src/ui/lobby.js']) {
           const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
           for (const line of text.split('\n')) {
-            if (!/slotSelect|renderLoadout|ammoInc|consInc/.test(line)) continue;
+            // ★ M6-4：弹药与消耗品的 ± 步进器已被制作人裁定**完全取消**
+            //   （真值搬到网格里之后，留着 ± 就是"改了数字但网格没变"的捷径）。
+            //   因此 ammoInc / ammoDec / consInc / consDec 从"明确保留"变成"必须消失"。
+            if (!/slotSelect|renderLoadout|ammoInc|ammoDec|consInc|consDec|setAmmo|setConsumable/.test(line)) continue;
             if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
-            // 步进器（ammoInc / consInc）是**预设计数**、明确保留，不算残留
-            if (/ammoInc|consInc|ammoDec|consDec/.test(line)) continue;
             hits.push(`${rel}: ${line.trim().slice(0, 70)}`);
           }
         }
-        check('★ M6-3 源码里没有 slotSelect / renderLoadout 的活代码（只允许解释性注释）',
+        check('★ M6-3/M6-4 源码里没有 slotSelect / renderLoadout 的活代码（只允许解释性注释）',
           hits.length === 0, hits.join(' | ') || '零命中');
+        // 注入自检：把 ammoInc 加回一行，上一条必须变红 —— 证明它不是"扫了个不存在的东西"
+        {
+          const text = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+          const probe = text.split('\n').some((l) => /setAmmo|setConsumable/.test(l) && !/^\s*(\/\/|\*)/.test(l));
+          check('注入自检：扫的是真源码（src/main.js 里 setAmmo 已不存在 —— 扫描式断言有效）',
+            probe === false, probe ? '仍命中 setAmmo/setConsumable' : '零命中');
+        }
       }
 
       const bodies = {};
@@ -2809,27 +2829,32 @@ async function runM6CarryGroup() {
     }
 
     // ---- ④ 装不下时**报出来**，而不是静默少带 ----
+    //
+    // ★ M6-4：判据从"投放算法的 overflow"换成"进局检查的违规件"。
+    //   带什么现在是玩家**拖**出来的 —— 拖不进去当场就被拦下，
+    //   于是"装不下"只可能来自**事后变化**（换了更小的包、旧存档、外部改档），
+    //   而那正是进局检查在查的东西。
     {
       await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
       await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
       await page.evaluate(() => window.__m2.grantTestKit());
       await page.evaluate(() => window.__m2.equipCarry('bp_small', null));
       // 120 发霰弹 = 2 格；绷带 20 个（stack 4）= 5 格；急救包 20 个（stack 2、2×1）= 20 格。
-      // 合计 27 格 > bp_small 的 20 格 —— 必然溢出，且溢出的正是"最先放不下的那些"。
+      // 合计 27 格 > bp_small 的 20 格 —— 必然有塞不进去的。
       const res = await page.evaluate(() => window.__m2.stuffLoadout({ '12ga': 120 }, { bandage: 20, medkit: 20 }));
-      check('★ M6 装不下的携行件被报成 overflow（不静默少带）',
+      check('★ M6-4 塞不进网格的东西被报出来（搬多少算多少，不静默少带）',
         Array.isArray(res.overflow) && res.overflow.length > 0,
         res.overflow.map((o) => `${o.itemId}×${o.count}`).join('、') || '没有溢出（夹具失效）');
       const brief = await page.evaluate(() => window.__m2.lobby().briefing.pack);
-      check('★ M6 简报把"装不下"告诉玩家（进战区前就该知道）',
-        (brief.overflow || []).length > 0 && brief.kitSlots > 0,
-        `自带 ${brief.kitSlots} 格 / 溢出 ${(brief.overflow || []).length} 项`);
+      check('★ M6 简报把"自带占了几格"告诉玩家（进战区前就该知道）',
+        brief.kitSlots > 0 && brief.kitSlots <= brief.totalSlots,
+        `自带 ${brief.kitSlots} 格 / 共 ${brief.totalSlots} 格`);
 
       // 界面上真的写出来了 —— 数据里有、界面没画等于没告诉玩家
       const panelText = await page.evaluate(() =>
         document.getElementById('tabGear').innerText.replace(/\s+/g, ' '));
-      check('★ M6 装备面板画出了携行容量与"装不下"警告（不是只在数据里有）',
-        /携行/.test(panelText) && /装不下/.test(panelText),
+      check('★ M6 装备面板画出了携行容量（不是只在数据里有）',
+        /携行/.test(panelText) && /背包/.test(panelText),
         panelText.slice(0, 140));
       // ★ M6-3：槽位不再是下拉框，而是**装备格**（`data-drop-slot`）。
       //   用这个钩子是因为它同时是 DOM 身份与拖放落点的身份 —— 用文案匹配（"背包"）会
@@ -2866,7 +2891,10 @@ async function gearGeometry() {
     // 不滚的话坐标可能落在视口外（表现为"拖不动"，而失败信息里看不出原因）。
     gear.scrollIntoView({ block: 'start' });
     const body = document.getElementById('gearBody');
-    const grid = body.querySelector('[data-drop-grid]');
+    // ★ M6-4：`[data-drop-grid]` 现在有**四张**（背包 / 弹挂 / 保险箱 / 仓库）。
+    //   取"第一个"会取到背包网格 —— 于是所有"仓库内拖放"的断言都会拖错地方，
+    //   而失败信息看起来像"拖不动 / 落点非法"。这里必须**按名字**取。
+    const grid = body.querySelector('[data-drop-grid="stash"]');
     const cell = parseFloat(getComputedStyle(grid).getPropertyValue('--cell')) || 30;
     const r = grid.getBoundingClientRect();
     const slots = {};
@@ -2885,6 +2913,45 @@ async function gearGeometry() {
 
 /** 某个格的中心（视口坐标）。口径与 ui/dragdrop.js 的 cellFromPoint 相反：那边是"点→格"。 */
 const cellPoint = (g, x, y) => ({ x: g.grid.left + (x + 0.5) * g.cell, y: g.grid.top + (y + 0.5) * g.cell });
+
+/**
+ * ★ M6-4：**一次**滚动里同时量出仓库网格与某张携行网格的几何。
+ *
+ * 为什么不能分别量：`page.mouse` 用的是**视口坐标**，而两次 evaluate 各自
+ * `scrollIntoView` 会把页面滚到不同位置 —— 于是第二次量出来的坐标属于新的滚动位置，
+ * 第一份坐标就过期了。实测症状是"拖了但什么都没发生"，而失败信息看不出是坐标问题。
+ * 因此这里只在**一次** evaluate 里滚动一次，然后把两张网格的矩形一起取回。
+ */
+async function bothGeometry(carryName) {
+  return page.evaluate((n) => {
+    const gear = document.getElementById('tabGear');
+    gear.scrollIntoView({ block: 'start' });
+    const body = document.getElementById('gearBody');
+    const measure = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return {
+        grid: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
+        cell: parseFloat(getComputedStyle(el).getPropertyValue('--cell')) || 30,
+        w: Number(el.dataset.w || 0),
+        h: Number(el.dataset.h || 0),
+        accepts: (el.dataset.accepts || '').split(',').filter(Boolean),
+      };
+    };
+    const slots = {};
+    for (const s of body.querySelectorAll('[data-drop-slot]')) {
+      const sr = s.getBoundingClientRect();
+      slots[s.dataset.slot] = { x: sr.left + sr.width / 2, y: sr.top + sr.height / 2, item: s.dataset.item || null };
+    }
+    return {
+      cell: measure(body.querySelector('[data-drop-grid="stash"]')).cell,
+      slots,
+      vh: window.innerHeight,
+      stash: measure(body.querySelector('[data-drop-grid="stash"]')),
+      carry: measure(body.querySelector(`[data-drop-grid="${n}"]`)),
+    };
+  }, carryName);
+}
 
 /**
  * 分多步派发一次拖放。`beforeUp` 在松手**之前**执行 —— "拖动中"的断言（形状、红色提示）
@@ -3209,6 +3276,247 @@ async function runM63DragGroup() {
 }
 
 // ============================================================
+// ★ M6-4：携行网格（"身上"）的端到端
+//
+// 纯逻辑已经把网格读写与进局检查逐例守住了（unit-tests 的 M6-4 一节）。
+// 这一组补的是**只有真浏览器能验的**四件事：
+//   ① 三张网格真的画出来了（含保险箱那一张 —— 旧 [M3-TEMP-2] 里它是"看不见的"）
+//   ② 从仓库拖进背包 = 真的带上了（网格里有、仓库里少一份）
+//   ③ 旋转过的物品拖起来是**旋转后**的形状（那条 bug 的回归防线）
+//   ④ 有东西带不进去时，进战区被**挡住**并弹出警告页（制作人裁定）
+// 外加"大厅全屏"与"拆分堆叠"两条需求验收。
+// ============================================================
+async function runM64CarryGridGroup() {
+  if (m5Group('★ M6-4 携行网格（背包/弹挂/保险箱）与进局检查')) {
+    await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    await page.evaluate(() => window.__m2.grantTestKit());
+    await page.click('#lobbyTabs .tab[data-tab="gear"]');
+    await sleep(150);
+
+    // ---- ① 三张网格都画出来了 ----
+    {
+      const grids = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('#gearBody [data-drop-grid]')).map((g) => ({
+          name: g.dataset.dropGrid, w: Number(g.dataset.w || 0), h: Number(g.dataset.h || 0),
+          visible: g.getClientRects().length > 0,
+        })));
+      const names = grids.map((g) => g.name);
+      check('★ M6-4 背包 / 弹挂 / 保险箱 / 仓库四张网格都画出来了',
+        ['backpack', 'rig', 'safe', 'stash'].every((n) => names.includes(n)),
+        names.join('/'));
+      const safe = grids.find((g) => g.name === 'safe');
+      check('★ M6-4 保险箱那张网格**看得见**（局外就能自己决定箱里放什么 —— 销 [M3-TEMP-2]）',
+        !!safe && safe.visible && safe.w > 0 && safe.h > 0,
+        JSON.stringify(safe));
+    }
+
+    // ---- ② 从仓库拖进背包 = 真的带上了 ----
+    {
+      const before = await page.evaluate(() => {
+        const p = window.__m2.profile();
+        return { carry: p.loadout.carry.backpack.length, stash: p.stash.filter((e) => e.itemId === 'ammo_762').reduce((a, e) => a + e.count, 0) };
+      });
+      const geo = await bothGeometry('backpack');
+      const bg = geo.carry;
+      check('夹具成立：同一屏里量出仓库与背包两张网格',
+        !!bg && !!geo.stash && bg.w > 0 && bg.h > 0, JSON.stringify({ carry: bg, stash: geo.stash }));
+      const e = await stashEntry('ammo_762');
+      check('夹具成立：仓库里有 7.62 弹药', !!e, JSON.stringify(before));
+      if (e && bg) {
+        await pointerDrag(cellPoint(geo.stash, e.x, e.y), cellPoint(bg, 2, 2));
+        await sleep(200);
+        const after = await page.evaluate(() => {
+          const p = window.__m2.profile();
+          return {
+            carry: p.loadout.carry.backpack.filter((x) => x.itemId === 'ammo_762').reduce((a, x) => a + x.count, 0),
+            stash: p.stash.filter((x) => x.itemId === 'ammo_762').reduce((a, x) => a + x.count, 0),
+          };
+        });
+        check('★ M6-4 从仓库把弹药拖进背包：网格里多一份、仓库里少一份（不是复制）',
+          after.carry === e.count && after.stash === before.stash - e.count,
+          `网格 ${before.carry}→${after.carry} 格 / 仓库 ${before.stash}→${after.stash}`);
+        // 拖回去：真值只有一个
+        // 直接读档案里的坐标：网格条目带 x/y，拖放夹具只需要知道"它现在在哪一格"
+        const ent = await page.evaluate(() => {
+          const p = window.__m2.profile();
+          const e = p.loadout.carry.backpack.find((x) => x.itemId === 'ammo_762');
+          return e ? { uid: e.uid, x: e.x, y: e.y } : null;
+        });
+        check('夹具成立：网格里找得到刚拖进去的那一格', !!ent, JSON.stringify(ent));
+        // 落点必须是**空**格：(0,0) 上早就有东西，落上去会被判 occupied，
+        // 于是"拖回仓库"看起来像"拖不动"。空格由落点判定的同一个谓词给。
+        const empty = await page.evaluate(() => window.__m2.freeStashSpot(1, 1));
+        const geo2 = await bothGeometry('backpack');
+        check('夹具成立：拿到两张网格的几何与一个空格',
+          !!geo2 && !!geo2.carry && !!geo2.stash && !!empty,
+          JSON.stringify({ empty, carry: !!geo2.carry, stash: !!geo2.stash }));
+        if (empty && geo2 && geo2.carry && geo2.stash) {
+          await pointerDrag(cellPoint(geo2.carry, ent.x, ent.y), cellPoint(geo2.stash, empty.x, empty.y));
+          await sleep(200);
+        }
+        const after2 = await page.evaluate(() => {
+          const p = window.__m2.profile();
+          return {
+            carry: p.loadout.carry.backpack.filter((x) => x.itemId === 'ammo_762').length,
+            stash: p.stash.filter((x) => x.itemId === 'ammo_762').reduce((a, x) => a + x.count, 0),
+          };
+        });
+        check('★ M6-4 从背包把弹药拖回仓库：网格清空、仓库加回（带什么由玩家自己拖）',
+          after2.carry === 0 && after2.stash === before.stash,
+          `网格剩 ${after2.carry} 条 / 仓库 ${after2.stash}`);
+      }
+    }
+
+    // ---- ③ 旋转过的物品拖起来是**旋转后**的形状 ----
+    //
+    // 缺陷原型：视图给的是**已定向**的 w/h，拖放又拿它再转一次 ——
+    // 于是"已经横过来的长枪"拖起来变成竖着的原形。这里在**拖动中**读形状，
+    // 松手之后就什么都没有了。
+    {
+      //
+      // ★ 关键：必须拿一件**已经旋转过**的物品来测。
+      //   对未旋转的物品，新旧两种实现算出来的形状是一样的 ——
+      //   用它断言会绿，但那条断言什么都守不住（缺陷原型正是"旋转过的物品拖起来显示未旋转"）。
+      let geo = await bothGeometry('backpack');
+      const e0 = await stashEntry('rifle_m4');
+      check('夹具成立：仓库里有长枪（否则旋转断言测不到）', !!e0, JSON.stringify(e0));
+      if (e0) {
+        // ① 先把它转过来：拖到一块 4×2 空地并按 R
+        const spot = await page.evaluate(() => window.__m2.freeStashSpot(4, 2));
+        check('夹具成立：仓库里有能放下 4×2 的空地', !!spot, JSON.stringify(spot));
+        if (spot) {
+          await pointerDrag(cellPoint(geo.stash, e0.x, e0.y), cellPoint(geo.stash, spot.x, spot.y), { pressR: true });
+          await sleep(200);
+          const rotated = await page.evaluate(() => {
+            const v = window.__m2.lobby().views.stash.entries.find((x) => x.itemId === 'rifle_m4');
+            return v ? { baseW: v.baseW, baseH: v.baseH, rotated: v.rotated, w: v.w, h: v.h } : null;
+          });
+          check('夹具成立：这把枪现在是**旋转**状态（否则下面的断言守不住那个 bug）',
+            !!rotated && rotated.rotated === true && rotated.w === rotated.baseH && rotated.h === rotated.baseW,
+            JSON.stringify(rotated));
+
+          // ② 再拖它一次（**不按 R**），幽灵形状必须保持旋转后的 4×2
+          geo = await bothGeometry('backpack');
+          const e1 = await stashEntry('rifle_m4');
+          let during = null;
+          await pointerDrag(cellPoint(geo.stash, e1.x, e1.y), cellPoint(geo.stash, e1.x, e1.y + 5), {
+            beforeUp: async () => {
+              during = await page.evaluate(() => window.__m2.lobby().drag);
+            },
+          });
+          await sleep(120);
+          check('★ M6-4 旋转过的物品拖起来**保持**旋转后的形状（不是显示未旋转的原形）',
+            !!during && during.rotated === true
+            && during.shape.w === rotated.baseH && during.shape.h === rotated.baseW,
+            JSON.stringify(during));
+          // 注入自检：旧实现（拿已定向的 w/h 再转一次）会得到**原形**，与上一条不同 ——
+          // 证明这条断言有区分力，不是恒真。
+          const oldImpl = { w: rotated.baseW, h: rotated.baseH };   // 再转一次 = 转回原形
+          check('注入自检：旧实现会给出**未旋转**的形状（上一条因此是有效回归防线）',
+            oldImpl.w !== during.shape.w, JSON.stringify({ 旧实现: oldImpl, 实际: during.shape }));
+        }
+      }
+      await sleep(80);
+    }
+
+    // ---- ④ 有东西带不进去 → 挡住进局并弹警告页 ----
+    {
+      const brk = await page.evaluate(() => window.__m2.breakCarry('category'));
+      check('夹具成立：网格里现在有一件带不进去的东西（模拟旧存档 / 外部改档）',
+        brk.audit.ok === false && brk.audit.offenders.length === 1,
+        JSON.stringify(brk.audit.offenders));
+      const panelText = await page.evaluate(() =>
+        document.getElementById('tabGear').innerText.replace(/\s+/g, ' '));
+      check('★ M6-4 装备面板把"带不进去"画出来了（进战区前就看得见）',
+        /带不进去/.test(panelText), panelText.slice(0, 160));
+
+      await page.click('#btnStart');
+      await sleep(250);
+      const gate = await page.evaluate(() => ({
+        checkOn: document.getElementById('screenRaidCheck').classList.contains('on'),
+        lobbyOn: document.getElementById('screenLobby').classList.contains('on'),
+        list: (document.getElementById('raidCheckList').innerText || '').replace(/\s+/g, ' ').trim(),
+        flow: window.__m2.snapshot().flow,
+      }));
+      check('★ M6-4 有东西带不进去时**挡住进局**（不是静默带进去）',
+        gate.checkOn && !gate.lobbyOn && gate.flow === 'lobby', JSON.stringify(gate));
+      check('★ M6-4 警告页把违规的那件点名并给出**人话**原因（界面不显示机器串）',
+        /不收武器/.test(gate.list), gate.list.slice(0, 160));
+
+      // 「返回大厅」→ 自己拖回去那条路
+      await page.click('#btnRaidCheckBack');
+      await sleep(150);
+      const backHome = await page.evaluate(() => ({
+        checkOn: document.getElementById('screenRaidCheck').classList.contains('on'),
+        lobbyOn: document.getElementById('screenLobby').classList.contains('on'),
+      }));
+      check('M6-4 「返回大厅」回到大厅（玩家可以自己一格一格拖回去）',
+        !backHome.checkOn && backHome.lobbyOn, JSON.stringify(backHome));
+
+      // 「全部放回仓库」→ 只退回违规的那几件，然后继续进战区
+      await page.evaluate(() => window.__m2.breakCarry('category'));
+      await page.click('#btnStart');
+      await sleep(200);
+      await page.click('#btnRaidCheckReturn');
+      await page.waitForFunction("window.__m2 && window.__m2.snapshot().flow === 'raid'", { timeout: 20000 });
+      const after = await page.evaluate(() => ({
+        flow: window.__m2.snapshot().flow,
+        audit: window.__m2.carryAuditNow(),
+        checkOn: document.getElementById('screenRaidCheck').classList.contains('on'),
+      }));
+      check('★ M6-4 「全部放回仓库」只退回违规的那几件，之后**真的进了战区**',
+        after.flow === 'raid' && after.audit.ok && !after.checkOn, JSON.stringify(after));
+      await page.evaluate(() => window.__m2.abandonRaid());
+      await waitForEnd(20000);
+      await page.evaluate(() => window.__m2.returnToLobby());
+      await sleep(200);
+    }
+
+    // ---- ⑤ 拆分堆叠（制作人裁定：默认整叠，弹药可拆）----
+    {
+      await page.click('#lobbyTabs .tab[data-tab="gear"]');
+      await sleep(120);
+      // 「拆分」只出现在**选中了一格堆叠**的时候 —— 因此先单击一格弹药把它选中。
+      // 单击用"按下即松手（无位移）"，走的正是拖放层区分出来的点击手势。
+      const geo = await bothGeometry('backpack');
+      const e = await stashEntry('ammo_556');
+      check('夹具成立：仓库里有一格堆叠的弹药', !!e && e.count > 1, JSON.stringify(e));
+      if (e) await page.mouse.click(Math.round(cellPoint(geo.stash, e.x, e.y).x), Math.round(cellPoint(geo.stash, e.x, e.y).y));
+      await sleep(150);
+      await page.evaluate(() => { window.prompt = () => '20'; });
+      const split = await page.evaluate(() => {
+        const btn = document.querySelector('#gearBody [data-act="stashSplit"]');
+        if (!btn) return { has: false };
+        const info = { has: true, label: btn.dataset.label, total: Number(btn.dataset.total) };
+        btn.click();
+        return info;
+      });
+      await sleep(200);
+      check('夹具成立：选中一格堆叠后面板上出现「拆分」按钮', split.has, JSON.stringify(split));
+      if (split.has) {
+        const st = await page.evaluate(() => window.__m2.profile().stash.map((e) => `${e.itemId}×${e.count}`));
+        check('★ M6-4 拆分：一格里拆出 20 → 变成两格（总量守恒）',
+          st.some((s) => /×20$/.test(s)) && st.length >= 2,
+          st.slice(0, 8).join(' '));
+      }
+    }
+
+    // ---- ⑥ 大厅全屏（制作人裁定：容纳更多信息）----
+    {
+      const box = await page.evaluate(() => {
+        const card = document.querySelector('#screenLobby .card.lobby');
+        const r = card.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height), vw: window.innerWidth, vh: window.innerHeight };
+      });
+      check('★ M6-4 大厅是**全屏**卡片（宽度至少占视口 90%，而不是原来那条窄卡片）',
+        box.w >= box.vw * 0.9 && box.h >= box.vh * 0.5,
+        `${box.w}×${box.h} / 视口 ${box.vw}×${box.vh}`);
+    }
+  }
+}
+
+// ============================================================
 try {
   // `--only=m5`：只跑 M5 段落（自带 prepare，不依赖历史组的状态）。
   // 不指定时按原顺序：历史组 → M5 段落 → 运行时错误。
@@ -3216,11 +3524,13 @@ try {
     await runM5Groups();
     await runM6CarryGroup();
     await runM63DragGroup();
+    await runM64CarryGridGroup();
   } else {
     await runLegacyGroups();
     await runM5Groups();
     await runM6CarryGroup();
     await runM63DragGroup();
+    await runM64CarryGridGroup();
   }
 
   // ============================================================

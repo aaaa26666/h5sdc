@@ -104,5 +104,10 @@
       "weightLimitKg": 6
     }
   },
-  "_slotsNote": "每只背包**显式声明 slots**，并由 tools/validate-loot-tables.mjs 核对它等于 capacityW×capacityH。刻意不把 slots 写成派生值 —— 那样\"声明格数与容量一致\"这条检查就永远为真，等于没有检查。"
+  "_slotsNote": "每只背包**显式声明 slots**，并由 tools/validate-loot-tables.mjs 核对它等于 capacityW×capacityH。刻意不把 slots 写成派生值 —— 那样\"声明格数与容量一致\"这条检查就永远为真，等于没有检查。",
+  "carryRules": {
+    "_comment": "★ M6-4（制作人裁定）：背包与弹挂这两张网格**只收弹药与消耗品**（含医疗）。长枪 / 护甲 / 贵重品 / 任务物品一律拒收 —— 它们是\"搜\"的产物，不是\"出发前装进包里\"的东西。",
+    "_whyNote": "这条白名单同时是**进局检查**的判据：上一局的战利品若还留在网格里没拖回仓库，进局前的警告页就是按它把那些东西点出来的。没有它，'网格里夹带一把没人能用的长枪'会一路带到战区里。",
+    "acceptedCategories": ["ammo", "medical", "consumable"]
+  }
 }

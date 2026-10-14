@@ -15,6 +15,8 @@
 //
 // 数值来源：全部由调用方（main.js）从各系统取好后传入；本文件不读配置、不产生数值。
 
+import { valueReadout } from './items.js';
+
 /**
  * @param {object} facts 局内事实
  * @param {string} facts.reason      结束原因（extracted / dead / timeout）
@@ -51,7 +53,8 @@ export function buildRaidResult(facts) {
     //   count 有两条来源：运行时条目（e.count）与断线快照条目（e.item.count）。
     const count = Number.isFinite(e.count) ? e.count : Number.isFinite(e.item.count) ? e.item.count : units;
     // 估值同样两条来源：运行时条目有 unitValue（单价），快照条目里已经是算好的总价。
-    const value = e.item.unitValue !== undefined ? e.item.unitValue * count : e.item.value;
+    // ★ M6-4：一律取整（core/items.js 的 valueReadout 是唯一实现）
+    const value = valueReadout(e.item, count);
     return {
       id: e.item.id,
       label: e.item.label,

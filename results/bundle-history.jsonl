@@ -28,3 +28,5 @@
 {"at":"2026-10-13T15:54:19.986Z","firstRawKB":839.6,"firstGzipKB":239.8,"firstBrotliKB":195.7,"asyncBrotliKB":0,"budgetKB":2048,"warnKB":512,"pass":true}
 {"at":"2026-10-13T16:22:07.363Z","firstRawKB":854.2,"firstGzipKB":245.2,"firstBrotliKB":200,"asyncBrotliKB":0,"budgetKB":2048,"warnKB":512,"pass":true}
 {"at":"2026-10-13T16:33:09.641Z","firstRawKB":854.2,"firstGzipKB":245.2,"firstBrotliKB":200,"asyncBrotliKB":0,"budgetKB":2048,"warnKB":512,"pass":true}
+{"at":"2026-10-14T09:10:43.738Z","firstRawKB":874.9,"firstGzipKB":251.8,"firstBrotliKB":205.3,"asyncBrotliKB":0,"budgetKB":2048,"warnKB":512,"pass":true}
+{"at":"2026-10-14T11:10:06.062Z","firstRawKB":874.9,"firstGzipKB":251.8,"firstBrotliKB":205.3,"asyncBrotliKB":0,"budgetKB":2048,"warnKB":512,"pass":true}

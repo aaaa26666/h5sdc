@@ -70,7 +70,10 @@ export function stashValue(entries, cfg) {
     const def = itemDef(e.itemId, cfg);
     if (def) sum += def.unitValue * e.count;
   }
-  return sum;
+  // ★ 制作人裁定（M6-4）：估值读数一律**取整**。
+  //   弹药的单价是"一盒的价值 ÷ 60"，除不尽（1100/60 = 18.33…），
+  //   于是"估值 18.333333333333332"这种读数会直接印在界面上。
+  return Math.round(sum);
 }
 
 export function stashWeight(entries, cfg) {
@@ -174,6 +177,37 @@ export function stashRemoveItem(entries, itemId, count, cfg) {
     lines.push({ uid: e.uid, itemId: e.itemId, count: take });
   }
   return { stash: out.filter((x) => x.count > 0), removed: count - left, leftover: left, lines };
+}
+
+/**
+ * ★ M6-4：把一个堆叠**拆出**指定数量，另起一格（弹药因此能"只带一部分"）。
+ *
+ * 为什么需要它：拖放是整叠移动的（60 发一盒整盒搬）。玩家想带 120 发中的 40 发时，
+ *   必须能先在仓库里把盒子拆开 —— 否则"带多带少"这个最基本的取舍做不了。
+ * 为什么不做成"拖的时候带一个数量"：那样幽灵元素的形状与落点都要在拖动途中重算，
+ *   而落点判定只有一处（core），中途改形状等于让两条路径分叉。
+ *
+ * @param {number} uid 被拆的那一条
+ * @param {number} take 拆走多少**存储单位**（1 ≤ take < 原数量）
+ * @returns {{ok:boolean, reason?:string, stash:Array, splitUid?:number}}
+ */
+export function stashSplit(entries, uid, take, cfg) {
+  const idx = entries.findIndex((e) => e.uid === uid);
+  if (idx < 0) return { ok: false, reason: 'unknown-uid', stash: entries };
+  const def = itemDef(entries[idx].itemId, cfg);
+  if (!def) return { ok: false, reason: 'unknown-item', stash: entries };
+  const n = Math.floor(Number(take));
+  if (!Number.isInteger(n) || n <= 0) return { ok: false, reason: 'bad-count', stash: entries };
+  if (n >= entries[idx].count) return { ok: false, reason: 'bad-count', stash: entries };
+
+  const out = entries.map((e) => ({ ...e }));
+  out[idx] = { ...out[idx], count: out[idx].count - n };
+  const grid = stashGrid(out, cfg);
+  const slot = findSlot(grid, def);
+  if (!slot) return { ok: false, reason: 'stash-full', stash: entries };
+  const newUid = nextUid(out);
+  out.push({ uid: newUid, itemId: def.id, count: n, x: slot.x, y: slot.y, rotated: slot.rotated });
+  return { ok: true, stash: out, splitUid: newUid };
 }
 
 /**

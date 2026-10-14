@@ -32,6 +32,20 @@ const KIND_TEXT = Object.freeze({
   rig: '弹挂',
 });
 
+/** 物品类别的中文名（同上：只用于"这张网格不收贵重品"这类文案）。 */
+const CATEGORY_TEXT = Object.freeze({
+  ammo: '弹药',
+  medical: '医疗品',
+  consumable: '消耗品',
+  valuable: '贵重品',
+  quest: '任务物品',
+  weapon: '武器',
+  armor: '护具',
+  attachment: '配件',
+  backpack: '背包',
+  rig: '弹挂',
+});
+
 const REASON_TEXT = Object.freeze({
   'max-level': '已满级',
   'unknown-skill': '未知技能',
@@ -46,7 +60,7 @@ const REASON_TEXT = Object.freeze({
   'stash-full': '仓库放不下',
   // ---- ★ M6-3 拖放的落点原因（core/dragDrop.js 的返回值）----
   occupied: '这一格被别的物品占着',
-  'out-of-bounds': '会超出仓库边界（转一下，或换个位置）',
+  'out-of-bounds': '放不下：会超出网格边界（转一下，或换个位置）',
   'no-target': '没有落在仓库或装备格上',
   'no-source': '拖动的东西已经不在了',
   'bad-target': '落点不是一格（坐标非法）',
@@ -61,6 +75,13 @@ const REASON_TEXT = Object.freeze({
   'slot-to-slot': '装备格之间不能直接互换（先拖回仓库再拖上来）',
   'wrong-weapon-slot': '武器槽不匹配：主武器与副武器各有各的槽',
   'wrong-cover': '护甲部位不匹配：头盔槽只收头盔',
+  // ---- ★ M6-4 携行网格的落点原因 ----
+  'no-such-grid': '没有这张网格',
+  'slot-to-carry': '身上穿着的装备塞不进携行网格（先脱下来放回仓库）',
+  'carry-to-slot': '携行网格里的东西不能直接穿上（先拖回仓库，再拖到装备格）',
+  // ---- ★ M6-4 进局检查（core/carry.js 的 carryAudit 返回值）----
+  'no-space': '这张网格已经不在了（多半是换成了更小的包）',
+  overlap: '和网格里的另一件东西叠在一起',
 });
 
 /** 把 core 返回的原因串翻成人话（界面不显示机器串）。 */
@@ -70,6 +91,10 @@ export function reasonText(reason) {
   if (reason.startsWith('slot-rejects:')) {
     const kind = reason.split(':')[1];
     return `这个装备格不收${KIND_TEXT[kind] || kind}`;
+  }
+  // ★ M6-4：网格拒收要把"它只收什么"说出来 —— 只说"放不下"玩家不知道是规则还是满了
+  if (reason.startsWith('grid-rejects:')) {
+    return `这张网格不收${CATEGORY_TEXT[reason.split(':')[1]] || reason.split(':')[1]}（背包与弹挂只收弹药与消耗品；贵重品请放仓库或保险箱）`;
   }
   if (reason.startsWith('need-currency:')) return `货币不足（需 ${reason.split(':')[1]}）`;
   if (reason.startsWith('need-level:')) return `需要等级 ${reason.split(':')[1]}`;
@@ -117,7 +142,24 @@ export function createPanels(handlers = {}) {
       const node = ev.target.closest('[data-act]');
       if (!node || !root.contains(node)) return;
       const fn = handlers[node.dataset.act];
-      if (fn) fn(node.dataset, node);
+      if (!fn) return;
+      // ★ M6-4：拆分要问"拆多少"。数量来自 window.prompt —— 它可被端到端打桩
+      //   （page.evaluate 里改掉 window.prompt），因此这条路径不是测不到的死路。
+      //   为什么不用一个数字步进器：那是被制作人裁定取消的 ± 交互，不能换个地方复活。
+      if (node.dataset.act === 'stashSplit') {
+        const total = Number(node.dataset.total || 0);
+        const label = node.dataset.label || '这一格';
+        const raw = window.prompt(`从「${label}」里拆出多少？（1 ~ ${Math.max(0, total - 1)}）`, '1');
+        if (raw === null) return; // 取消
+        const n = Math.floor(Number(String(raw).trim()));
+        if (!Number.isFinite(n) || n <= 0) {
+          if (handlers.splitReject) handlers.splitReject('bad-count');
+          return;
+        }
+        fn({ ...node.dataset, amount: String(n) }, node);
+        return;
+      }
+      fn(node.dataset, node);
     });
   }
 
@@ -137,7 +179,9 @@ export function createPanels(handlers = {}) {
       <div class="equip-slot slot-${esc(s.id)} ${s.current ? 'on' : ''}"
            data-src="slot" data-drop-slot data-slot="${esc(s.id)}"
            data-item="${s.current ? esc(s.current) : ''}" data-label="${esc(s.currentLabel || '')}"
-           data-w="${s.currentW || 0}" data-h="${s.currentH || 0}" data-rotated="0" data-count="1"
+           data-w="${s.currentW || 0}" data-h="${s.currentH || 0}"
+           data-base-w="${s.currentW || 0}" data-base-h="${s.currentH || 0}"
+           data-rotated="0" data-count="1"
            title="${esc(`${s.label}：${s.currentLabel || '空'}｜拖一件到这一格来装备｜${optText}`)}">
         <span class="slot-k">${esc(s.label)}</span>
         <span class="slot-v">${s.currentLabel ? esc(s.currentLabel) : '空'}</span>
@@ -165,41 +209,24 @@ export function createPanels(handlers = {}) {
         </span>
       </div>`;
 
-    // 弹药与消耗品是**预设计数**（不是旧的槽位下拉），所以保留；
-    // 改成紧凑按钮组：两行对齐、每行一个"− 数字 ＋"的闭块，读数与仓库存量并排。
-    const stepper = (label, cur, onHand, act, idKey, idVal, step, unit) => `
-      <div class="stepper">
-        <span class="k">${esc(label)}</span>
-        <span class="grp">
-          <span class="mini ${cur > 0 ? '' : 'dis'}" data-act="${act}Dec" data-${idKey}="${esc(idVal)}" data-step="${step}">−</span>
-          <span class="v num">${cur}${unit}</span>
-          <span class="mini ${cur + step <= onHand ? '' : 'dis'}" data-act="${act}Inc" data-${idKey}="${esc(idVal)}" data-step="${step}">＋</span>
-        </span>
-        <span class="muted">仓库 ${onHand}</span>
-      </div>`;
-
-    const ammoSteps = v.ammo
-      .map((a) => stepper(a.label, a.current, a.onHand, 'ammo', 'cal', a.caliber, a.step, ' 发'))
-      .join('');
-    const consSteps = v.consumables
-      .map((c) => stepper(c.label, c.current, c.onHand, 'cons', 'id', c.id, c.step, ' 个'))
-      .join('');
-
     const c = v.carry;
+    // ★ M6-4：带什么是**数网格**数出来的（± 步进器已按制作人裁定取消）。
+    //   这里保留一行只读读数：玩家要能一眼确认"我到底带了几发"，而不用去数格子。
+    const kitText =
+      v.ammo.filter((a) => a.current > 0).map((a) => `${esc(a.label)} ×${a.current}`).join(' · ') +
+      (v.ammo.some((a) => a.current > 0) && v.consumables.some((x) => x.current > 0) ? ' · ' : '') +
+      v.consumables.filter((x) => x.current > 0).map((x) => `${esc(x.label)} ×${x.current}`).join(' · ');
     const carryLine = `
       <div class="carry-line">
-        <span class="k">携行</span>
+        <span class="k">身上带着</span>
+        <span class="v">${kitText || '（空 —— 把仓库里的弹药与药品拖到右边网格里）'}</span>
+      </div>
+      <div class="carry-line">
+        <span class="k">容量</span>
         <span class="v">${esc(c.backpack.label)} ${c.backpack.w}×${c.backpack.h}` +
-        `${c.rig ? ` ＋ ${esc(c.rig.label)} ${c.rig.w}×${c.rig.h}` : ''}` +
-        ` · 自带 ${c.kitSlots} 格 · 剩 ${c.freeSlots} 格装战利品</span>
+        `${c.rig.exists ? ` ＋ ${esc(c.rig.label)} ${c.rig.w}×${c.rig.h}` : ''}` +
+        ` · 已占 ${c.kitSlots} 格 · 剩 ${c.freeSlots} 格装战利品 · 上限 ${c.weightLimitKg}kg</span>
       </div>`;
-    // "装不下"必须在**进战区之前**说清楚：局内再发现少带，退出重配是不可能的。
-    const overflowNote = c.overflow.length
-      ? `<p class="warn" style="margin-top:6px">
-          装不下（**不会**带进战区）：${c.overflow.map((o) => `${esc(o.itemId)} ×${o.count}`).join('、')}
-          —— 请换更大的背包/弹挂，或减少携带量
-        </p>`
-      : '';
 
     return `
       <div class="gear-figure">
@@ -214,12 +241,71 @@ export function createPanels(handlers = {}) {
         <i style="width:${(v.weightBar.ratio * 100).toFixed(1)}%"></i>
       </div>
       ${carryLine}
-      ${overflowNote}
       ${presetLine}
-      <div class="steppers">${ammoSteps}${consSteps}</div>
       <p class="muted" style="margin-top:8px">
-        左键拖动仓库里的东西：拖到左边装备格＝穿上，拖回右边网格＝放下，拖动中按 R 旋转 90°。
+        左键拖动：仓库 → 中间网格＝带在身上；中间 → 仓库＝放回家里；拖到左边装备格＝穿上。
+        拖动中按 <b>R</b> 旋转 90°。
       </p>`;
+  }
+
+  /** 一条网格里的物品（与仓库条目同一套 `data-*`：拖放层只有一个 sourceOf）。 */
+  function gridItemsHtml(gridName, entries) {
+    return entries
+      .map(
+        (e) => `
+      <div class="grid-item"
+           data-src="carry" data-grid="${esc(gridName)}" data-uid="${e.uid}" data-item="${esc(e.itemId)}"
+           data-label="${esc(e.label)}" data-count="${e.count}" data-x="${e.x}" data-y="${e.y}"
+           data-w="${e.w}" data-h="${e.h}" data-base-w="${e.baseW}" data-base-h="${e.baseH}"
+           data-rotated="${e.rotated ? 1 : 0}"
+           title="${esc(e.label)} ×${e.count} · 估值 ${e.value} · ${e.weightKg.toFixed(2)}kg${e.rotated ? ' · 已旋转' : ''}"
+           style="left: calc(var(--cell) * ${e.x}); top: calc(var(--cell) * ${e.y});
+                  width: calc(var(--cell) * ${e.w}); height: calc(var(--cell) * ${e.h});
+                  ${e.color ? `border-color:${e.color};` : ''}">
+        ${esc(e.label)}${e.count > 1 ? ` <span class="qty">×${e.count}</span>` : ''}
+      </div>`
+      )
+      .join('');
+  }
+
+  /**
+   * 一张携行网格（背包 / 弹挂 / 保险箱）。
+   * `data-drop-grid` 的值是网格名 —— 它就是落点的身份（界面不按"第几个网格"猜）。
+   */
+  function carryGridBox(g, title, note) {
+    if (!g || !g.exists) {
+      return `
+        <div class="carry-grid off">
+          <div class="carry-head"><span class="k">${esc(title)}</span><span class="muted">未装备</span></div>
+          <p class="muted" style="margin:2px 0 0">${esc(note || '把仓库里的背包 / 弹挂拖到左边的装备格')}</p>
+        </div>`;
+    }
+    return `
+      <div class="carry-grid">
+        <div class="carry-head">
+          <span class="k">${esc(title)}</span>
+          <span class="muted">${g.w}×${g.h} · ${g.entries.length} 格已用</span>
+        </div>
+        <div class="grid-wrap" data-drop-grid="${esc(g.name)}" data-w="${g.w}" data-h="${g.h}"
+             data-accepts="${esc((g.accepts || []).join(','))}" style="--cols:${g.w}; --rows:${g.h}">
+          ${gridItemsHtml(g.name, g.entries)}
+        </div>
+      </div>`;
+  }
+
+  /** ★ M6-4：中间那一列 —— 三张携行网格（"身上"）。 */
+  function gearCarry(v) {
+    const c = v.carry;
+    return `
+      <div class="gear-mid">
+        ${carryGridBox(c.backpack, '背包', '未装备背包：现在用的是兜底容量')}
+        ${carryGridBox(c.rig, '弹挂', '未装备弹挂（它只收弹药与医疗品）')}
+        ${carryGridBox(c.safe, `保险箱 ${c.safe.exists ? esc(c.safe.label) : ''}`, '保险箱档位由任务线解锁')}
+        <p class="muted" style="margin:6px 0 0">
+          保险箱里的东西阵亡时<b>不会丢</b>；背包与弹挂里的会。三张网格只收弹药与消耗品，
+          贵重品请放仓库。
+        </p>
+      </div>`;
   }
 
   function gearRight(v) {
@@ -227,8 +313,9 @@ export function createPanels(handlers = {}) {
       .map(
         (e) => `
       <div class="grid-item ${e.selected ? 'on' : ''}"
-           data-src="stash" data-uid="${e.uid}" data-item="${esc(e.itemId)}" data-label="${esc(e.label)}"
+           data-src="stash" data-grid="stash" data-uid="${e.uid}" data-item="${esc(e.itemId)}" data-label="${esc(e.label)}"
            data-count="${e.count}" data-x="${e.x}" data-y="${e.y}" data-w="${e.w}" data-h="${e.h}"
+           data-base-w="${e.baseW}" data-base-h="${e.baseH}"
            data-rotated="${e.rotated ? 1 : 0}"
            title="${esc(e.label)} ×${e.count} · 估值 ${e.value} · ${e.weightKg.toFixed(2)}kg${e.rotated ? ' · 已旋转' : ''}"
            style="left: calc(var(--cell) * ${e.x}); top: calc(var(--cell) * ${e.y});
@@ -246,16 +333,24 @@ export function createPanels(handlers = {}) {
           ${v.sortModes.map((m) => `<span class="mini" data-act="stashSort" data-mode="${esc(m)}">${SORT_LABEL[m] || m}</span>`).join(' ')}
         </span>
       </div>
-      <div class="grid-wrap" data-drop-grid style="--cols:${v.w}; --rows:${v.h}">${items}</div>
+      <div class="grid-wrap" data-drop-grid="stash" style="--cols:${v.w}; --rows:${v.h}">${items}</div>
       <div class="slot-line">
         <span class="k">${v.summary.items} 件 · ${v.summary.used}/${v.summary.total} 格 · 估值 ${v.summary.value} · ${v.weightKg.toFixed(1)}kg</span>
         <span>
           已选 ${v.selectedCount} 项（估值 ${v.selectedValue}）
           <span class="mini ${v.selectedCount ? '' : 'dis'}" data-act="stashSell">批量出售 +${v.selectedSell}</span>
+          ${v.splitTarget
+            ? `<span class="mini" data-act="stashSplit" data-uid="${v.splitTarget.uid}"
+                     data-total="${v.splitTarget.count}" data-label="${esc(v.splitTarget.label)}"
+                     title="把 ${esc(v.splitTarget.label)} ×${v.splitTarget.count} 拆出一部分（例如只带 40 发）">拆分 ×${v.splitTarget.count}</span>`
+            : ''}
           <span class="mini ${v.entries.length ? '' : 'dis'}" data-act="stashSelectAll">全选</span>
           <span class="mini ${v.selectedCount ? '' : 'dis'}" data-act="stashClear">清空选择</span>
         </span>
-      </div>`;
+      </div>
+      <p class="muted" style="margin-top:6px">
+        单击条目＝选中（可批量出售）。拆分：<b>只选中一格</b>后点「拆分」，输入要拆出的数量。
+      </p>`;
   }
 
   function renderGear(views) {
@@ -269,6 +364,7 @@ export function createPanels(handlers = {}) {
     el.gear.innerHTML = `
       <div class="gear">
         <div class="gear-left">${gearLeft(lo)}</div>
+        ${gearCarry(lo)}
         <div class="gear-right">${gearRight(st)}</div>
       </div>`;
   }
@@ -283,9 +379,29 @@ export function createPanels(handlers = {}) {
   function sourceOf(node) {
     if (!node || !node.dataset) return null;
     const d = node.dataset;
+    // ★ M6-4：携行网格里的条目（背包 / 弹挂 / 保险箱）。
+    //   与仓库条目同一套 `data-*`，只多了一个 `grid` —— 它是"这一件现在在哪张网格上"。
+    if (d.src === 'carry') {
+      return {
+        kind: 'carry',
+        uid: Number(d.uid),
+        grid: d.grid || 'backpack',
+        itemId: d.item,
+        label: d.label,
+        count: Number(d.count) || 1,
+        x: Number(d.x),
+        y: Number(d.y),
+        w: Number(d.w),
+        h: Number(d.h),
+        baseW: Number(d.baseW) || Number(d.w),
+        baseH: Number(d.baseH) || Number(d.h),
+        rotated: d.rotated === '1',
+      };
+    }
     if (d.src === 'stash') {
       return {
         kind: 'stash',
+        grid: 'stash',
         uid: Number(d.uid),
         itemId: d.item,
         label: d.label,
@@ -297,6 +413,11 @@ export function createPanels(handlers = {}) {
         y: Number(d.y),
         w: Number(d.w),
         h: Number(d.h),
+        // ★ `baseW/baseH` 是**未旋转**的基准尺寸，幽灵元素按它 + `rotated` 自己算朝向。
+        //   拖放层若拿 `w/h`（已朝向）再去旋转，等于转两次 —— 那正是
+        //   "旋转过的物品拖起来显示未旋转的形状"这个 bug。
+        baseW: Number(d.baseW) || Number(d.w),
+        baseH: Number(d.baseH) || Number(d.h),
         rotated: d.rotated === '1',
       };
     }
@@ -310,6 +431,9 @@ export function createPanels(handlers = {}) {
         count: 1,
         w: Number(d.w),
         h: Number(d.h),
+        // 装备格里的东西不参与旋转（`rotated=false`），基准尺寸与朝向尺寸相同。
+        baseW: Number(d.baseW) || Number(d.w),
+        baseH: Number(d.baseH) || Number(d.h),
         rotated: false,
       };
     }

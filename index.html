@@ -103,8 +103,13 @@
       .card h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .06em; }
       .card h2 { font-size: 15px; margin: 0 0 18px; color: var(--dim); font-weight: normal; }
       /* 主大厅（M5-1）：内容比结算页长（战区简报 + 可折叠的操作说明），
-         所以给它更宽并允许纵向滚动 —— 小屏上不能靠"内容很少"侥幸不溢出。 */
-      .card.lobby { width: min(780px, 94vw); max-height: 92vh; overflow: auto; }
+         所以给它更宽并允许纵向滚动 —— 小屏上不能靠"内容很少"侥幸不溢出。
+         ★ M6-4：改为**全屏**（制作人裁定）。装备页现在要同屏放下四张网格
+           （人形 300px + 背包/弹挂/保险箱 + 仓库 300px），780px 的卡片塞不下，
+           塞不下的结果就是"拖放目标在视口外"，而那看起来完全像功能坏了。
+           上限 1500px 是为了在超宽屏上不让行长得读不完（不是随手取的数：
+           四列内容 ≈ 300+220+320+ 余量）。 */
+      .card.lobby { width: min(1500px, 98vw); max-height: 96vh; overflow: auto; }
       /* ★ [M6-BUG-03] 结算页也要能装下"很长的一局"。
          body 是 overflow:hidden，而结算明细随战利品条数增长（带出 / 损失 / 存入仓库逐件列出，
          再加上稀有度、经验、任务、消耗统计），卡片此前**没有 max-height / overflow** ——
@@ -221,9 +226,25 @@
          布局是**固定的像素盒**（剪影 300×340），因此装备格的矩形在任何窗口尺寸下都一样 ——
          端到端要靠这些矩形算拖放坐标，布局随机变化会让那批断言变成"时通时不通"。 */
       .brief-strip { border-bottom: 1px solid rgba(120,160,180,.25); margin-bottom: 10px; padding-bottom: 6px; }
-      .gear { display: flex; gap: 18px; align-items: flex-start; }
+      /* ★ 刻意**不**用 flex-wrap：换行会把仓库整块挤到下一行，
+         于是"仓库网格落在视口之外"—— 那看起来完全像"拖不动 / 功能坏了"。
+         三列的宽度都是写死的（300 / 240 / 余量），在 1280 宽的测试视口下必然同行；
+         真到了挤不下的窄屏，宁可让卡片横向滚动，也不要让拖放目标跑到屏幕外。 */
+      .gear { display: flex; gap: 20px; align-items: flex-start; }
       .gear-left { flex: 0 0 300px; }
+      /* ★ M6-4：中间那一列是"身上"的三张网格（背包 / 弹挂 / 保险箱）。
+         它紧贴左边的人形：拖动路径"仓库 → 身上"在视觉上就是一条从左到右的线。 */
+      /* ★ 宽度必须**写死**而不是 auto：这一列里有一句说明文字（<p>），
+         而 <p> 的 max-content 宽度是"整句不换行"，auto 会让这一列撑到 500px+，
+         把右边的仓库挤到下一行 —— 表现为"仓库网格在视口外，拖不动"。
+         240 = 最大的那只背包 7×30=210 + 内边距 16 + 边框 2，按上限取。 */
+      .gear-mid { flex: 0 0 240px; max-width: 240px; display: flex; flex-direction: column; gap: 10px; }
       .gear-right { flex: 1 1 auto; min-width: 0; }
+      .carry-grid { border: 1px solid rgba(120,160,180,.22); border-radius: 6px; padding: 6px 8px;
+        background: rgba(16,26,34,.55); }
+      .carry-grid.off { border-style: dashed; opacity: .8; }
+      .carry-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+        font-size: 12px; margin-bottom: 4px; }
       .gear-figure { position: relative; width: 300px; height: 340px; margin-bottom: 6px; }
       .silhouette { position: absolute; inset: 0; width: 100%; height: 100%;
         color: #8fc4dd; opacity: .22; pointer-events: none; }
@@ -380,9 +401,11 @@
           <div class="row"><span class="warn">注意</span><span class="warn">请勿使用 Ctrl 组合键（浏览器保留，无法拦截）</span></div>
           <div class="row"><span class="k">撤离</span><span>走进撤离区（绿=可用，灰=未开放）并停留 10 秒</span></div>
           <div class="row"><span class="k">暂停 / 设置</span><span>Esc 解锁指针后可打开设置</span></div>
-          <!-- ★ M6-3：装备页的拖放必须写出来。之前的配装是一排下拉框，
+          <!-- ★ M6-3 / M6-4：装备页的拖放必须写出来。之前的配装是一排下拉框，
                现在的交互动作完全换了 —— 不写，玩家会以为"仓库里的东西穿不上"。 -->
-          <div class="row"><span class="k">装备页拖放</span><span>左键拖动仓库里的东西：拖到左边装备格＝穿上，拖回网格＝放下；<b>拖动中按 R 旋转 90°</b></span></div>
+          <div class="row"><span class="k">装备页拖放</span><span>左键拖动：仓库 → 中间网格＝<b>带在身上</b>；中间 → 仓库＝放回家里；拖到左边装备格＝穿上；<b>拖动中按 R 旋转 90°</b></span></div>
+          <div class="row"><span class="k">带什么进战区</span><span>子弹与消耗品<b>只能</b>从仓库拖进背包 / 弹挂网格（没有 ± 按钮）；保险箱里的东西阵亡时不丢</span></div>
+          <div class="row"><span class="k">拆分堆叠</span><span>单击选中<b>一格</b>弹药 → 点「拆分」→ 输入要拆出的数量（例如从 60 发里拆出 20 发）</span></div>
           <div class="row"><span class="k">整理 / 出售</span><span>单击仓库条目＝选中（可批量出售）；拖到空格＝移动</span></div>
         </details>
 
@@ -402,6 +425,26 @@
           配装由仓库供给：进战区时把身上的东西从仓库取走，撤离把没用完的还回来，阵亡则全部丢失。<br />
           全程灰盒：无正式美术与音频素材，临时实现清单见 docs/M5-TEMP-REGISTRY.md
         </p>
+      </div>
+    </div>
+
+    <!-- ★ M6-4：进局前的"带不进去"警告页（制作人裁定：类别不合法与超出容量**两类都查**）。
+         为什么是**挡住进局**而不是只提示一次：把战利品留在网格里就进战区，
+         会让玩家带着一堆不该带的东西进去，而那时既不能拖回仓库、也看不出问题在哪。
+         玩家可以点「返回大厅」自己一格一格拖回去，也可以一键放回仓库。 -->
+    <div class="screen" id="screenRaidCheck">
+      <div class="card">
+        <h1>有东西带不进去</h1>
+        <h2>下面这些东西现在还在你的背包 / 弹挂网格里，回到大厅把它们拖回仓库</h2>
+        <p class="muted" id="raidCheckWhy">
+          背包与弹挂只收弹药与消耗品；换更小的包之后放不下的也会列在这里。
+        </p>
+        <div id="raidCheckList" class="list-scroll"></div>
+        <div class="btns">
+          <div class="btn primary" id="btnRaidCheckReturn">全部放回仓库</div>
+          <div class="btn" id="btnRaidCheckBack">返回大厅</div>
+        </div>
+        <p class="muted" id="raidCheckToast" style="min-height:19px;margin-top:8px"></p>
       </div>
     </div>
 

@@ -43,6 +43,7 @@ import {
   serializeProfile,
   activeLoadout,
   alreadyApplied,
+  safeSpecOf,
 } from '../src/core/profile.js';
 import {
   stashAdd,
@@ -56,8 +57,10 @@ import {
   stashMoveTo,
   stashAddAt,
   stashCapacity,
+  stashValue,
+  stashSplit,
 } from '../src/core/stash.js';
-import { itemDef, itemIdOfEquipment, equipmentIdOfItem, equivalentIds } from '../src/core/items.js';
+import { itemDef, itemIdOfEquipment, equipmentIdOfItem, equivalentIds, valueReadout } from '../src/core/items.js';
 import {
   expForLevel,
   totalExpToMax,
@@ -78,7 +81,15 @@ import {
   availableForSlot,
   ammoOnHand,
   takeLoadout,
-  returnLoadout,
+  // ★ M6-4：撤离/阵亡后的网格结算取代了旧的 returnLoadout（弹药不再是一份数字账）
+  settleCarryAfterRaid,
+  carryOf,
+  carrySpecsFor,
+  auditCarryBeforeRaid,
+  carryPlaceFromStash,
+  carryTakeToStash,
+  carryMove,
+  returnOffendersToStash,
   buildRaidKit,
   buildCarry,
   updatePreset,
@@ -109,11 +120,26 @@ import {
 import { applyRaidToProfile } from '../src/core/settlement.js';
 import { buildRaidResult } from '../src/core/raidResult.js';
 import { createInventory } from '../src/gameplay/inventory.js';
-import { planCarry, resolveCarrySpecs } from '../src/core/carry.js';
+import {
+  planCarry,
+  resolveCarrySpecs,
+  // ★ M6-4：携行网格的读写与进局检查
+  carryAddAt,
+  carryMoveTo,
+  carryRemove,
+  carryDeduct,
+  carryTotalOf,
+  carryAudit,
+  sanitizeCarry,
+  emptyCarry,
+  findCarrySlot,
+  CARRY_GRIDS,
+  SPENDABLE_GRIDS,
+} from '../src/core/carry.js';
 // ★ M6-3：拖放的落点判定（唯一路径）与指针几何。两者都是纯函数：
 // 前者不碰 DOM，后者只做算术 —— 因此端到端的"拖得动吗"之外，规则本身能在秒级反馈里逐个守住。
 import { dropItem, freeSpotFor } from '../src/core/dragDrop.js';
-import { cellFromPoint, wrapOffset } from '../src/ui/dragdrop.js';
+import { cellFromPoint, wrapOffset, shapeFor } from '../src/ui/dragdrop.js';
 import { reasonText } from '../src/ui/panels.js';
 
 let pass = 0;
@@ -2097,6 +2123,29 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
   const lvlE = createLevel({ ...config, map: config.maps.tv_station_01 }, sceneE);
   const exE = createExtract(config, lvlE, sceneE);
 
+  // ---- 1c. 状态形状：构造时的占位必须与规则求值结果**逐字段一致** ----
+  //
+  // ★ M6-4：撤离点的 `open` 在构造时给的是一个"常驻"占位，第一帧 update 才换成真值。
+  //   只要占位少一个字段（当时少的是 remainingKills），"还没求值"与"规则说不需要击杀"
+  //   在读数上就长得一样（都是 undefined）—— 那是能骗过断言的假信号：
+  //   端到端因此读到 `open=true` 而报"killsAfter 撤离点开局就开放"，实际根本没判过。
+  {
+    const KEYS = ['open', 'reason', 'opensInMs', 'closesInMs', 'remainingKills'];
+    const branches = [
+      evaluateOpenRule(null, { elapsedMs: 0, timeLimitMs: T }),
+      evaluateOpenRule(gate, { elapsedMs: 0, timeLimitMs: T }),
+      evaluateOpenRule(win, { elapsedMs: 0, timeLimitMs: T }),
+      evaluateOpenRule(killRule, { elapsedMs: 0, timeLimitMs: T, kills: 0 }),
+      evaluateOpenRule(killRule, { elapsedMs: 0, timeLimitMs: T, kills: 5 }),
+    ];
+    check('★ M6-4 撤离点开放状态：规则求值的每个分支都给全 5 个字段（缺一个就与"未求值"混淆）',
+      branches.every((b) => KEYS.every((k) => k in b)),
+      branches.map((b) => KEYS.filter((k) => !(k in b)).join('+') || 'ok').join(' | '));
+    check('★ M6-4 撤离点**构造时**的占位也是同一个形状（不是"少字段的另一种状态"）',
+      exE.zones.every((z) => KEYS.every((k) => k in z.open)),
+      exE.zones.map((z) => `${z.id}:${KEYS.filter((k) => !(k in z.open)).join('+') || 'ok'}`).join(' | '));
+  }
+
   const conditional = exE.zones.filter((z) => z.openRule && z.openRule.type !== OPEN_RULE.ALWAYS);
   check('生效地图至少有一个非"常驻"的撤离点（§2.4 要求区分常驻点与条件点）',
     conditional.length >= 1,
@@ -2863,9 +2912,13 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     sp.progression.skillPoints
       <= (levelFromExp(sp.progression.exp, config).level - 1) * config.progression.skillPointsPerLevel,
     `${sp.progression.skillPoints}`);
-  check('★ M5-7 收敛：超量堆叠被**拆开**而不是截断（总量守恒，不许偷偷少东西）',
-    stashTotalOf(sp.stash, 'bandage', config) === 99,
-    `${stashTotalOf(sp.stash, 'bandage', config)}`);
+  // ★ M6-4：旧存档的 `consumables.bandage=999` 会被迁移进网格，
+  //   而迁移进去的那部分**要从仓库里扣掉**（旧模型下它们本来就由仓库供给）。
+  //   只在仓库这一侧数会看到"少了"，把两侧加起来才是守恒的。
+  const migratedBandage = carryTotalOf(carryOf(sp.loadouts[0]), 'bandage', SPENDABLE_GRIDS);
+  check('★ M5-7 收敛：超量堆叠被**拆开**而不是截断（网格 + 仓库总量守恒，不许偷偷少东西）',
+    stashTotalOf(sp.stash, 'bandage', config) + migratedBandage === 99,
+    `仓库 ${stashTotalOf(sp.stash, 'bandage', config)} + 网格 ${migratedBandage}`);
   check('★ M5-7 收敛：未知物品与非法数量被丢弃',
     stashTotalOf(sp.stash, 'not_an_item', config) === 0
       && stashTotalOf(sp.stash, 'gold_bar', config) === 0);
@@ -2879,11 +2932,31 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     sp.loadouts[0].primary === null && sp.loadouts[0].secondary === null
       && sp.loadouts[0].body === null && sp.loadouts[0].head === null,
     JSON.stringify(sp.loadouts[0]));
-  check('★ M5-7 收敛：弹药**不设数量上限**（制作人裁定），但未知口径仍要丢弃',
-    sp.loadouts[0].ammo['9mm'] === 9999 && sp.loadouts[0].ammo.bogus === undefined,
-    JSON.stringify(sp.loadouts[0].ammo));
-  check('★ M5-7 收敛：消耗品同样不设上限，未知道具丢弃',
-    sp.loadouts[0].consumables.bandage === 999 && sp.loadouts[0].consumables.nope === undefined);
+  // ★ M6-4：配装上的**数字账已删除** —— 旧存档的 ammo / consumables 会被迁移进网格，
+  //   旧字段随即消失（留着它们就是"看起来还能用"的死字段：改了数字网格不变）。
+  const dirtyCarry = carryOf(sp.loadouts[0]);
+  const dirtyAmmo = carryTotalOf(dirtyCarry, 'pistol_mag', SPENDABLE_GRIDS);
+  const dirtyBand = carryTotalOf(dirtyCarry, 'bandage', SPENDABLE_GRIDS);
+  check('★ M6-4 收敛：旧的数字账（ammo/consumables）迁移进网格，旧字段随即删除',
+    (dirtyAmmo > 0 || dirtyBand > 0)
+      && sp.loadouts[0].ammo === undefined && sp.loadouts[0].consumables === undefined,
+    JSON.stringify({ 迁移发数: dirtyAmmo, 迁移绷带: dirtyBand, ammo: sp.loadouts[0].ammo, consumables: sp.loadouts[0].consumables }));
+  check('★ M6-4 迁移完整性：装得下时弹药与药品**都**进网格（不会因为摆放顺序饿死某一类）', (() => {
+    const small = sanitizeProfile(
+      { version: PROFILE_VERSION, loadouts: [{ id: 'x', name: 'X', ammo: { '9mm': 120 }, consumables: { bandage: 4 } }] },
+      config, now
+    ).profile;
+    const c = carryOf(activeLoadout(small));
+    return carryTotalOf(c, 'pistol_mag', SPENDABLE_GRIDS) === 120
+      && carryTotalOf(c, 'bandage', SPENDABLE_GRIDS) === 4;
+  })());
+  check('★ M6-4 迁移后的网格**合法**（不越界、不重叠、无未知道具）',
+    auditCarryBeforeRaid(sp, config).ok
+      && CARRY_GRIDS.every((g) => dirtyCarry[g].every((e) => !!config.itemDefs[e.itemId])),
+    JSON.stringify(auditCarryBeforeRaid(sp, config).offenders));
+  check('★ M6-4 迁移受容量约束：9999 发 / 999 绷带装不下多少就装多少，超出部分**记账**而不是静默消失',
+    dirtyAmmo + dirtyBand < 9999 + 999 && sd.repairs.some((r) => r.startsWith('loadout.carry:legacy-overflow')),
+    `migrated=${dirtyAmmo}+${dirtyBand} repairs=${sd.repairs.join('|')}`);
   check('★ M5-7 收敛：重复的预设 id 只保留第一个',
     sp.loadouts.length === 1 && sp.loadouts[0].name === 'A');
   check('★ M5-7 收敛：activeLoadoutId 非法时回落到第一个预设',
@@ -3149,9 +3222,11 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     }
     return out;
   };
+  // ★ M6-4：新档案的起始弹药与药品**已经在网格里**（createNewProfile 直接写 carry），
+  //   因此夹具只往仓库补**装备** —— 再补一份弹药就变成"网格里 60 发 + 仓库里 60 发"，
+  //   那正是这次改动要消灭的双份账。
   const STARTER_ITEMS = [
     ['pistol_p9', 1], ['vest2', 1], ['helmet2', 1],
-    ['pistol_mag', 60], ['bandage', 3], ['medkit', 2],
   ];
 
   let p = stock(createNewProfile(config, now, { profileId: 'p-loadout' }), STARTER_ITEMS);
@@ -3179,19 +3254,32 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     config.ammo.map((a) => `${a.id}:${itemDef(a.itemId, config).stack}`).join(' '));
 
   // ---- 超重三档 ----
-  const severe = { ...lo, ammo: { '9mm': 6000 } };
+  //
+  // ★ M6-4：这里测的是**负重公式与档位边界**（纯函数），不是"能不能装下" ——
+  //   后者由 carryAudit 与拖放守着（下面另有断言）。
+  //   因此构造方式是"往网格里写一条指定发数的弹药"，而**不走**容量校验：
+  //   现实里 40kg+ 要装满一整只突击背包再叠战术弹挂才可能达到，
+  //   用真实格子去凑会让这条断言变成"容量够不够"的测试，反而丢掉它本来的落点。
+  const withRounds = (rounds) => ({
+    ...lo,
+    carry: {
+      ...carryOf(lo),
+      backpack: [{ uid: 9001, itemId: 'pistol_mag', count: rounds, x: 0, y: 0, rotated: false }],
+    },
+  });
+  const severe = withRounds(6000);
   check('★ M5-3 >40kg = 严重超重（×0.4 + 禁冲刺）',
     overweightBand(severe, config).band.id === 'severe'
       && overweightBand(severe, config).band.speedScale === 0.4
       && overweightBand(severe, config).band.noSprint === true,
     `${loadoutWeight(severe, config).toFixed(1)}kg`);
-  const lightOw = { ...lo, ammo: { '9mm': 3000 } };
+  const lightOw = withRounds(3000);
   check('★ M5-3 20~30kg = 略微超重（×0.8，仍可冲刺）',
     overweightBand(lightOw, config).band.id === 'light'
       && overweightBand(lightOw, config).band.speedScale === 0.8
       && overweightBand(lightOw, config).band.noSprint === false,
     `${loadoutWeight(lightOw, config).toFixed(1)}kg`);
-  const heavyOw = { ...lo, ammo: { '9mm': 4500 } };
+  const heavyOw = withRounds(4500);
   check('★ M5-3 30~40kg = 超重（×0.6，禁冲刺）',
     overweightBand(heavyOw, config).band.id === 'heavy'
       && overweightBand(heavyOw, config).band.speedScale === 0.6
@@ -3215,25 +3303,36 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     return ammoOnHand(p2, '9mm', config) === 120;
   })());
 
-  // ---- 进局扣件 / 撤离还件 ----
+  // ---- 进局扣件 / 撤离结账（★ M6-4：弹药与药品是网格里的实物）----
+  //
+  // 口径变了：撤离之后"没用完的"**留在网格里**（玩家自己决定要不要拖回仓库），
+  // 而不是自动回到仓库。因此这里数的是网格，不是仓库。
   const take = takeLoadout(p, config);
-  check('★ M5-3 进局扣件：装备与弹药按量离开仓库',
-    take.taken.length === STARTER_ITEMS.length && take.profile.stash.length === 0 && take.missing.length === 0,
-    `taken=${take.taken.length} 剩余条目=${take.profile.stash.length}`);
-  const back = returnLoadout(
-    take.profile, take.taken,
-    { ammo: { '9mm': 20 }, consumables: { bandage: 1, medkit: 2 } },
-    config
-  );
-  check('★ M5-3 撤离还件：只把**没用完的**还回（弹药 60→20、绷带 3→1）',
-    stashTotalOf(back.profile.stash, 'pistol_mag', config) === 20
-      && stashTotalOf(back.profile.stash, 'bandage', config) === 1
-      && stashTotalOf(back.profile.stash, 'medkit', config) === 2
-      && stashTotalOf(back.profile.stash, 'pistol_p9', config) === 1
-      && back.consumed.some((c) => c.itemId === 'pistol_mag' && c.count === 40),
-    JSON.stringify(back.consumed));
-  check('★ M5-3 阵亡不还件：什么都不回仓库（死一次就丢装备）',
-    returnLoadout === undefined ? false : true);
+  check('★ M5-3 进局扣件：装备按量离开仓库（网格里的东西本来就已在身上）',
+    take.missing.length === 0 && take.taken.length >= 3,
+    `taken=${take.taken.length} 缺=${take.missing.length}`);
+  const beforeCarry = carryOf(activeLoadout(take.profile));
+  const settled = settleCarryAfterRaid(take.profile, {
+    survived: true,
+    consumed: [{ itemId: 'pistol_mag', count: 40 }, { itemId: 'bandage', count: 1 }],
+    loot: [],
+  }, config);
+  const afterCarry = carryOf(activeLoadout(settled.profile));
+  check('★ M6-4 撤离结账：消耗从网格里扣（弹药 60→20、绷带 3→2），剩下的留在网格里',
+    carryTotalOf(beforeCarry, 'pistol_mag', SPENDABLE_GRIDS) === 60
+      && carryTotalOf(afterCarry, 'pistol_mag', SPENDABLE_GRIDS) === 20
+      && carryTotalOf(afterCarry, 'bandage', SPENDABLE_GRIDS) === 2
+      && carryTotalOf(afterCarry, 'medkit', SPENDABLE_GRIDS) === 2,
+    JSON.stringify({
+      pistol_mag: carryTotalOf(afterCarry, 'pistol_mag', SPENDABLE_GRIDS),
+      bandage: carryTotalOf(afterCarry, 'bandage', SPENDABLE_GRIDS),
+      medkit: carryTotalOf(afterCarry, 'medkit', SPENDABLE_GRIDS),
+    }));
+  const died = settleCarryAfterRaid(take.profile, { survived: false, consumed: [], loot: [] }, config);
+  const deadCarry = carryOf(activeLoadout(died.profile));
+  check('★ M6-4 阵亡：背包与弹挂清空（保险箱不动 —— 那是"保住"的意义）',
+    deadCarry.backpack.length === 0 && deadCarry.rig.length === 0,
+    `backpack=${deadCarry.backpack.length} rig=${deadCarry.rig.length}`);
 
   // ---- raidKit ----
   const kit = buildRaidKit(p, config);
@@ -3478,9 +3577,9 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     }
     return out;
   };
+  // ★ M6-4：同上 —— 起始弹药与药品在新档案的**网格**里，夹具只补装备。
   const STARTER_ITEMS = [
     ['pistol_p9', 1], ['vest2', 1], ['helmet2', 1],
-    ['pistol_mag', 60], ['bandage', 3], ['medkit', 2],
   ];
   const mkResult = (outcome, keptIds, lostIds) => {
     const toEntry = (id, inSafe) => ({ item: itemDef(id, config), inSafe });
@@ -3520,13 +3619,19 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     { raidId: 'r-1', atMs: now, result, facts, taken: take.taken, remaining: { ammo: { '9mm': 20 }, consumables: { bandage: 1, medkit: 2 } } },
     config
   );
-  check('★ 结算落库：战利品与没用完的配装都进了仓库',
+  // ★ M6-4：撤离之后**装备**还回仓库，而网格里没用完的弹药/药品**留在网格里**
+  //   （制作人裁定：由玩家自己决定拖不拖回仓库）。因此这两处要分开数。
+  const carryAfter = carryOf(activeLoadout(s1.profile));
+  check('★ 结算落库：战利品（贵重品塞不进网格）与装备都进了仓库',
     s1.ok && s1.applied
       && stashTotalOf(s1.profile.stash, 'gold_bar', config) === 1
       && stashTotalOf(s1.profile.stash, 'encrypted_drive', config) === 1
-      && stashTotalOf(s1.profile.stash, 'pistol_mag', config) === 20
       && stashTotalOf(s1.profile.stash, 'pistol_p9', config) === 1,
     JSON.stringify(stashSummaryOf(s1.profile)));
+  check('★ M6-4 结算落库：没用完的弹药留在网格里（60→20），**不是**自动回仓库',
+    carryTotalOf(carryAfter, 'pistol_mag', SPENDABLE_GRIDS) === 20
+      && stashTotalOf(s1.profile.stash, 'pistol_mag', config) === 0,
+    `网格 ${carryTotalOf(carryAfter, 'pistol_mag', SPENDABLE_GRIDS)} / 仓库 ${stashTotalOf(s1.profile.stash, 'pistol_mag', config)}`);
   check('★ 结算落库：经验按经验规则发放（撤离局 > 0）', s1.summary.exp > 0, `${s1.summary.exp}`);
   check('★ 结算落库：统计与经济样本各记一笔',
     s1.profile.stats.raids === 1 && s1.profile.stats.extracts === 1
@@ -3868,9 +3973,18 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
       { raidId: 'r-half', atMs: 1, result, facts: { kills: 0 }, taken: [], remaining: {} },
       config
     );
+    //
+    // ★ M6-4 口径变更：撤离时战利品**先塞回携行网格**，塞不下才进仓库。
+    //   因此"入库 30 发"要按"网格 + 仓库合计 30 发"读 —— 只看仓库会在战利品
+    //   成功塞进身上时误报（那恰恰是正确行为）。
+    //   合计口径同样守得住"凭空翻倍"：真翻倍会读成 60。
     const stashed = applied.profile.stash.find((e) => e.itemId === 'ammo_556');
+    const inGrid = (applied.summary.stowed || [])
+      .filter((s) => s.itemId === 'ammo_556')
+      .reduce((a, s) => a + s.count, 0);
+    const landed = inGrid + (stashed ? stashed.count : 0);
     check('★ M6 结算入库也是 30 发（估值与入库单位不会凭空翻倍）',
-      !!stashed && stashed.count === 30, `入库 ${stashed ? stashed.count : 0} 发`);
+      landed === 30, `网格 ${inGrid} + 仓库 ${stashed ? stashed.count : 0} = ${landed} 发`);
   }
 
   // ---- ⑦ effectiveLoadout：仓库拿不出的东西不能凭空出现在局内 ----
@@ -3879,8 +3993,11 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     const res = takeLoadout(bare, config);
     check('★ M6 空仓库进局：配装里的手枪不会被凭空带进战区（M5 遗留缺陷的回归防线）',
       res.effectiveLoadout.secondary === null && res.effectiveLoadout.primary === null
-      && res.carry.placements.length === 0,
-      `taken ${res.taken.length} 件 / 摆放 ${res.carry.placements.length} 件`);
+      // ★ M6-4：网格里的起始弹药/药品**本来就在身上**（它们不从仓库取），
+      //   因此"空仓库进局"清空的是**装备**，网格不受影响 —— 这正是它俩分账的意义。
+      && res.carry.placements.every((x) => x.kind !== 'equipment')
+      && res.missing.length >= 3,
+      `taken ${res.taken.length} 件 / 摆放 ${res.carry.placements.length} 件 / 缺 ${res.missing.length} 件`);
 
     const kit = buildRaidKit(bare, config, { loadout: res.effectiveLoadout, carry: res.carry });
     check('★ M6 空仓库进局仍有兜底背包（"缺件也允许进局"是一条真能跑的路径）',
@@ -3888,12 +4005,23 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
       && kit.loadout.backpack === null,
       `${kit.carry.backpack.w}×${kit.carry.backpack.h} / 无武器`);
 
-    // 仓库里只有 40 发 9mm：只能带 40 发，不能凭空补成 60
-    let p = { ...bare, loadouts: [{ ...bare.loadouts[0], ammo: { '9mm': 60 } }], stash: stashAdd([], 'pistol_mag', 40, config).stash };
-    const res2 = takeLoadout(p, config);
+    // ★ M6-4：带着什么由**网格**决定，仓库存量不再参与。
+    //   这条断言的落点因此从"仓库限制配装"变成"网格写什么就带什么"：
+    //   40 发就带 40 发，不会因为仓库里有 120 发而被悄悄补满（也补不了）。
+    const gridLo = {
+      ...bare.loadouts[0],
+      carry: {
+        ...carryOf(bare.loadouts[0]),
+        backpack: [{ uid: 77, itemId: 'pistol_mag', count: 40, x: 0, y: 0, rotated: false }],
+      },
+    };
+    const res2 = takeLoadout(
+      { ...bare, loadouts: [gridLo], stash: stashAdd([], 'pistol_mag', 120, config).stash },
+      config
+    );
     const placed = res2.carry.placements.filter((x) => x.itemId === 'pistol_mag').reduce((a, x) => a + x.count, 0);
-    check('★ M6 仓库只有 40 发时，网格里也只有 40 发（拿不到的不会凭空出现）',
-      placed === 40 && res2.missing.some((m) => m.itemId === 'pistol_mag' && m.missing === 20),
+    check('★ M6-4 网格里写多少就带多少（仓库存量不再决定"带什么"，也不会凭空补满）',
+      placed === 40 && res2.missing.every((m) => m.itemId !== 'pistol_mag'),
       `摆放 ${placed} 发 / 缺 ${JSON.stringify(res2.missing.map((m) => `${m.itemId}×${m.missing}`))}`);
   }
 
@@ -4054,11 +4182,22 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     const ammoItemId = config.ammo.find((a) => a.id === '9mm').itemId;
     const rounds = 120;
     const base = createNewProfile(config, 0);
-    // 仓库 120 发，配装写 120 发
+    // ★ M6-4：**网格**里放 120 发（两盒）。仓库刻意**不放** ——
+    //   带着什么由网格决定，仓库存量不再参与；这正是"不会被还两次"的结构性原因：
+    //   进局那一刻没有任何东西在仓库与身上同时存在。
     const p0 = {
       ...base,
-      stash: stashAdd([], ammoItemId, rounds, config).stash,
-      loadouts: [{ ...base.loadouts[0], ammo: { '9mm': rounds } }],
+      stash: [],
+      loadouts: [{
+        ...base.loadouts[0],
+        carry: {
+          ...carryOf(base.loadouts[0]),
+          backpack: [
+            { uid: 71, itemId: ammoItemId, count: 60, x: 0, y: 0, rotated: false },
+            { uid: 72, itemId: ammoItemId, count: 60, x: 1, y: 0, rotated: false },
+          ],
+        },
+      }],
     };
     const take = takeLoadout(p0, config);
     const kit = buildRaidKit(take.profile, config, { loadout: take.effectiveLoadout, carry: take.carry });
@@ -4086,11 +4225,14 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
       { raidId: 'r-ammo-conservation', atMs: 1, result, facts: { kills: 0 }, taken: take.taken, remaining },
       config
     );
+    // ★ M6-4：撤离之后"没用完的"**留在网格里**（玩家自己决定拖不拖回仓库），
+    //   因此守恒要按"身上的 + 仓库里的"一起数 —— 只数仓库会得到"少了 90 发"的假象。
+    const gotGrid = carryTotalOf(carryOf(activeLoadout(applied.profile)), ammoItemId, CARRY_GRIDS);
     const got = stashTotalOf(applied.profile.stash, ammoItemId, config);
     const expect = rounds - 30 + 60;
-    check('★ M6 账目守恒：撤离后仓库 = 带走 − 打掉 + 捡到（120−30+60=150，不是 210 也不是 90）',
-      got === expect,
-      `仓库 ${got} 发（期望 ${expect}）= 自带剩 ${inv.kitAmmoOf('9mm')} 还回 + 战利品 ${config.itemDefs[ammoItemId].unitsPerItem} 入库`);
+    check('★ M6 账目守恒：撤离后身上 + 仓库 = 带走 − 打掉 + 捡到（120−30+60=150，不是 210 也不是 90）',
+      gotGrid + got === expect,
+      `身上 ${gotGrid} + 仓库 ${got} = ${gotGrid + got}（期望 ${expect}）；自带剩 ${inv.kitAmmoOf('9mm')}`);
 
     // 阵亡口径：自带的**全部**丢；捡到的那盒正好被自动装进 1×2 保险箱，所以它保住了。
     //   （安全箱只排除武器与护甲，弹药属于"可以放进去的小件"—— 这是 M3 的既有裁定。）
@@ -4120,9 +4262,10 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
       config
     );
     const got2 = stashTotalOf(applied2.profile.stash, ammoItemId, config);
-    check('★ M6 阵亡口径：仓库只剩安全箱保住的那一盒（自带的 90 发全丢，不会被还回来）',
-      got2 === config.itemDefs[ammoItemId].unitsPerItem,
-      `仓库 ${got2} 发（自带剩 90 发全部丢失，只有保险箱里那 60 发回来）`);
+    const left2 = carryTotalOf(carryOf(activeLoadout(applied2.profile)), ammoItemId, SPENDABLE_GRIDS);
+    check('★ M6 阵亡口径：身上清空、仓库只剩安全箱保住的那一盒（自带的 90 发全丢，不会被还回来）',
+      got2 === config.itemDefs[ammoItemId].unitsPerItem && left2 === 0,
+      `仓库 ${got2} 发 / 身上还剩 ${left2} 发（自带剩 90 发全部丢失，只有保险箱里那 60 发回来）`);
   }
 }
 
@@ -4356,6 +4499,25 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 
   // ---- 指针几何（ui/dragdrop.js 的纯函数）----
   {
+    // ★ 回归：**旋转过的物品拖起来必须显示旋转后的形状**（制作人 2026-10-14 报的 bug）。
+    //   根因是转了两次：视图给的 `w/h` 已经是摆好朝向的尺寸，而拖放层又按 `rotated` 换了一次宽高。
+    //   修法是区分"基准尺寸"与"朝向"—— `shapeFor` 只认 baseW/baseH，朝向由 rotated 决定。
+    //   下面第三例是这条 bug 的最小复现：2×3 的旋转件若被转两次就会画成 2×3（未旋转的样子）。
+    const base = { baseW: 2, baseH: 3, w: 3, h: 2, rotated: true };
+    check('★ shapeFor：未旋转时用基准尺寸',
+      JSON.stringify(shapeFor(base, false)) === JSON.stringify({ w: 2, h: 3 }),
+      JSON.stringify(shapeFor(base, false)));
+    check('★ shapeFor：旋转时用基准尺寸换宽高（= 视图里那个朝向后的尺寸）',
+      JSON.stringify(shapeFor(base, true)) === JSON.stringify({ w: 3, h: 2 }),
+      JSON.stringify(shapeFor(base, true)));
+    check('★ 回归：旋转件起拖时的形状与它摆在仓库里的形状一致（不是转了两次的原形）',
+      JSON.stringify(shapeFor(base, true)) === JSON.stringify({ w: base.w, h: base.h }),
+      `${JSON.stringify(shapeFor(base, true))} vs 仓库里 ${base.w}×${base.h}`);
+    // 缺 base 字段时退回 w/h（装备格等不参与旋转的源），不至于变成 NaN
+    check('shapeFor 在没有 baseW/baseH 时退回 w/h（装备格路径）',
+      JSON.stringify(shapeFor({ w: 1, h: 2 }, false)) === JSON.stringify({ w: 1, h: 2 }),
+      JSON.stringify(shapeFor({ w: 1, h: 2 }, false)));
+
     const rect = { left: 100, top: 200, right: 400, bottom: 560 }; // 10 列 × 12 行，每格 30px
     const cell = 30;
     const mid = cellFromPoint(rect, cell, 100 + 3 * cell + 15, 200 + 5 * cell + 15);
@@ -4398,6 +4560,395 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     // 注入自检：没有映射的串**会**原样返回 —— 证明上一条不是"reasonText 恰好是恒等函数"。
     check('注入自检：未映射的串被原样返回（上一条因此是有效检查，不是恒等式的假绿灯）',
       reasonText('zzz-没有映射-zzz') === 'zzz-没有映射-zzz');
+  }
+}
+
+// ============================================================
+// ★ M6-4：携行网格（弹药与消耗品进网格）+ 估值读数取整 + 仓库拆分
+//
+// 这一组守的是"真值搬到网格之后"最容易悄悄错账的四处：
+//   ① 旋转过的物品拖起来显示成未旋转（幽灵形状必须按**基准尺寸**算朝向）
+//   ② 网格读写（放 / 搬 / 取 / 扣）不得越界、不得重叠、不得收错类别
+//   ③ 存档收敛（sanitizeCarry）与进局检查（carryAudit）必须能拒绝外部写坏的数据
+//   ④ 估值读数一律取整（内部计算仍精确 —— 取整只发生在"显示给人看"的那一层）
+// ============================================================
+{
+  const prof = createNewProfile(config, 0);
+  const lo0 = activeLoadout(prof);
+  const specs0 = carrySpecsFor(lo0, prof, config);
+  const defs = config.itemDefs;
+
+  // ---- ① 旋转过的物品：幽灵形状必须按**基准尺寸**算朝向 ----
+  //
+  // 缺陷原型：视图给的是**已定向**的 w/h（渲染用），而拖放又拿它再旋转一次 ——
+  // 于是"已经横过来的 2×3 长枪"拖起来变成 3×2 竖着。
+  {
+    const rifle = defs.rifle_sr25;               // 2×4 的长枪（未旋转：w=2 h=4）
+    const rotatedSrc = { w: rifle.h, h: rifle.w, baseW: rifle.w, baseH: rifle.h, rotated: true };
+    const s1 = shapeFor(rotatedSrc, true);
+    check('★ M6-4 已旋转的物品拖起来**保持**旋转后的形状（不再旋转第二次）',
+      s1.w === rifle.h && s1.h === rifle.w,
+      `${s1.w}×${s1.h}（期望 ${rifle.h}×${rifle.w}）`);
+    // 拖动中按 R 翻回来：应当回到基准尺寸
+    const s2 = shapeFor(rotatedSrc, false);
+    check('M6-4 拖动中按 R 取消旋转 → 回到基准尺寸',
+      s2.w === rifle.w && s2.h === rifle.h, `${s2.w}×${s2.h}`);
+    // 没有 baseW/baseH 的旧来源（例如装备格）仍按 w/h 走，不因此失效
+    const s3 = shapeFor({ w: 2, h: 4 }, true);
+    check('M6-4 没有 baseW/baseH 的来源（装备格）仍按 w/h 旋转（不回归）',
+      s3.w === 4 && s3.h === 2, `${s3.w}×${s3.h}`);
+    // 注入自检：把 shapeFor 退回"用 w/h 再转一次"的旧实现，第一条断言必须失败
+    // ↑ 旧实现：拿**已定向**的 w/h 再转一次（旋转两次 → 转回原样）
+    const buggy = (src, rotated) => (rotated ? { w: src.h, h: src.w } : { w: src.w, h: src.h });
+    check('注入自检：按旧实现（拿已定向的 w/h 再转）算出来是错的 —— 上一条因此是有效检查',
+      buggy(rotatedSrc, true).w !== rifle.h);
+  }
+
+  // ---- ② 网格读写：放 / 搬 / 取 / 扣 ----
+  {
+    let carry = emptyCarry();
+    const a1 = carryAddAt(carry, 'backpack', 'pistol_mag', 60, 0, 0, false, specs0, defs);
+    check('M6-4 往网格里放一件弹药：合法时落位并给出 uid',
+      a1.ok && carryTotalOf(a1.carry, 'pistol_mag', SPENDABLE_GRIDS) === 60, JSON.stringify(a1));
+    carry = a1.carry;
+
+    // 同一格再放一件 → occupied
+    const dup = carryAddAt(carry, 'backpack', 'pistol_mag', 60, 0, 0, false, specs0, defs);
+    check('M6-4 同一格再放一件被拒（occupied）', !dup.ok && dup.reason === 'occupied', dup.reason);
+    // 越界
+    const oob = carryAddAt(carry, 'backpack', 'pistol_mag', 60, 99, 99, false, specs0, defs);
+    check('M6-4 放到网格外被拒（out-of-bounds）', !oob.ok && oob.reason === 'out-of-bounds', oob.reason);
+    // 类别不合法：背包不收长枪
+    const gun = carryAddAt(carry, 'backpack', 'rifle_sr25', 1, 1, 0, false, specs0, defs);
+    check('★ M6-4 长枪塞不进背包（grid-rejects:weapon —— 制作人裁定：只收弹药与消耗品）',
+      !gun.ok && gun.reason === 'grid-rejects:weapon', gun.reason);
+    // 超过堆叠上限
+    const overStack = carryAddAt(carry, 'backpack', 'pistol_mag', 61, 2, 0, false, specs0, defs);
+    check('M6-4 一格超过 stack 被拒（bad-count）', !overStack.ok && overStack.reason === 'bad-count', overStack.reason);
+
+    // 搬：换位置 / 换网格（保险箱档位存在时）
+    const uid = carry.backpack[0].uid;
+    const mv = carryMoveTo(carry, uid, 'backpack', 2, 1, false, specs0, defs);
+    check('M6-4 网格内搬动：坐标更新且不产生第二份',
+      mv.ok && mv.carry.backpack.length === 1 && mv.carry.backpack[0].x === 2 && mv.carry.backpack[0].y === 1,
+      JSON.stringify(mv.carry.backpack));
+    const mvBad = carryMoveTo(carry, uid, 'backpack', 99, 99, false, specs0, defs);
+    check('M6-4 搬到界外被拒（且**没有**改档案）',
+      !mvBad.ok && mvBad.reason === 'out-of-bounds' && mvBad.carry.backpack[0].x === 0);
+    const mvGhost = carryMoveTo(carry, 99999, 'backpack', 0, 0, false, specs0, defs);
+    check('M6-4 搬一个不存在的 uid 被拒（unknown-uid）', !mvGhost.ok && mvGhost.reason === 'unknown-uid');
+
+    // 取
+    const rm = carryRemove(carry, uid);
+    check('M6-4 整条取走（拖回仓库是整叠）',
+      rm.ok && rm.carry.backpack.length === 0 && rm.removed.count === 60, JSON.stringify(rm.removed));
+
+    // 扣：多盒时先扣小盒（腾格子）
+    let two = carryAddAt(emptyCarry(), 'backpack', 'pistol_mag', 60, 0, 0, false, specs0, defs).carry;
+    two = carryAddAt(two, 'backpack', 'pistol_mag', 20, 1, 0, false, specs0, defs).carry;
+    const ded = carryDeduct(two, 'pistol_mag', 30, SPENDABLE_GRIDS);
+    const left = ded.carry.backpack.reduce((a, e) => a + e.count, 0);
+    check('★ M6-4 按**实际消耗**扣（80 − 30 = 50），且先清空小盒',
+      ded.removed === 30 && left === 50 && ded.carry.backpack.length === 1,
+      `扣掉 ${ded.removed} / 剩 ${left} / ${ded.carry.backpack.length} 条`);
+    // 保险箱里的东西**不会被消耗**（阵亡也丢不了，因此也不能算进消耗）
+    let safe = carryAddAt(emptyCarry(), 'safe', 'pistol_mag', 60, 0, 0, false, specs0, defs).carry;
+    const dedSafe = carryDeduct(safe, 'pistol_mag', 30, SPENDABLE_GRIDS);
+    check('★ M6-4 保险箱里的存货**不参与**消耗（否则打掉的子弹会把箱里的也算进去）',
+      dedSafe.removed === 0 && carryTotalOf(dedSafe.carry, 'pistol_mag', CARRY_GRIDS) === 60,
+      `扣掉 ${dedSafe.removed}`);
+  }
+
+  // ---- ②-b ★ 找空位必须看**完整的占用图**（否则第二件起永远放不进去）----
+  //
+  // 缺陷原型：`findCarrySlot` 只把"待放的这一件"的 def 传进占用图，而
+  // `carryOccupancy` 对查不到 def 的条目是 `continue` —— 于是网格里**已经放着的**
+  // 其它东西在占用图上不存在，找出来的落点与它们重叠。
+  // 它不报错：`carryAddAt` 用完整表复核时判"重叠"拒绝，调用方只看到"放不进去"。
+  {
+    const d1 = defs.ammo_556;
+    const d2 = defs.bandage;
+    const put = (carry, def) => {
+      const slot = findCarrySlot(carry, def, specs0, defs, SPENDABLE_GRIDS);
+      if (!slot) return { ok: false, reason: 'no-slot', carry };
+      const r = carryAddAt(carry, slot.name, def.id, 1, slot.x, slot.y, !!slot.rotated, specs0, defs);
+      return { ...r, slot };
+    };
+    let carry = emptyCarry();
+    const p1 = put(carry, d1);
+    check('M6-4 往空网格里放第一件：找得到位也放得进去',
+      p1.ok && carryTotalOf(p1.carry, d1.id, CARRY_GRIDS) === 1, JSON.stringify(p1));
+    carry = p1.carry;
+    const p2 = put(carry, d2);
+    check('★ M6-4 放第二件（**另一种**物品）也要成功 —— 占用图不能只认识待放的那一件',
+      p2.ok && carryTotalOf(p2.carry, d2.id, CARRY_GRIDS) === 1
+        && carryTotalOf(p2.carry, d1.id, CARRY_GRIDS) === 1,
+      JSON.stringify(p2));
+    // 两件不得重叠（放得进去 ≠ 放对了地方）
+    const audit2 = carryAudit(p2.carry, specs0, defs);
+    check('★ M6-4 连续放两件之后网格仍然合法（不重叠、不越界）',
+      audit2.ok, JSON.stringify(audit2.offenders));
+
+    // 注入自检：按旧调用（只给待放那一件的 def）复算 —— 占用图漏掉已放的东西，
+    // 于是落点与第一件重叠，复核必然被拒。这条红了才说明上面两条真的在检查东西。
+    const badSlot = findCarrySlot(carry, d2, specs0, { [d2.id]: d2 }, SPENDABLE_GRIDS);
+    const badAdd = badSlot
+      ? carryAddAt(carry, 'backpack', d2.id, 1, badSlot.x, badSlot.y, !!badSlot.rotated, specs0, defs)
+      : { ok: false, reason: 'no-slot' };
+    check('注入自检：只给单件 def 时算出的落点与第一件重叠 —— 上两条因此是有效检查',
+      !!badSlot && !badAdd.ok, `${JSON.stringify(badSlot)} → ${badAdd.reason}`);
+  }
+
+  // ---- ②-c ★ 补结算（上局没走完）不得动玩家为**下一局**摆好的网格 ----
+  //
+  // 缺陷原型：补结算发生在"点提示看结算 / 点进战区"这一刻，那时网格里已经是
+  // 玩家为下一局摆好的东西；而快照的口径恒为"未撤离"，照常规路径走会清空背包与弹挂。
+  // 表现为"我在大厅摆好的一包子弹，点进战区时被上一局的账清掉了"。
+  {
+    const carry0 = carryAddAt(emptyCarry(), 'backpack', 'ammo_556', 60, 0, 0, false, specs0, defs).carry;
+    const p0 = createNewProfile(config, 0);
+    const prof0 = {
+      ...p0,
+      stash: [],
+      lastRaidId: null,
+      loadouts: [{ ...p0.loadouts[0], carry: carry0 }],
+    };
+    const res = buildRaidResult({
+      reason: 'disconnected', outcome: 'death', elapsedMs: 1000, kills: 0, aiTotal: 0,
+      containersOpened: 0, containersTotal: 0, shotsFired: 0, health: 0,
+      kept: [], lost: [], keptValue: 0, lostValue: 0, safeValue: 0,
+      rarityTable: config.lootTable.rarity,
+    });
+    const applied = applyRaidToProfile(
+      prof0,
+      { raidId: 'r-interrupt', atMs: 1, result: res, facts: { kills: 0 }, taken: [], remaining: {}, interrupted: true },
+      config
+    );
+    const after = activeLoadout(applied.profile).carry;
+    check('★ M6-4 补结算**保留**玩家为下一局摆好的网格（上一局的账不能清这一局的包）',
+      carryTotalOf(after, 'ammo_556', SPENDABLE_GRIDS) === 60,
+      `网格里还剩 ${carryTotalOf(after, 'ammo_556', SPENDABLE_GRIDS)} 发`);
+
+    // 注入自检：把 interrupted 去掉（走常规结算路径）→ 未撤离口径会清空背包。
+    const asNormal = applyRaidToProfile(
+      { ...prof0, lastRaidId: null },
+      { raidId: 'r-interrupt2', atMs: 1, result: res, facts: { kills: 0 }, taken: [], remaining: {} },
+      config
+    );
+    const afterNormal = activeLoadout(asNormal.profile).carry;
+    check('注入自检：不标 interrupted 时网格确实会被清空 —— 上一条因此是有效检查',
+      carryTotalOf(afterNormal, 'ammo_556', SPENDABLE_GRIDS) === 0,
+      `剩 ${carryTotalOf(afterNormal, 'ammo_556', SPENDABLE_GRIDS)} 发`);
+  }
+
+  // ---- ③ 存档收敛（sanitizeCarry）与进局检查（carryAudit）----
+  {
+    const dirty = {
+      backpack: [
+        { uid: 1, itemId: 'pistol_mag', count: 60, x: 0, y: 0, rotated: false },
+        { uid: 2, itemId: 'pistol_mag', count: 60, x: 0, y: 0, rotated: false },   // 重叠
+        { uid: 3, itemId: 'rifle_sr25', count: 1, x: 2, y: 0, rotated: false },    // 类别不收
+        { uid: 4, itemId: 'not_an_item', count: 1, x: 3, y: 0, rotated: false },   // 未知道具
+        { uid: 5, itemId: 'pistol_mag', count: 999, x: 2, y: 0, rotated: false },  // 超堆叠
+      ],
+      rig: [],
+      safe: [],
+    };
+    const sc = sanitizeCarry(dirty, specs0, defs);
+    check('★ M6-4 网格收敛：重叠 / 不收的类别 / 未知道具被丢弃，超堆叠被截断到 stack',
+      sc.carry.backpack.length === 2
+        && sc.carry.backpack.every((e) => e.count <= defs[e.itemId].stack)
+        && !sc.carry.backpack.some((e) => e.itemId === 'rifle_sr25')
+        && sc.repairs.some((r) => r.includes('unknown-item'))
+        && sc.repairs.some((r) => r.includes('over-stack')),
+      JSON.stringify({ n: sc.carry.backpack.length, repairs: sc.repairs }));
+    check('M6-4 收敛后的网格一定**合法**（carryAudit 通过）',
+      carryAudit(sc.carry, specs0, defs).ok, JSON.stringify(carryAudit(sc.carry, specs0, defs).offenders));
+
+    // 进局检查：两类都查（类别不合法 + 装不下）
+    const bad = {
+      backpack: [{ uid: 1, itemId: 'rifle_sr25', count: 1, x: 0, y: 0, rotated: false }],
+      rig: [], safe: [],
+    };
+    const aud1 = carryAudit(bad, specs0, defs);
+    check('★ M6-4 进局检查查出"类别不合法"（背包里的长枪）',
+      !aud1.ok && aud1.offenders.length === 1 && aud1.offenders[0].reason === 'grid-rejects:weapon',
+      JSON.stringify(aud1.offenders));
+    const oob = {
+      backpack: [{ uid: 1, itemId: 'pistol_mag', count: 60, x: 40, y: 40, rotated: false }],
+      rig: [], safe: [],
+    };
+    const aud2 = carryAudit(oob, specs0, defs);
+    check('★ M6-4 进局检查查出"装不下"（越界 —— 换更小的包之后的真实状态）',
+      !aud2.ok && aud2.offenders[0].reason === 'out-of-bounds', JSON.stringify(aud2.offenders));
+    check('注入自检：合法网格**不会**被判违规（上两条不是恒等为真的假检查）',
+      carryAudit({ backpack: [{ uid: 1, itemId: 'pistol_mag', count: 60, x: 0, y: 0, rotated: false }], rig: [], safe: [] }, specs0, defs).ok);
+
+    // returnOffendersToStash：只退回**违规的那几件**，且只在那一次
+    let p = { ...prof, loadouts: [{ ...lo0, carry: { ...emptyCarry(), backpack: [
+      { uid: 11, itemId: 'pistol_mag', count: 60, x: 0, y: 0, rotated: false },
+      { uid: 12, itemId: 'rifle_sr25', count: 1, x: 1, y: 0, rotated: false },
+    ] } }] };
+    const audit3 = auditCarryBeforeRaid(p, config);
+    const back = returnOffendersToStash(p, audit3.offenders, config);
+    check('★ M6-4 一键放回：只把违规的那几件退回仓库（合规的那盒留在网格里）', (() => {
+      if (!back.ok) return false;
+      const c = carryOf(activeLoadout(back.profile));
+      return c.backpack.length === 1 && c.backpack[0].itemId === 'pistol_mag'
+        && stashTotalOf(back.profile.stash, 'rifle_sr25', config) === 1;
+    })(), JSON.stringify(back));
+    check('★ M6-4 一键放回之后**复查通过**（否则"修好了"只是我以为）',
+      auditCarryBeforeRaid(back.profile, config).ok,
+      JSON.stringify(auditCarryBeforeRaid(back.profile, config).offenders));
+  }
+
+  // ---- ④ 拖放进网格（走 dropItem 的**唯一**落点判定）----
+  {
+    let p = createNewProfile(config, 0);
+    let st = stashAdd([], 'pistol_mag', 120, config).stash;
+    st = stashAdd(st, 'rifle_sr25', 1, config).stash;
+    st = stashNormalize(st, config).stash;
+    p = { ...p, stash: st, loadouts: [{ ...p.loadouts[0], carry: emptyCarry() }] };
+    const ammoUid = st.find((e) => e.itemId === 'pistol_mag').uid;
+    const gunUid = st.find((e) => e.itemId === 'rifle_sr25').uid;
+
+    const d1 = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid: ammoUid }, { kind: 'carry', grid: 'backpack', x: 0, y: 0 }, false, config);
+    check('★ M6-4 从仓库把弹药拖进背包：网格里有、仓库里少一份（不是复制）',
+      d1.ok
+        && carryTotalOf(carryOf(activeLoadout(d1.profile)), 'pistol_mag', SPENDABLE_GRIDS) === 60
+        && stashTotalOf(d1.profile.stash, 'pistol_mag', config) === 60,
+      JSON.stringify({ ok: d1.ok, reason: d1.reason }));
+    const d2 = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid: gunUid }, { kind: 'carry', grid: 'backpack', x: 0, y: 0 }, false, config);
+    check('★ M6-4 从仓库把长枪拖进背包被拒（grid-rejects:weapon）',
+      !d2.ok && d2.reason === 'grid-rejects:weapon', d2.reason);
+    const d3 = dropItem(p, p.activeLoadoutId, { kind: 'slot', slotId: 'primary' }, { kind: 'carry', grid: 'backpack', x: 0, y: 0 }, false, config);
+    check('M6-4 身上穿着的装备塞不进网格（slot-to-carry）', !d3.ok && d3.reason === 'slot-to-carry', d3.reason);
+    const d4 = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid: ammoUid }, { kind: 'carry', grid: 'nope', x: 0, y: 0 }, false, config);
+    check('M6-4 落点指向不存在的网格被拒（no-such-grid）', !d4.ok && d4.reason === 'no-such-grid', d4.reason);
+    const d5 = dropItem(p, p.activeLoadoutId, { kind: 'stash', uid: ammoUid }, { kind: 'carry', grid: 'backpack', x: 0.5, y: 0 }, false, config);
+    check('★ M6-4 非整数落点被抓住并给出说得通的原因（bad-target，不是 occupied）',
+      !d5.ok && d5.reason === 'bad-target', d5.reason);
+
+    // 网格 → 仓库（整叠拖回）
+    const afterIn = d1.profile;
+    const carryUid = carryOf(activeLoadout(afterIn)).backpack[0].uid;
+    const d6 = dropItem(afterIn, afterIn.activeLoadoutId, { kind: 'carry', uid: carryUid, grid: 'backpack' }, { kind: 'stash', x: 0, y: 0 }, false, config);
+    check('★ M6-4 从背包把东西拖回仓库：网格清空、仓库加回（真值只有一个）',
+      d6.ok
+        && carryOf(activeLoadout(d6.profile)).backpack.length === 0
+        && stashTotalOf(d6.profile.stash, 'pistol_mag', config) === 120,
+      JSON.stringify({ ok: d6.ok, reason: d6.reason }));
+  }
+
+  // ---- ⑤ 仓库拆分（制作人裁定：默认整叠移动，为弹药新增拆分数量）----
+  {
+    let st = stashAdd([], 'pistol_mag', 60, config).stash;
+    st = stashNormalize(st, config).stash;
+    const uid = st[0].uid;
+    const sp = stashSplit(st, uid, 20, config);
+    check('★ M6-4 拆分：60 发拆出 20 发 → 两格（40 + 20），总量守恒',
+      sp.ok && sp.stash.length === 2
+        && sp.stash.reduce((a, e) => a + e.count, 0) === 60
+        && sp.stash.some((e) => e.count === 20),
+      JSON.stringify(sp.stash.map((e) => `${e.itemId}×${e.count}`)));
+    check('M6-4 拆分数量非法被拒（拆 0 / 拆全部 / 拆超过存量都不是"拆分"）',
+      !stashSplit(st, uid, 0, config).ok
+      && !stashSplit(st, uid, 60, config).ok
+      && !stashSplit(st, uid, 999, config).ok
+      && !stashSplit(st, 99999, 10, config).ok);
+    // 注入自检：允许"拆全部"的话，上面第二条会变绿 —— 证明它不是恒等为真的断言
+    const loose = (entries, u, take) => ({ ok: take > 0 && take <= 60, entries });
+    check('注入自检：松掉"必须小于存量"这条限制后该判定会通过 —— 上一条因此是有效检查',
+      loose(st, uid, 60).ok === true);
+  }
+
+  // ---- ⑥ 估值读数一律取整（内部计算仍精确）----
+  {
+    // 弹药的单价是"一盒价值 ÷ 每盒发数"，天然除不尽 —— 这就是缺陷的原型。
+    // 夹具先证明浮点噪声**真的存在**（否则"取整后等于 100"是一条恒等为真的废断言）。
+    // 原型：一盒 1100、每盒 60 发 → 单价 18.333…；打剩 7 发时估值 = 128.333…
+    //   旧代码把 18.333333333333332 × 7 直接显示出来，界面上就是除不尽的小数。
+    const per = 1100 / 60;
+    const raw = per * 7;
+    check('夹具成立：不取整时确实会出现除不尽的小数（否则下面那条是废断言）',
+      !Number.isInteger(raw), `${per} × 7 = ${raw}`);
+    const readout = valueReadout({ value: 1100, unitValue: per }, 7);
+    check('★ M6-4 估值读数取整：打剩 7 发的弹盒给出整数（128.33… → 128）',
+      Number.isInteger(readout) && readout === 128, `${readout}`);
+    check('M6-4 取整是四舍五入而不是截断（1.5 → 2）', valueReadout({ value: 1.5 }, 1) === 2);
+    check('★ M6-4 仓库估值与估值摘要都是整数（界面不再显示小数）', (() => {
+      const st = stashAdd([], 'gold_bar', 3, config).stash;
+      const v = stashValue(st, config);
+      return Number.isInteger(v);
+    })());
+  }
+
+  // ---- ⑦ 保险箱网格：局外放什么，局内就保住什么（销 [M3-TEMP-2]）----
+  {
+    const p0 = createNewProfile(config, 0);
+    const safeSpec = safeSpecOf(config, p0.safeTierUnlocked);
+    check('夹具成立：新账号有保险箱档位（否则这一组测不到东西）', !!safeSpec, JSON.stringify(safeSpec));
+    const gold = defs.gold_bar;
+    const fits = gold.w <= safeSpec.w && gold.h <= safeSpec.h;
+    check('夹具成立：金条塞得进第一档保险箱', fits, `${gold.w}×${gold.h} vs ${safeSpec.w}×${safeSpec.h}`);
+
+    const pWithSafe = {
+      ...p0,
+      loadouts: [{ ...p0.loadouts[0], carry: {
+        ...carryOf(p0.loadouts[0]),
+        safe: [{ uid: 31, itemId: gold.id, count: 1, x: 0, y: 0, rotated: false }],
+      } }],
+    };
+    const tk = takeLoadout(pWithSafe, config);
+    const kit = buildRaidKit(tk.profile, config, { loadout: tk.effectiveLoadout, carry: tk.carry });
+    const inv = createInventory(config, { kit });
+
+    const inSafe = inv.items.filter((e) => e.source === 'safe');
+    check('★ M6-4 局外放进保险箱的东西**原样带进局内**（不再是"系统自动装填"）',
+      inSafe.length === 1 && inSafe[0].item.id === gold.id && inSafe[0].inSafe === true,
+      JSON.stringify(inSafe.map((e) => `${e.item.id}@safe`)));
+
+    const death = inv.settle('death');
+    check('★ M6-4 自己放在箱里的东西不算"这一局带出的战利品"（否则每局都能白刷一次）',
+      death.kept.every((e) => e.item.id !== gold.id) && death.keptValue === 0,
+      JSON.stringify(death.kept.map((e) => e.item.id)));
+
+    // 局内捡到的东西仍自动往**剩余空格**里塞（局内没有网格界面，这一步只能自动）
+    inv.tryAdd(defs.bandage);
+    const auto = inv.items.filter((e) => e.source === 'loot' && e.inSafe);
+    check('★ M6-4 局内捡到的东西自动填保险箱的**剩余空格**（不挤掉玩家自己放的那件）',
+      inv.items.filter((e) => e.source === 'safe' && e.inSafe).length === 1
+      && auto.length <= 1,
+      `自带 ${inv.items.filter((e) => e.source === 'safe').length} 件 / 自动 ${auto.length} 件`);
+
+    // 保险箱里的弹药**不会被打出去**
+    const pAmmo = {
+      ...p0,
+      loadouts: [{ ...p0.loadouts[0], carry: {
+        ...carryOf(p0.loadouts[0]),
+        safe: [{ uid: 41, itemId: 'pistol_mag', count: 60, x: 0, y: 0, rotated: false }],
+      } }],
+    };
+    const tk2 = takeLoadout(pAmmo, config);
+    const inv2 = createInventory(config, { kit: buildRaidKit(tk2.profile, config, { loadout: tk2.effectiveLoadout, carry: tk2.carry }) });
+    inv2.takeAmmo('9mm', 30);
+    check('★ M6-4 保险箱里的弹药不会被消耗（连阵亡都丢不了，当然也不该被打出去）',
+      inv2.items.filter((e) => e.source === 'safe').every((e) => e.count === 60),
+      JSON.stringify(inv2.items.filter((e) => e.source === 'safe').map((e) => `${e.item.id}×${e.count}`)));
+  }
+
+  // ---- ⑧ 新增的拒绝原因必须有中文文案 ----
+  {
+    const NEW_REASONS = [
+      'no-such-grid', 'slot-to-carry', 'carry-to-slot', 'no-space', 'overlap',
+      'grid-rejects:weapon', 'grid-rejects:valuable',
+    ];
+    const missing = NEW_REASONS.filter((r) => {
+      const t = reasonText(r);
+      return !t || t === r;
+    });
+    check('★ M6-4 网格相关的新拒绝原因都有中文文案（界面不显示机器串）',
+      missing.length === 0, missing.join(',') || `${NEW_REASONS.length} 条全部有文案`);
   }
 }
 

@@ -159,8 +159,11 @@ export function createLobby() {
       const carryText = `${pk.backpack.label || '兜底'} ${pk.backpack.w}×${pk.backpack.h}（${pk.backpack.slots} 格 · ${pk.backpack.totalWeightLimitKg} kg）`
         + (pk.rig ? ` ；弹挂 ${pk.rig.label} ${pk.rig.w}×${pk.rig.h}` : '')
         + (pk.kitSlots ? ` ；自带占 ${pk.kitSlots} 格` : '');
+      // ★ M6-4：带不进去的东西**在进战区时会被拦下**（弹出警告页），
+      //   因此这句话要说清后果，而不是只说"装不下"——后者听起来像"少带一点"，
+      //   而实际上不处理掉就进不去。
       const overflowText = pk.overflow && pk.overflow.length
-        ? `<div class="muted li warn">· 装不下（不会带进战区）：${pk.overflow.map((o) => `${o.itemId} ×${o.count}`).join('、')}</div>`
+        ? `<div class="muted li warn">· 带不进去（进战区前会被拦下）：${pk.overflow.map((o) => `${o.itemId} ×${o.count}`).join('、')}</div>`
         : '';
 
       el.body.innerHTML =

@@ -51,22 +51,34 @@ import { profileView, activeLoadout } from './core/profile.js';
 import { buildLobbyViews, buildSettingsView } from './core/lobbyView.js';
 // M5-8：设置面板（独立模块，销 M5-TEMP-4）与改键校验
 import { createSettings } from './ui/settings.js';
+// ★ M6-4：进局前的「有东西带不进去」警告页（只排版不算数，判定在 core/carry.js）。
+import { createRaidCheck } from './ui/raidCheck.js';
 import { sanitizeBindings, formatKey, actionLabel } from './core/keybinds.js';
 import {
   buildRaidKit,
   buildCarry,
   takeLoadout,
   loadoutRequirements,
-  setAmmo,
-  setConsumable,
   addPreset,
   removePreset,
   setActivePreset,
-  ammoOnHand,
+  // ★ M6-4：弹药与消耗品改为"网格里的实物"，因此编辑入口从 setAmmo / setConsumable
+  //   换成"仓库 ↔ 携行网格"的搬移 + 进局检查（见下面 panels 的接线与 startRaid 的闸门）。
+  carryPlaceFromStash,
+  carryTakeToStash,
+  carryMove,
+  auditCarryBeforeRaid,
+  returnOffendersToStash,
+  carryOf,
+  carrySpecsFor,
+  evictCarryOverflow,
 } from './core/loadout.js';
+// ★ M6-4：DEV 夹具要"按同一套规则找空位" —— 自己按坐标推算就等于把 packing 的
+//   边界规则又实现了一遍（见 core/dragDrop.js 的 freeSpotFor 注释）。
+import { findCarrySlot } from './core/carry.js';
 // ★ M6-3：拖放的**唯一**落点判定与落库（判定与落库是同一条代码，dryRun 只是要不要交出新档案）。
 import { dropItem, freeSpotFor } from './core/dragDrop.js';
-import { stashSort, stashSummary, stashAdd, stashTotalOf } from './core/stash.js';
+import { stashSort, stashSummary, stashAdd, stashTotalOf, stashSplit } from './core/stash.js';
 import { buy as shopBuy, sell as shopSell } from './core/shop.js';
 import { acceptQuest, claimQuest, abandonQuest } from './core/quests.js';
 import { learnSkill, respec, applyExp } from './core/progression.js';
@@ -119,6 +131,9 @@ scene.add(sun.target);
 const hud = createHud(cfg);
 // M5-1：主大厅。启动后玩家先看到它，而不是"点击即开始"的开始页。
 const lobby = createLobby();
+// ★ M6-4：进局前的「有东西带不进去」警告页。它是**独立的一屏**（与大厅互斥）：
+//   问题出在携行网格里，而网格在大厅上，回到大厅才能看得见、拖得动。
+const raidCheckPanel = createRaidCheck(cfg);
 // M5：局外进度（档案）。它是**唯一**的持久化真值：货币、仓库、等级、技能、任务、统计。
 // 加载失败时 profileStore 会回落备份或新档，并留下可观测的 repairs（见它的注释）。
 let profileState = loadProfile(cfg, Date.now());
@@ -152,6 +167,10 @@ let raidQuestLines = [];
  *
  * 注意这里把界面送来的 w/h/count 全部丢掉：那是画幽灵元素用的**显示信息**，
  * 不是判定依据。判定一律按 uid / slotId 从档案里取真值（界面给的数字不可信）。
+ *
+ * ★ M6-4：来源与目标各多了一种 `kind:'carry'`（背包 / 弹挂 / 保险箱网格）。
+ *   它必须带 `grid` —— 三张网格的规则不同（保险箱收贵重品，背包只收弹药与消耗品），
+ *   不给 grid 就无法判定，而"猜它是背包"会让保险箱里的东西被静默搬进背包。
  */
 function dragDrop(source, target, rotated, dryRun) {
   const src =
@@ -159,13 +178,17 @@ function dragDrop(source, target, rotated, dryRun) {
       ? { kind: 'stash', uid: source.uid }
       : source && source.kind === 'slot'
         ? { kind: 'slot', slotId: source.slotId }
-        : null;
+        : source && source.kind === 'carry'
+          ? { kind: 'carry', uid: source.uid, grid: source.grid }
+          : null;
   const tgt =
     target && target.kind === 'stash'
       ? { kind: 'stash', x: target.x, y: target.y }
       : target && target.kind === 'slot'
         ? { kind: 'slot', slotId: target.slotId }
-        : null;
+        : target && target.kind === 'carry'
+          ? { kind: 'carry', grid: target.grid, x: target.x, y: target.y }
+          : null;
   return dropItem(profile, profile.activeLoadoutId, src, tgt, !!rotated, cfg, { dryRun });
 }
 
@@ -177,44 +200,21 @@ function dragDrop(source, target, rotated, dryRun) {
  * 而后者是可解释的（core 已经算好了 reason），不显示出来等于把可解释的错误扔掉。
  */
 const panels = createPanels({
-  // ---- 装备页：预设（★ M6-3 说明见下）----
+  // ---- 装备页：预设 ----
   //
   // ★ M6-3 裁定：`slotSelect`（**下拉框**配装表单）已删除 —— 槽位改为拖放，
   //   留着一排下拉框就是 docs/18 §五 点名的"看起来还能用"的死入口。
-  //   但 `presetSelect / presetAdd / presetRemove` **保留**：它们是**预设计数**的宿主，
-  //   而弹药与消耗品的 ± 步进器是"每套预设各一份"的计数（需求明确要求保留步进控件）。
-  //   删掉预设选择器会让步进器失去作用对象 —— 那是把一个功能改坏，不是清理死入口。
+  //   预设选择器**保留**：它是"配装"这个概念本身的宿主（一身装备属于哪一套预设），
+  //   而弹药与消耗品的 ± 步进器（M6-4 制作人裁定：**完全取消**）不是 ——
+  //   那两排按钮的宿主是"每套预设各一份的抽象计数"，而计数已经不再是真值了。
   presetSelect: (d) => mutate((p) => setActivePreset(p, d.id)),
   presetAdd: () => mutate((p) => addPreset(p, cfg)),
   presetRemove: () => mutate((p) => removePreset(p, p.activeLoadoutId, cfg)),
-  ammoInc: (d) =>
-    mutate((p) => {
-      const lo = activeLoadout(p);
-      const step = Number(d.step);
-      const want = (lo.ammo[d.cal] || 0) + step;
-      // 上限是**仓库里实际有的发数** —— 制作人裁定"不设数量上限"，但仓库供给是硬约束
-      return setAmmo(p, lo.id, d.cal, Math.min(want, ammoOnHand(p, d.cal, cfg)), cfg);
-    }),
-  ammoDec: (d) =>
-    mutate((p) => {
-      const lo = activeLoadout(p);
-      const step = Number(d.step);
-      return setAmmo(p, lo.id, d.cal, Math.max(0, (lo.ammo[d.cal] || 0) - step), cfg);
-    }),
-  consInc: (d) =>
-    mutate((p) => {
-      const lo = activeLoadout(p);
-      const step = Number(d.step);
-      const want = (lo.consumables[d.id] || 0) + step;
-      const have = p.stash.reduce((a, e) => (e.itemId === d.id ? a + e.count : a), 0);
-      return setConsumable(p, lo.id, d.id, Math.min(want, have), cfg);
-    }),
-  consDec: (d) =>
-    mutate((p) => {
-      const lo = activeLoadout(p);
-      const step = Number(d.step);
-      return setConsumable(p, lo.id, d.id, Math.max(0, (lo.consumables[d.id] || 0) - step), cfg);
-    }),
+
+  // ★ M6-4：**彻底删除 ammoInc / ammoDec / consInc / consDec**。
+  //   真值从"配装上的数字"搬到"背包 / 弹挂网格里的实物"之后，
+  //   留着 ± 就等于留一条"改了数字但网格没变"的捷径 ——
+  //   玩家会看到身上带着 120 发，进局却一发没有。那正是本仓库最忌讳的假生效。
 
   // ---- 装备页：拖放（判定与落库都交给 core/dragDrop.js 的同一个函数）----
   dropPreview: (source, target, rotated) => dragDrop(source, target, rotated, true),
@@ -250,6 +250,21 @@ const panels = createPanels({
     lobbyUi.selectedUids = [];
     refreshLobby();
   },
+  /**
+   * ★ M6-4：把一格堆叠拆成两格（制作人裁定：默认整叠移动，**为弹药新增拆分数量**）。
+   *
+   * 数量由 panels.js 用 `window.prompt` 问出来（端到端可打桩），这里只落库。
+   * 为什么必须有它：一格弹药是 60 发，只想带 20 发时"整叠移动"就废了 ——
+   *   而把它做成 ± 步进器正是被明令取消的交互，不能换个地方复活。
+   */
+  stashSplit: (d) =>
+    mutate((p) => {
+      const res = stashSplit(p.stash, Number(d.uid), Number(d.amount), cfg);
+      if (!res.ok) return res;
+      return { ok: true, profile: { ...p, stash: res.stash } };
+    }),
+  /** 拆分数量非法：把原因翻成人话（数量来自玩家输入，不是我们算的）。 */
+  splitReject: (reason) => lobby.toast(`拆分失败：${reasonText(reason)}`, true),
   stashSell: () => {
     const res = mutate((p) => shopSell(p, lobbyUi.selectedUids, cfg));
     if (res && res.ok) {
@@ -1049,7 +1064,44 @@ function writeCheckpoint(elapsedMs) {
   );
 }
 
+/**
+ * ★ M6-4：进局前的携行检查（制作人裁定：类别不合法与超出容量**两类都查**）。
+ *
+ * 为什么挡在这里而不是只在大厅给个提示：M6-4 起战利品撤离后**留在网格里**，
+ * 于是"上一局的战利品还没拖回仓库 / 换小包之后装不下"是真实存在且看不见的状态。
+ * 带着它进战区等于凭空多一包物资 —— 而局内既拖不回仓库，也看不出问题在哪。
+ *
+ *   为什么不用"进局时自动把违禁品扔回仓库"：那样玩家永远学不会"战利品要自己收"，
+ *   而且静默搬动他的东西本身就是最难解释的一类行为。
+ *
+ * @returns {{ok:true}|{ok:false, audit:object}} 不通过时**已经把警告页显示出来了**，
+ *   调用方只需要直接 return（不要自己再弹提示，两处提示会互相盖）。
+ */
+function gateRaidEntry() {
+  const audit = auditCarryBeforeRaid(profile, cfg);
+  if (audit.ok) {
+    // 幂等：从警告页「全部放回仓库」之后重试会走到这里，那一屏必须收掉。
+    raidCheckPanel.show(false);
+    return { ok: true };
+  }
+  // 判定的唯一真值是 core/carry.js 的 carryAudit；这里只排版。
+  raidCheckPanel.render(audit);
+  raidCheckPanel.toast('');
+  lobby.show(false);
+  raidCheckPanel.show(true);
+  return { ok: false, audit };
+}
+
 function startRaid(nowMs) {
+  // ★ M6-4：携行检查放在**所有入口的最前面**（与补结算同一条纪律）。
+  //   写在 startRaid 里而不是只写在 btnStart 里，是因为 DEV 的 startRaid 接口
+  //   也会直接调它 —— 只挡按钮等于给自动化留一条绕过检查的路，
+  //   而那条路恰恰是最容易把"带不进去的东西"悄悄带进去的。
+  //
+  //   @returns {boolean} 是否真的进了战区（被警告页挡住时为 false —— 调用方据此决定
+  //     要不要继续做「进局后」的事，而不是盯着屏幕猜）。
+  if (!gateRaidEntry().ok) return false;
+
   // ★ [M4-BUG-02] 开新局之前，先把"上局没走完"补成正式结算。
   //
   // 这是**写在这个函数里**而不是只写在 btnStart 里 —— 否则任何绕过按钮的入口
@@ -1113,6 +1165,7 @@ function startRaid(nowMs) {
   settingsOpen = false;
   hud.showHud(true);
   hud.toast('进入战区：搜刮物资并撤离');
+  return true;
 }
 
 function endRaid(reason, nowMs) {
@@ -1207,7 +1260,7 @@ function raidFacts(result) {
  *   刷新之后模块级的 `raidId` 是空的（新页面还没开局），用它会让幂等键失效。
  * @returns {object|null} 结算摘要（结算界面要显示经验 / 任务 / 入库明细）
  */
-function applyRaidToProfileNow(result, raidIdOverride) {
+function applyRaidToProfileNow(result, raidIdOverride, opts = {}) {
   const id = raidIdOverride || raidId;
   const applied = applyRaidToProfile(
     profile,
@@ -1218,6 +1271,8 @@ function applyRaidToProfileNow(result, raidIdOverride) {
       facts: raidFacts(result),
       taken: raidTaken,
       remaining: currentRemaining(),
+      // ★ M6-4：补结算（上局没走完）不得动玩家为下一局摆好的携行网格。理由见 settlement.js ②。
+      interrupted: !!opts.interrupted,
     },
     cfg
   );
@@ -1269,7 +1324,7 @@ function settleInterruptedRaid(showIt) {
   clearCheckpoint();
   // ★ M5：补结算同样要落库 —— 否则刷新那一局的战利品与经验会静默消失。
   //   用快照里的 raidId：刷新后模块级 raidId 是空的，用它会让幂等键失效。
-  applyRaidToProfileNow(result, cp.raidId);
+  applyRaidToProfileNow(result, cp.raidId, { interrupted: true });
   // [M5-BUG-01] 这里**不再**手写收起大厅提示：可见性已收口到 showLobby()，由快照推导
   //   （此刻快照已清 → 下次回大厅时推出来就是"收起"）。原先"清快照必须在收起提示之前"
   //   这条顺序依赖因此不需要再显式维护，不变式变强也变简单：**showLobby() 必须在结算之后被调用**
@@ -1368,12 +1423,56 @@ function applySettings(s, persist) {
 }
 
 lobby.el.btnStart.addEventListener('click', () => {
+  // ★ M6-4：先看有没有带不进去的东西。放在补结算**之前** ——
+  //   补结算会把结算页显示出来，而检查不通过时玩家要看到的是**警告页**，
+  //   两屏叠在一起谁都看不清。（startRaid 里还有同一道检查：DEV 接口也挡得住。）
+  if (!gateRaidEntry().ok) return;
   // ★ 补结算上局（若有），再开新局。这一步不能省 —— 省了就是 M4-BUG-02。
   //   这里显示出来是给玩家看的；结算本身在 startRaid 里还会再兜一次，
   //   因此**任何**入口（含 DEV 接口）都不会绕过它。
   settleInterruptedRaid(true);
   input.requestLock();
   startRaid(performance.now());
+});
+
+// ---- ★ M6-4：警告页的两个出口 ----
+//
+// 两个出口刻意**语义不同**：
+//   · 返回大厅 —— 玩家自己一格一格拖（换取他对布局的安排不被改动）
+//   · 全部放回仓库 —— 一键把违规的那几件（且只那几件）送回仓库，然后继续进战区
+//     （他点的是「进入战区」，一键修好就让他去，不该再让他点一次按钮）
+// 「只退回违规的那几件」这一点很关键：一键清空格子是"省事"，但玩家会以为
+//   是他自己配的东西被系统扔了 —— 那正是本仓库最忌讳的"静默搬动玩家的东西"。
+raidCheckPanel.on({
+  onBack: () => {
+    raidCheckPanel.show(false);
+    showLobby();
+  },
+  onReturn: () => {
+    const audit = auditCarryBeforeRaid(profile, cfg);
+    const res = returnOffendersToStash(profile, audit.offenders, cfg);
+    if (!res.ok) {
+      // 失败时**不改档案**（returnOffendersToStash 是整批成功才交出新档案），
+      // 因此这里只提示，玩家仍可以点「返回大厅」自己处理。
+      raidCheckPanel.toast(`放回仓库失败：${reasonText(res.reason)}`, true);
+      return;
+    }
+    profile = res.profile;
+    saveProfileNow();
+    refreshLobby();
+    // 放回之后**再查一次**：一次退回未必能解决全部（例如网格里还有别的违规件）。
+    // 不复查就直接进局，等于用"我以为修好了"代替"真的修好了"。
+    const again = auditCarryBeforeRaid(profile, cfg);
+    if (!again.ok) {
+      raidCheckPanel.render(again);
+      raidCheckPanel.toast(`已放回 ${res.returned.length} 件，仍有东西带不进去 —— 回大厅自己拖吧`, true);
+      return;
+    }
+    // 修好了 → 完成玩家原本的意图（他在大厅点的是「进入战区」）
+    settleInterruptedRaid(true);
+    input.requestLock();
+    startRaid(performance.now());
+  },
 });
 // M5-1：结算页的出口改成"返回大厅"，不再是整页刷新。
 // 刷新能"回到大厅"却会重建整个页面 —— 那正是 M5 之前局内世界必须重建的原因。
@@ -1555,6 +1654,56 @@ requestAnimationFrame(frame);
 // ============================================================================
 if (import.meta.env.DEV) {
   /**
+   * ★ M6-4：把指定数量的某件东西**搬进携行网格**（真值所在的那一处）。
+   *
+   * 为什么夹具要走"仓库 → 网格"这条完整路径，而不是直接往 `loadout.carry` 里塞一条：
+   *   直接塞会绕过 `gridAccepts`（背包只收弹药与消耗品）与 `isAreaFree`（重叠），
+   *   于是夹具自己就成了"能造出产品里造不出的状态"的那条捷径 ——
+   *   用它测出来的绿，证明不了产品是对的。
+   *
+   * 需要的量大于一堆时先 `stashSplit` 再逐堆搬（与玩家"拆分 → 拖动"是同一条路）。
+   *
+   * @returns {{itemId:string, count:number, grid:string, boxes:number}} count = 真正搬进去的量
+   */
+  function carryGive(itemId, count, gridName = 'backpack') {
+    const def = cfg.itemDefs[itemId];
+    if (!def) throw new Error(`[__m2] 未知物品 ${itemId}`);
+    // 仓库先补齐：网格里的东西必须**来自**仓库（否则就是凭空造物）
+    let stash = profile.stash;
+    const have = stashTotalOf(stash, itemId, cfg);
+    if (have < count) stash = stashAdd(stash, itemId, count - have, cfg).stash;
+    profile = { ...profile, stash };
+
+    let placed = 0;
+    let boxes = 0;
+    for (let guard = 0; guard < 200 && placed < count; guard++) {
+      const lo = activeLoadout(profile);
+      const specs = carrySpecsFor(lo, profile, cfg);
+      let entry = profile.stash.find((e) => e.itemId === itemId && e.count > 0);
+      if (!entry) break;
+      const want = count - placed;
+      if (entry.count > want) {
+        const sp = stashSplit(profile.stash, entry.uid, want, cfg);
+        if (!sp.ok) break;
+        profile = { ...profile, stash: sp.stash };
+        entry = profile.stash.find((e) => e.uid === sp.splitUid);
+        if (!entry) break;
+      }
+      // 空位由**落点判定的同一个谓词**给（findCarrySlot → packing.findSlot）
+      const slot = findCarrySlot(carryOf(lo), def, specs, cfg.itemDefs, [gridName]);
+      if (!slot) break;
+      const res = carryPlaceFromStash(profile, lo.id, entry.uid, gridName, slot.x, slot.y, !!slot.rotated, cfg);
+      if (!res.ok) break;
+      profile = res.profile;
+      placed += entry.count;
+      boxes += 1;
+    }
+    saveProfileNow();
+    refreshLobby();
+    return { itemId, count: placed, grid: gridName, boxes };
+  }
+
+  /**
    * 测试用的"富配装"：把一套装备塞进仓库并设成当前配装。
    *
    * 为什么必须有它：制作人裁定新账号**仓库为空**（装备要自己买），于是端到端
@@ -1600,14 +1749,21 @@ if (import.meta.env.DEV) {
       //   否则容量瓶颈会把后面所有"搜刮 → 估值"的断言压成"背包满了"。
       backpack: 'bp_medium',
       rig: 'rig_light',
-      ammo: { '5.56': 120, '9mm': 60 },
-      consumables: { bandage: 3, medkit: 2 },
+      // ★ M6-4：网格也从空开始（与"从空仓库重建"同一个理由：夹具必须**确定的**，
+      //   而上一局留在网格里的战利品会让"带了什么"依赖前一组留下了什么）。
+      carry: { ...carryOf(preset), backpack: [], rig: [] },
     };
     p = { ...p, loadouts: [lo], activeLoadoutId: lo.id };
     profile = p;
-    saveProfileNow();
-    refreshLobby();
-    return { stash: profile.stash.length, dropped };
+    // ★ M6-4：弹药与药品必须**在网格里**才算带着（配装上的数字账已删除）。
+    //   走 carryGive（仓库 → 网格）而不是直接写 carry —— 理由见它的注释。
+    const kit = [
+      carryGive('ammo_556', 120),
+      carryGive('pistol_mag', 60),
+      carryGive('bandage', 3),
+      carryGive('medkit', 2),
+    ];
+    return { stash: profile.stash.length, dropped, carry: kit };
   }
 
   /**
@@ -1649,17 +1805,27 @@ if (import.meta.env.DEV) {
     // ★ M6：弹药**只装这一把的口径**（与上面"清空另一槽"同一个语义），且装上一只背包。
     //   累加会在连测 4 把时把 4 个口径的弹药堆在一起，把 6 格的兜底背包撑爆 ——
     //   那时失败信息看起来像"弹药没带"，实际是容量问题。
-    const carry = { [w.ammoType]: rounds };
     // ★ 另一槽**清空**：本夹具的语义是"只装这一把"，不是"在现有配装上替换一格"。
     //   不清空的后果实测过：连测 4 把时，测副武器那轮手上仍是上一轮的主武器，
     //   断言读出"局内 dmr_g28"——夹具残留被当成产品缺陷。清空后断言才无歧义。
     //   （primary=null + secondary 有枪是合法配装：起始配装本来就是 primary 为空。）
-    const lo = { ...preset, primary: null, secondary: null, backpack: 'bp_medium', [slotKey]: ref, ammo: carry };
+    const lo = {
+      ...preset,
+      primary: null,
+      secondary: null,
+      backpack: 'bp_medium',
+      [slotKey]: ref,
+      // ★ 同"清空另一槽"：网格里也只留这一把的口径，否则连测 4 把时
+      //   网格里会攒着 4 个口径的盒子 —— 那时"备弹"读出来的是别人的子弹。
+      carry: { ...carryOf(preset), backpack: [], rig: [] },
+    };
     p = { ...p, loadouts: [lo], activeLoadoutId: lo.id };
     profile = p;
+    // ★ M6-4：弹药进网格才算带着（数字账已删除）
+    const kit = carryGive(ammoRow.lootItemId, rounds);
     saveProfileNow();
     refreshLobby();
-    return { equipped: ref, slot: slotKey, ammoType: w.ammoType, rounds, dropped };
+    return { equipped: ref, slot: slotKey, ammoType: w.ammoType, rounds, dropped, carry: kit };
   }
 
   /**
@@ -1719,30 +1885,85 @@ if (import.meta.env.DEV) {
       if (!def) throw new Error(`[__m2] 未知携行具 ${id}`);
       if (stashTotalOf(stash, def.itemId, cfg) <= 0) stash = stashAdd(stash, def.itemId, 1, cfg).stash;
     }
-    profile = { ...p, stash, loadouts: [next], activeLoadoutId: next.id };
+    // ★ M6-4：换上更小的包之后，网格里放不下的东西必须**退回仓库**（与玩家在大厅
+    //   换包走的是同一个 evictCarryOverflow）。不退回就会留下一堆越界条目，
+    //   那正是进局检查要拦的状态 —— 夹具不该自己制造它。
+    const ev = evictCarryOverflow({ ...p, stash }, next, carryOf(next), cfg);
+    if (!ev.ok) throw new Error(`[__m2] 换包后放不下：${ev.reason}`);
+    const loadouts = p.loadouts.map((l) => (l.id === next.id ? { ...l, ...next, carry: ev.carry } : l));
+    profile = { ...p, stash: ev.stash, loadouts, activeLoadoutId: next.id };
     saveProfileNow();
     refreshLobby();
-    return { backpack: next.backpack, rig: next.rig };
+    const audit = auditCarryBeforeRaid(profile, cfg);
+    return { backpack: next.backpack, rig: next.rig, evicted: audit.ok };
   }
 
   /**
-   * ★ M6：把配装的弹药/消耗品设成指定的量（并补进仓库），返回**这一份配装**的投放结果。
-   * 用来验证"装不下会被报出来"：它返回的 overflow 就是玩家在大厅该看到的那个列表。
+   * ★ M6-4：把指定口径/消耗品搬进携行网格（替换掉网格里原有的东西）。
+   *
+   * 与老版本（在配装上写个数字）的区别：**搬不进去就是搬不进去**，没有"写了但没带"这回事。
+   *   因此它返回的 `overflow` 是"想带却没地方放的那几堆"，而不是投放算法的副产品。
+   * @param {Record<string, number>} ammo 口径 id → 发数
+   * @param {Record<string, number>} consumables 消耗品 id → 个数
    */
   function stuffLoadout(ammo, consumables) {
     const p = profile;
-    const lo = { ...p.loadouts[0], ammo: { ...(ammo || {}) }, consumables: { ...(consumables || {}) } };
-    let stash = p.stash;
-    // 仓库先按需求补齐，这样 overflow 只反映"装不下"，而不是"仓库里没有"
-    for (const r of loadoutRequirements(lo, cfg)) {
-      const have = stashTotalOf(stash, r.itemId, cfg);
-      if (have < r.count) stash = stashAdd(stash, r.itemId, r.count - have, cfg).stash;
+    const lo = { ...p.loadouts[0], carry: { ...carryOf(p.loadouts[0]), backpack: [], rig: [] } };
+    profile = { ...p, loadouts: [lo], activeLoadoutId: lo.id };
+    const placed = [];
+    const overflow = [];
+    for (const [cal, rounds] of Object.entries(ammo || {})) {
+      const row = cfg.ammo.find((a) => a.id === cal);
+      if (!row || !row.itemId) throw new Error(`[__m2] 未知口径 ${cal}`);
+      const r = carryGive(row.itemId, Number(rounds));
+      if (r.count > 0) placed.push(r);
+      if (r.count < Number(rounds)) overflow.push({ itemId: row.itemId, count: Number(rounds) - r.count });
     }
-    profile = { ...p, stash, loadouts: [lo], activeLoadoutId: lo.id };
+    for (const [id, n] of Object.entries(consumables || {})) {
+      const r = carryGive(id, Number(n));
+      if (r.count > 0) placed.push(r);
+      if (r.count < Number(n)) overflow.push({ itemId: id, count: Number(n) - r.count });
+    }
+    const plan = buildCarry(activeLoadout(profile), cfg, { profile });
+    return { overflow, placements: plan.placements, placed };
+  }
+
+  /**
+   * ★ M6-4：当前携行网格的**判定结果**（core/carry.js 的 carryAudit，与警告页同一份）。
+   * 端到端读它就不必在测试里重写一遍"什么算带不进去"。
+   */
+  function carryAuditNow() {
+    return auditCarryBeforeRaid(profile, cfg);
+  }
+
+  /**
+   * ★ M6-4：**故意**造一件带不进去的东西（模拟旧存档 / 外部改档这类"产品里造不出、
+   * 但确实会发生"的状态）。
+   *
+   * 为什么必须有一个专门的夹具：正常路径下带不进去的东西**根本拖不进网格**
+   *   （拖放即校验），所以靠正常操作造不出这种状态；而进局检查恰恰是为它准备的。
+   *   用"直接写 carry"这种捷径是**故意**的 —— 它模拟的正是"存档被外部改过"。
+   *
+   * @param {'category'|'bounds'} kind
+   */
+  function breakCarry(kind = 'category') {
+    const lo = activeLoadout(profile);
+    const carry = carryOf(lo);
+    const specs = carrySpecsFor(lo, profile, cfg);
+    let uid = 0;
+    for (const g of ['backpack', 'rig', 'safe']) for (const e of carry[g] || []) uid = Math.max(uid, e.uid);
+    const entry =
+      kind === 'bounds'
+        ? // 越界：塞到网格外的坐标上（产品里只有"换了更小的包"才可能出现）
+          { uid: uid + 1, itemId: 'ammo_556', count: 60, x: 99, y: 99, rotated: false }
+        : // 类别不合法：一把长枪塞进背包（背包只收弹药与消耗品）
+          { uid: uid + 1, itemId: 'rifle_m4', count: 1, x: 0, y: 0, rotated: false };
+    const next = { ...carry, backpack: [...carry.backpack, entry] };
+    const loadouts = profile.loadouts.map((l) => (l.id === lo.id ? { ...l, carry: next } : l));
+    profile = { ...profile, loadouts };
     saveProfileNow();
     refreshLobby();
-    const plan = buildCarry(lo, cfg);
-    return { overflow: plan.overflow, placements: plan.placements };
+    return { kind, uid: entry.uid, audit: auditCarryBeforeRaid(profile, cfg) };
   }
 
   /**
@@ -1871,6 +2092,10 @@ if (import.meta.env.DEV) {
     clearStash,
     equipCarry,
     stuffLoadout,
+    // ★ M6-4：携行网格的夹具与读数（网格是"带着什么"的唯一真值）
+    carryGive,
+    carryAuditNow,
+    breakCarry,
     ammoInGrid,
     freeStashSpot,
     grantWeapon,
@@ -2130,6 +2355,9 @@ if (import.meta.env.DEV) {
           rule: z.openRule ? z.openRule.type : 'always',
           open: z.open.open, reason: z.open.reason, opensInMs: z.open.opensInMs,
           remainingKills: z.open.remainingKills,
+          // ★ 开放规则是否已被求值过。构造时给的是"常驻"占位，第一帧 update 才换成真值；
+          //   在它为真之前读到的 open 是占位，不是判定 —— 断言必须等它，否则测的是时序。
+          evaluated: !!z.evaluated,
         })),
         // M4-2：中断状态暴露给端到端断言。
         // 注意 `ex` 是帧内局部变量（每帧重建），DEV 接口在模块级拿不到它，

@@ -46,7 +46,7 @@ import { resolveBackpack } from '../core/lootTable.js';
 import { skillModifiers, CONSUMED_MODIFIERS } from '../core/progression.js';
 // M6：携行具的网格投放算法（纯函数）。启动期要用**同一个**实现断言
 // "起始配装一定塞得进兜底背包" —— 各写一份就会出现"校验说塞得下、进局却掉东西"。
-import { planCarry } from '../core/carry.js';
+import { carrySpecs, carryUsedSlots, sanitizeCarry } from '../core/carry.js';
 
 function fail(msg) {
   throw new Error(`[config] ${msg}`);
@@ -804,8 +804,39 @@ function playerVitalsView() {
     // null（而不是缺键）表示"该槽位为空"。缺键会让 dataKeys 的遍历与界面渲染
     // 各自决定怎么处理，最终出现两种口径。
     startArmor: { body: STARTER.body ?? null, head: STARTER.head ?? null },
-    startConsumables: { ...(STARTER.consumables || {}) },
+    // ★ M6-4：起始消耗品改成**数网格**（与局内的口径一致：网格才是真值）。
+    //   以前它直接抄 starterLoadout.consumables 那个数字字典 —— 那份真值已经删了，
+    //   继续抄就变成"两份真值里死掉的那一份"。
+    startConsumables: starterConsumables(),
   };
+}
+
+/** 起始网格里每个口径各有多少发（派生自 starterLoadout.carry，不是副本）。 */
+function starterReserveByAmmo() {
+  const out = {};
+  const byItem = new Map(AMMO_VIEW.filter((a) => a.itemId).map((a) => [a.itemId, a.id]));
+  // 只数背包与弹挂：保险箱里的东西确实在身上，但局内不从保险箱里换弹，
+  // 因此它不该出现在"备弹"这个读数里（否则 HUD 说有 120 发、实际打不出来）。
+  for (const name of ['backpack', 'rig']) {
+    for (const e of (STARTER.carry && STARTER.carry[name]) || []) {
+      const cal = byItem.get(e && e.itemId);
+      if (!cal) continue;
+      out[cal] = (out[cal] || 0) + e.count;
+    }
+  }
+  return out;
+}
+
+/** 起始配装网格里每种消耗品各有几个（派生自 starterLoadout.carry，不是副本）。 */
+function starterConsumables() {
+  const out = {};
+  for (const c of combatTable.consumables) out[c.id] = 0;
+  for (const name of ['backpack', 'rig']) {
+    for (const e of (STARTER.carry && STARTER.carry[name]) || []) {
+      if (e && out[e.itemId] !== undefined) out[e.itemId] += e.count;
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -910,17 +941,33 @@ function validateEquipment() {
       fail(`口径 ${cal} 有武器在用，但不在 equipment.ammo.carryCalibers 里 —— 那类子弹永远带不进战区`);
     }
   }
-  for (const [cal, n] of dataEntries(STARTER.ammo || {})) {
-    if (!caliberSet.has(cal)) fail(`starterLoadout.ammo 引用了不存在的口径 ${cal}`);
-    if (!Number.isInteger(n) || n < 0) fail(`starterLoadout.ammo.${cal}=${n} 必须为非负整数`);
-  }
-
-  // ---- 消耗品携带 ----
-  // ★ 同上：只校验 id 合法与非负数量，不设上限。
+  // ★ M6-4：起始配装的弹药与消耗品不再是两个数字字典，而是**直接写在携行网格里**
+  //   （starterLoadout.carry）。这里只校验网格条目本身引用得到物品且数量合法 ——
+  //   "塞不塞得进兜底背包"由 validateCarry 用同一份 sanitizeCarry 判，不在这里重复一遍。
   const consumableIds = new Set(combatTable.consumables.map((c) => c.id));
-  for (const [id, n] of dataEntries(STARTER.consumables || {})) {
-    if (!consumableIds.has(id)) fail(`starterLoadout.consumables 引用了不存在的消耗品 ${id}`);
-    if (!Number.isInteger(n) || n < 0) fail(`starterLoadout.consumables.${id}=${n} 必须为非负整数`);
+  const ammoItemIds = new Set(weaponsTable.ammo.map((a) => a.lootItemId).filter(Boolean));
+  if (!STARTER.carry) fail('starterLoadout 缺少 carry（起始携带的弹药与药品现在写在携行网格里）');
+  for (const [grid, list] of dataEntries(STARTER.carry || {})) {
+    if (!Array.isArray(list)) {
+      fail(`starterLoadout.carry.${grid} 必须是数组（网格条目列表）`);
+      continue;
+    }
+    for (const e of list) {
+      const def = ITEM_VIEWS.items[e && e.itemId];
+      if (!def) {
+        fail(`starterLoadout.carry.${grid} 含未知物品 ${e && e.itemId}`);
+        continue;
+      }
+      if (!(Number.isInteger(e.count) && e.count > 0 && e.count <= def.stack)) {
+        fail(`starterLoadout.carry.${grid} 的 ${e.itemId} 数量 ${e.count} 非法（1..${def.stack}）`);
+      }
+      if (!ammoItemIds.has(e.itemId) && !consumableIds.has(e.itemId)) {
+        fail(`starterLoadout.carry.${grid} 的 ${e.itemId} 既不是弹药也不是消耗品 —— 起始不该带它`);
+      }
+      if (!Number.isInteger(e.x) || !Number.isInteger(e.y)) {
+        fail(`starterLoadout.carry.${grid} 的 ${e.itemId} 缺 x / y（坐标是网格真值的一部分）`);
+      }
+    }
   }
 
   if (!(eq.maxPresets >= 1)) fail('equipment.maxPresets 必须 >= 1');
@@ -1282,24 +1329,26 @@ function validateCarry() {
   //   M6 起携行件要占 4 格，同一个 3×2 就只剩 2 格 —— 新账号第一局几乎捡不了东西，
   //   而"搜"是这个玩法的核心动作。这个下限是**策划口径**（MIN_FREE_CELLS），不是随手取的值。
   const MIN_FREE_CELLS = 4;
-  const starterPlan = planCarry({
-    loadout: STARTER,
-    carry: carryTable,
-    ammo: AMMO_VIEW,
-    consumables: combatTable.consumables,
-    itemDefs: ITEM_VIEWS.items,
-  });
-  if (starterPlan.overflow.length) {
-    const detail = starterPlan.overflow.map((o) => `${o.itemId}×${o.count}`).join('、');
+  // ★ M6-4：起始配装的携带物已经是**网格坐标**（starterLoadout.carry），不再经过
+  //   planCarry 自动投放。这里用与运行时**同一个** sanitizeCarry 去收它 ——
+  //   校验器若自己另排一遍，就会变成"校验按 A 摆、进局按 B 摆"的第二套算法。
+  const starterSpecs = carrySpecs(
+    { backpack: STARTER.backpack ?? null, rig: STARTER.rig ?? null },
+    carryTable,
+    null
+  );
+  const starterSan = sanitizeCarry(STARTER.carry, starterSpecs, ITEM_VIEWS.items);
+  const dropped = starterSan.repairs.length;
+  if (dropped) {
     fail(
-      `起始配装（equipment.starterLoadout）的携行物品塞不进兜底背包：${detail}。` +
+      `起始配装（equipment.starterLoadout.carry）有 ${dropped} 条塞不进兜底背包：${starterSan.repairs.join('；')}。` +
         ` 兜底背包 ${carryTable.defaults.backpack.w}×${carryTable.defaults.backpack.h}` +
         `（${carryTable.defaults.backpack.w * carryTable.defaults.backpack.h} 格）。` +
         ' 请调大兜底容量、给起始配装一只背包，或减少起始携带量 —— 三选一，别让玩家静默少带。'
     );
   }
   const starterTotal = carryTable.defaults.backpack.w * carryTable.defaults.backpack.h;
-  const starterUsed = starterPlan.placements.reduce((a, p) => a + p.w * p.h, 0);
+  const starterUsed = carryUsedSlots(starterSan.carry, ITEM_VIEWS.items, ['backpack']);
   if (starterTotal - starterUsed < MIN_FREE_CELLS) {
     fail(
       `兜底背包在装下起始携行件后只剩 ${starterTotal - starterUsed} 格（要求至少 ${MIN_FREE_CELLS} 格）：` +
@@ -1488,9 +1537,11 @@ export const config = {
   startLoadout: {
     primary: STARTER.primary,
     secondary: STARTER.secondary,
-    reserveByAmmo: { ...(STARTER.ammo || {}) },
+    // ★ M6-4：起始配装的弹药/药品不再是两个数字，而是写在 starterLoadout.carry 网格里。
+    //   这里把它们**数出来**派生回 M2 的两个字段名（下游读的还是这两个名字）。
+    reserveByAmmo: starterReserveByAmmo(),
     armor: { body: STARTER.body ?? null, head: STARTER.head ?? null },
-    consumables: { ...(STARTER.consumables || {}) },
+    consumables: starterConsumables(),
   },
   designTargets: weaponsTable._designTargets,
   armor: combatTable.armor,

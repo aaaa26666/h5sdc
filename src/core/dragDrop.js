@@ -16,7 +16,14 @@
 
 import { stashMoveTo, stashGrid } from './stash.js';
 import { isAreaFree } from './packing.js';
-import { slotAcceptsItem, equipFromStash, unequipToStash } from './loadout.js';
+import {
+  slotAcceptsItem,
+  equipFromStash,
+  unequipToStash,
+  carryPlaceFromStash,
+  carryTakeToStash,
+  carryMove,
+} from './loadout.js';
 
 /**
  * 执行一次拖放。
@@ -33,7 +40,7 @@ export function dropItem(profile, presetId, source, target, rotated, cfg, opts =
   const dryRun = !!opts.dryRun;
 
   if (!source) return { ok: false, reason: 'no-source' };
-  // 松手时没落在任何可放处（例如落在面板空白、或拖出了仓库网格）—— 回原位。
+  // 松手时没落在任何可放处（例如落在面板空白、或拖出了网格）—— 回原位。
   if (!target) return { ok: false, reason: 'no-target' };
   // ★ [M6-BUG-04] 落点必须是**整数格**。
   //   为什么单列一条而不是交给 isAreaFree：后者对非整数只回答 false，而 stashMoveTo
@@ -41,30 +48,51 @@ export function dropItem(profile, presetId, source, target, rotated, cfg, opts =
   //   "这一格被别的物品占着"，把人往错误的方向带（实测：抓取偏移漏了源坐标时就是这个症状，
   //   排查花了整整一轮）。界面已经不可能送进 NaN，但这里是**唯一的落点入口**，
   //   坏数据必须在这里就被抓住并给出**说得通**的原因。
-  if (target.kind === 'stash' && (!Number.isInteger(target.x) || !Number.isInteger(target.y))) {
+  if ((target.kind === 'stash' || target.kind === 'carry') && (!Number.isInteger(target.x) || !Number.isInteger(target.y))) {
     return { ok: false, reason: 'bad-target' };
+  }
+  // ★ M6-4：携行网格的落点必须指明**哪一张网格**（背包 / 弹挂 / 保险箱）。
+  if (target.kind === 'carry' && target.grid !== 'backpack' && target.grid !== 'rig' && target.grid !== 'safe') {
+    return { ok: false, reason: 'no-such-grid' };
   }
 
   // 落库动作**只有一个地方选**：下面按 (source.kind, target.kind) 选出唯一一个 core 调用。
   // 判定与落库共用它，因此不可能出现"预览说行、落库说不行"。
   let res;
   if (target.kind === 'slot') {
-    if (source.kind !== 'stash') {
+    if (source.kind === 'stash') {
+      const entry = profile.stash.find((e) => e.uid === source.uid);
+      if (!entry) return { ok: false, reason: 'unknown-uid' };
+      const acc = slotAcceptsItem(target.slotId, entry.itemId, cfg);
+      if (!acc.ok) return { ok: false, reason: acc.reason };
+      // 白名单已经过了才落库：equipFromStash 内部会再走一遍同一条规则（它是权威），
+      // 这里提前问一次是为了让**非法装备**在不产生任何副作用的前提下就被拒。
+      res = equipFromStash(profile, presetId, source.uid, target.slotId, cfg);
+    } else if (source.kind === 'carry') {
+      // 身上网格 → 装备格：不做"就地穿上"（那需要一条从网格取件的独立路径）。
+      // 玩家想穿就先拖回仓库再拖上去 —— 与"装备格之间不互换"同一条口径。
+      return { ok: false, reason: 'carry-to-slot' };
+    } else {
       // 装备格之间不互换：那需要"两件装备同时换手"，而界面上没有第二个槽位落点可预览。
       // 想做的是把它拖回仓库再拖上去（宁可多一步，也不要一次难以撤销的连带变化）。
       return { ok: false, reason: 'slot-to-slot' };
     }
-    const entry = profile.stash.find((e) => e.uid === source.uid);
-    if (!entry) return { ok: false, reason: 'unknown-uid' };
-    const acc = slotAcceptsItem(target.slotId, entry.itemId, cfg);
-    if (!acc.ok) return { ok: false, reason: acc.reason };
-    // 白名单已经过了才落库：equipFromStash 内部会再走一遍同一条规则（它是权威），
-    // 这里提前问一次是为了让**非法装备**在不产生任何副作用的前提下就被拒。
-    res = equipFromStash(profile, presetId, source.uid, target.slotId, cfg);
+  } else if (target.kind === 'carry') {
+    if (source.kind === 'stash') {
+      res = carryPlaceFromStash(profile, presetId, source.uid, target.grid, target.x, target.y, rotated, cfg);
+    } else if (source.kind === 'carry') {
+      // 网格内移动 / 跨网格搬运（背包 ↔ 弹挂 ↔ 保险箱）
+      res = carryMove(profile, presetId, source.uid, target.grid, target.x, target.y, rotated, cfg);
+    } else {
+      // 身上穿着的装备塞进携行网格？那是"把枪塞进背包"，而携行网格只收弹药与消耗品。
+      return { ok: false, reason: 'slot-to-carry' };
+    }
   } else if (target.kind === 'stash') {
     if (source.kind === 'stash') {
       res = stashMoveTo(profile.stash, source.uid, target.x, target.y, rotated, cfg);
       if (res.ok) res = { ok: true, profile: { ...profile, stash: res.stash } };
+    } else if (source.kind === 'carry') {
+      res = carryTakeToStash(profile, presetId, source.uid, { x: target.x, y: target.y, rotated }, cfg);
     } else {
       res = unequipToStash(profile, presetId, source.slotId, { x: target.x, y: target.y, rotated }, cfg);
     }

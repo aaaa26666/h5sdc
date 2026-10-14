@@ -103,7 +103,9 @@ export function buildRaidBriefing(cfg, kit) {
     loadout: {
       primary: lo.primary ? weaponBrief(cfg, lo.primary) : null,
       secondary: lo.secondary ? weaponBrief(cfg, lo.secondary) : null,
-      reserve: Object.entries(lo.ammo).map(([id, rounds]) => ({
+      // ★ M6-4：备弹与药品是**数网格**数出来的派生量（真值在 raidKit 的携行网格里）。
+      //   简报显示的就是"进局会带多少"，与网格必须一致 —— 不一致就是两套账。
+      reserve: Object.entries(lo.ammo || {}).map(([id, rounds]) => ({
         id,
         label: ammoLabel(cfg, id),
         rounds,
@@ -112,7 +114,7 @@ export function buildRaidBriefing(cfg, kit) {
       consumables: (cfg.consumables || []).map((c) => ({
         id: c.id,
         label: c.label,
-        count: lo.consumables[c.id] || 0,
+        count: (lo.consumables && lo.consumables[c.id]) || 0,
       })),
     },
     // 背包与安全箱：这两项是"继续贪还是马上撤"的判断依据，开局就要让玩家看见。
@@ -137,6 +139,14 @@ export function buildRaidBriefing(cfg, kit) {
         : null,
       /** 自己带的弹药/药品占掉的格数（"还能装几件战利品"要减掉它） */
       kitSlots: carry ? carry.placements.reduce((a, p) => a + p.w * p.h, 0) : 0,
+      /**
+       * ★ M6-4：可以装东西的格数**总数**（背包 + 弹挂）。
+       *   "自带占了几格"必须有个分母才读得懂 —— 只给分子的话，
+       *   玩家还得自己在脑子里把两只容器的容量加起来。
+       */
+      totalSlots: carry
+        ? carry.totalSlots
+        : bp.w * bp.h,
       /**
        * ★ 装不下而**没带进战区**的东西。它必须显示出来：
        * 静默少带的表现是"进局发现只有 60 发子弹"，而玩家会以为游戏算错了。

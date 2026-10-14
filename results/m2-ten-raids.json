@@ -1,7 +1,7 @@
 [
   {
     "raid": 1,
-    "ms": 5736,
+    "ms": 5702,
     "shots": 14,
     "hits": 4,
     "kills": 1,
@@ -9,64 +9,12 @@
     "aiAlive": 15,
     "decals": 10,
     "peakQueries": 2,
-    "peakPathMs": 0.825,
+    "peakPathMs": 0.64,
     "errs": 0
   },
   {
     "raid": 2,
-    "ms": 5695,
-    "shots": 14,
-    "hits": 4,
-    "kills": 1,
-    "health": 100,
-    "aiAlive": 15,
-    "decals": 10,
-    "peakQueries": 2,
-    "peakPathMs": 0.66,
-    "errs": 0
-  },
-  {
-    "raid": 3,
-    "ms": 5728,
-    "shots": 14,
-    "hits": 4,
-    "kills": 1,
-    "health": 100,
-    "aiAlive": 15,
-    "decals": 10,
-    "peakQueries": 2,
-    "peakPathMs": 0.62,
-    "errs": 0
-  },
-  {
-    "raid": 4,
-    "ms": 5715,
-    "shots": 14,
-    "hits": 4,
-    "kills": 1,
-    "health": 100,
-    "aiAlive": 15,
-    "decals": 10,
-    "peakQueries": 2,
-    "peakPathMs": 0.715,
-    "errs": 0
-  },
-  {
-    "raid": 5,
-    "ms": 5696,
-    "shots": 14,
-    "hits": 4,
-    "kills": 1,
-    "health": 100,
-    "aiAlive": 15,
-    "decals": 10,
-    "peakQueries": 2,
-    "peakPathMs": 0.7,
-    "errs": 0
-  },
-  {
-    "raid": 6,
-    "ms": 5700,
+    "ms": 5693,
     "shots": 14,
     "hits": 4,
     "kills": 1,
@@ -78,8 +26,8 @@
     "errs": 0
   },
   {
-    "raid": 7,
-    "ms": 5699,
+    "raid": 3,
+    "ms": 5703,
     "shots": 14,
     "hits": 4,
     "kills": 1,
@@ -87,12 +35,64 @@
     "aiAlive": 15,
     "decals": 10,
     "peakQueries": 2,
-    "peakPathMs": 0.68,
+    "peakPathMs": 0.725,
+    "errs": 0
+  },
+  {
+    "raid": 4,
+    "ms": 5689,
+    "shots": 14,
+    "hits": 4,
+    "kills": 1,
+    "health": 100,
+    "aiAlive": 15,
+    "decals": 10,
+    "peakQueries": 2,
+    "peakPathMs": 0.635,
+    "errs": 0
+  },
+  {
+    "raid": 5,
+    "ms": 5693,
+    "shots": 14,
+    "hits": 4,
+    "kills": 1,
+    "health": 100,
+    "aiAlive": 15,
+    "decals": 10,
+    "peakQueries": 2,
+    "peakPathMs": 0.73,
+    "errs": 0
+  },
+  {
+    "raid": 6,
+    "ms": 5704,
+    "shots": 14,
+    "hits": 4,
+    "kills": 1,
+    "health": 100,
+    "aiAlive": 15,
+    "decals": 10,
+    "peakQueries": 2,
+    "peakPathMs": 0.655,
+    "errs": 0
+  },
+  {
+    "raid": 7,
+    "ms": 5695,
+    "shots": 14,
+    "hits": 4,
+    "kills": 1,
+    "health": 100,
+    "aiAlive": 15,
+    "decals": 10,
+    "peakQueries": 2,
+    "peakPathMs": 0.635,
     "errs": 0
   },
   {
     "raid": 8,
-    "ms": 5713,
+    "ms": 5688,
     "shots": 14,
     "hits": 4,
     "kills": 1,
@@ -100,7 +100,7 @@
     "aiAlive": 15,
     "decals": 10,
     "peakQueries": 2,
-    "peakPathMs": 0.695,
+    "peakPathMs": 0.635,
     "errs": 0
   },
   {
@@ -113,12 +113,12 @@
     "aiAlive": 15,
     "decals": 10,
     "peakQueries": 2,
-    "peakPathMs": 0.825,
+    "peakPathMs": 0.695,
     "errs": 0
   },
   {
     "raid": 10,
-    "ms": 5688,
+    "ms": 5694,
     "shots": 14,
     "hits": 4,
     "kills": 1,
@@ -126,7 +126,7 @@
     "aiAlive": 15,
     "decals": 10,
     "peakQueries": 2,
-    "peakPathMs": 0.685,
+    "peakPathMs": 0.66,
     "errs": 0
   }
 ]

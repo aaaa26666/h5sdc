@@ -60,6 +60,36 @@ export function itemWeight(item, count = 1) {
 }
 
 /**
+ * ★ M6-4（制作人裁定）：玩家看得见的**估值读数一律取整**。
+ *
+ * 为什么取整必须发生在 core：弹药的单价是"一盒的价值 ÷ 每盒发数"，
+ *   除不尽（1100 ÷ 60 = 18.33…），于是界面上会出现
+ *   "估值 18.333333333333332"这种读数。而"界面不做计算"是本项目的硬纪律 ——
+ *   界面只拿到单价与数量，让它自己 round 就等于第二处口径（且迟早漏掉某个页面）。
+ * 为什么向上取整用 Math.round 而不是 floor：估值是"这堆东西大概值多少"，
+ *   四舍五入比一律抹零更贴近字面意思（卖价另有一条 Math.floor 的口径，两者不共用）。
+ *
+ * @param {object} def 物品视图（含 unitValue / value）
+ * @param {number} units 存储单位数（发 / 个）
+ */
+export function valueReadout(def, units = 1) {
+  if (!def) return 0;
+  const per = def.unitValue !== undefined ? def.unitValue : def.value;
+  const n = Number.isFinite(units) ? units : 1;
+  return Math.round((Number.isFinite(per) ? per : 0) * n);
+}
+
+/** 一批物品的总估值（逐项取整后求和 —— 与"逐项显示的数字相加"必须一致）。 */
+export function valueReadoutOf(list, defOf) {
+  let sum = 0;
+  for (const e of list || []) {
+    const def = defOf ? defOf(e) : e && e.item;
+    sum += valueReadout(def, e && e.count !== undefined ? e.count : 1);
+  }
+  return sum;
+}
+
+/**
  * 覆盖某物品的完整定义（含 kind）。
  * kind: 'weapon' | 'armor' | 'item'（后者再细分 category：ammo / medical / valuable / quest ...）
  */

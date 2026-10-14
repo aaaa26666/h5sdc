@@ -70,7 +70,13 @@ export function createExtract(cfg, level, scene) {
       openRule: z.openRule || null,
       // 本帧的开放状态。初始按"常驻"给一个占位，第一帧 update 就会覆盖成真值 ——
       // 这里必须给初值，否则第一帧读取 open.open 会拿到 undefined。
-      open: { open: true, reason: 'always', opensInMs: 0, closesInMs: null },
+      //
+      // ★ 形状必须与 `evaluateOpenRule` 的返回值**逐字段一致**（含 remainingKills）：
+      //   少了字段就不是"占位值"，而是"一个形状不对的状态"，读它的人会拿到 undefined，
+      //   于是"还没求值"与"规则说不需要击杀"在读数上长得一样 —— 那是能骗过断言的假信号。
+      open: { open: true, reason: 'always', opensInMs: 0, closesInMs: null, remainingKills: null },
+      /** 规则是否已被求值过（初值是占位，不是判定结果）。 */
+      evaluated: false,
       ring,
       pillar,
       progress: 0,
@@ -104,6 +110,7 @@ export function createExtract(cfg, level, scene) {
     // 分层判定与开放判定是两件独立的事：前者决定"是不是这个点"，后者决定"这个点能不能用"。
     for (const z of zones) {
       z.open = evaluateOpenRule(z.openRule, ctx);
+      z.evaluated = true;
       applyVisual(z);
     }
 

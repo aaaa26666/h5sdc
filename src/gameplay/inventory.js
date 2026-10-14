@@ -17,6 +17,7 @@
 // 装包算法只此一份：`src/core/packing.js`，与掉落表校验脚本（理论分布）共用 ——
 // 这样"理论能装多少"和"运行时实际装了多少"才是可比的两件事。
 import { createGrid, findSlot, markArea, packIntoGrid, byValueDensity } from '../core/packing.js';
+import { valueReadout } from '../core/items.js';
 
 /**
  * @param {object} cfg 配置（需含 lootTable / carry / itemDefs）
@@ -82,19 +83,58 @@ export function createInventory(cfg, opts = {}) {
   // ★ M6：一格可以放多件（上限 = 物品的 stack，与仓库的堆叠口径同源）。
   //   重量与价值因此必须按 count 折算，否则"半盒子弹"会按整盒算账。
   const weightOfEntry = (e) => (e.item.unitWeightKg !== undefined ? e.item.unitWeightKg : e.item.weightKg) * (e.count || 1);
-  const valueOfEntry = (e) => (e.item.unitValue !== undefined ? e.item.unitValue : e.item.value) * (e.count || 1);
+  // ★ M6-4：玩家在**局外**自己摆进保险箱的东西（销 [M3-TEMP-2] 的一半）。
+  //
+  //   旧行为是"保险箱只能由系统自动装填，玩家不能指定装什么"。现在局外有保险箱网格了，
+  //   玩家自己放进箱里的东西必须**原样带进这一局**并恒定保住 —— 否则"我在箱里放了
+  //   一块金条"进局就变成空箱子，那是把玩家的安排凭空抹掉。
+  //
+  //   `source:'safe'` 是刻意独立的第三个来源：它既不是"行头"（不能被消耗），
+  //   也不是"战利品"（不能被当成这一局带出的收益）。
+  if (carry) {
+    for (const p of carry.safePlacements || []) {
+      const def = cfg.itemDefs[p.itemId];
+      if (!def) continue;
+      markArea(safeGrid, p.x, p.y, p.w, p.h, true);
+      items.push({
+        uid: uidSeq++,
+        item: def,
+        count: p.count,
+        x: p.x,
+        y: p.y,
+        w: p.w,
+        h: p.h,
+        rotated: !!p.rotated,
+        inSafe: true,
+        source: 'safe',
+        kind: p.kind,
+        caliber: p.caliber || null,
+        where: 'safe',
+      });
+    }
+  }
+
+  // ★ M6-4：估值读数取整（与仓库同一条 valueReadout —— HUD 说 18、结算页说 18.33 就是两套账）
+  const valueOfEntry = (e) => valueReadout(e.item, e.count || 1);
   const weightOf = (list) => list.reduce((a, e) => a + weightOfEntry(e), 0);
   const valueOf = (list) => list.reduce((a, e) => a + valueOfEntry(e), 0);
 
-  /** 战利品（携行件不算：它们由 returnLoadout 按"没用完的还回"处理）。 */
-  const lootItems = () => items.filter((e) => e.source !== 'kit');
+  /**
+   * 战利品（**只有**局内捡到的）。
+   *
+   * ★ M6-4：判据从 `source !== 'kit'` 改成 `source === 'loot'`。
+   *   保险箱里现在可能有玩家**自己**放进去的东西（`source:'safe'`），
+   *   用"非 kit"来判会把它算成这一局捡到的战利品 —— 于是每一局都能"带出"它一次，
+   *   那是一条不报错、只会让经济慢慢通胀的账。
+   */
+  const lootItems = () => items.filter((e) => e.source === 'loot');
 
   /**
-   * 安全箱里已经装了什么（按价值密度降序自动装填，与理论模拟的口径一致）。
+   * 安全箱的占用重算。
    *
-   * [M3-TEMP-2] 装填是**自动**的：玩家不能指定"这个进保险箱"。
-   * 自动策略取"价值密度最高且类别允许"，与掉落表校验脚本的模拟口径一致；
-   * 但真人有更细的偏好（例如优先保任务物品）。显式指定要等 M5 的背包 UI。
+   * ★ M6-4：装填**不再全靠自动**（销 [M3-TEMP-2]）。
+   *   ① 玩家在局外自己摆进箱里的东西（`source:'safe'`）**恒定占位** —— 那是他的安排；
+   *   ② 剩下的空格才由系统按价值密度装局内捡到的东西（局内没有网格界面，只能自动）。
    *
    * ★ M6：`source:'kit'` 的**自己带进来的**弹药药品不进安全箱。
    *   否则"带 60 发进局 → 自动塞进保险箱 → 死了还留着"等于无限白嫖弹药，
@@ -102,7 +142,14 @@ export function createInventory(cfg, opts = {}) {
    */
   function refillSafe() {
     for (let y = 0; y < safeGrid.h; y++) safeGrid.occupied[y].fill(false);
-    for (const e of items) e.inSafe = false;
+    for (const e of items) {
+      if (e.source !== 'safe') {
+        e.inSafe = false;
+        continue;
+      }
+      markArea(safeGrid, e.x, e.y, e.w, e.h, true);
+      e.inSafe = true;
+    }
 
     const candidates = lootItems()
       .filter((e) => !excluded.includes(e.item.category))
@@ -184,6 +231,8 @@ export function createInventory(cfg, opts = {}) {
     for (let y = 0; y < grid.h; y++) grid.occupied[y].fill(false);
     if (rigGrid) for (let y = 0; y < rigGrid.h; y++) rigGrid.occupied[y].fill(false);
     for (const e of items) {
+      // ★ M6-4：保险箱是**第三张**网格（safeGrid），不该画到背包网格上
+      if (e.where === 'safe') continue;
       markArea(e.where === 'rig' && rigGrid ? rigGrid : grid, e.x, e.y, e.w, e.h, true);
     }
   }
@@ -196,11 +245,16 @@ export function createInventory(cfg, opts = {}) {
    * 而"我带进来的东西在哪一格"是他自己决定的（进局时的投放顺序也是确定的）。
    */
   function tidy() {
-    const kitEntries = items.filter((e) => e.source === 'kit');
+    // ★ M6-4：`source !== 'loot'`（行头 + 保险箱里自己放的）都留在原处 ——
+    //   整理只重排"这一局捡到的"，玩家自己的安排不能被整理挪走。
+    const kitEntries = items.filter((e) => e.source !== 'loot');
     const loot = lootItems();
     for (let y = 0; y < grid.h; y++) grid.occupied[y].fill(false);
     if (rigGrid) for (let y = 0; y < rigGrid.h; y++) rigGrid.occupied[y].fill(false);
-    for (const e of kitEntries) markArea(e.where === 'rig' && rigGrid ? rigGrid : grid, e.x, e.y, e.w, e.h, true);
+    for (const e of kitEntries) {
+      if (e.where === 'safe') continue;
+      markArea(e.where === 'rig' && rigGrid ? rigGrid : grid, e.x, e.y, e.w, e.h, true);
+    }
 
     // 每件战利品折算成"这一格实际值多少 / 多重"的视图后再交给 packing ——
     // 半盒子弹不能按整盒算重量，也不能按整盒排位。
@@ -269,7 +323,7 @@ export function createInventory(cfg, opts = {}) {
     return a && a.itemId ? totalOf(a.itemId, (e) => e.source === 'kit') : 0;
   };
   const kitCountOf = (itemId) => totalOf(itemId, (e) => e.source === 'kit');
-  const lootCountOf = (itemId) => totalOf(itemId, (e) => e.source !== 'kit');
+  const lootCountOf = (itemId) => totalOf(itemId, (e) => e.source === 'loot');
 
   /**
    * 从网格里扣掉 n 个单位的某物品。
@@ -284,7 +338,8 @@ export function createInventory(cfg, opts = {}) {
     let need = Math.max(0, Math.floor(n) || 0);
     if (need <= 0) return 0;
     const pool = items
-      .filter((e) => e.item.id === itemId && (e.count || 1) > 0)
+      // ★ M6-4：保险箱里的东西**不能被消耗**（它连阵亡都丢不了，当然也不该被打出去）
+      .filter((e) => e.item.id === itemId && e.source !== 'safe' && (e.count || 1) > 0)
       .sort((a, b) => (a.source === 'kit' ? 0 : 1) - (b.source === 'kit' ? 0 : 1) || (a.count || 1) - (b.count || 1));
     let taken = 0;
     for (const e of pool) {
@@ -359,8 +414,8 @@ export function createInventory(cfg, opts = {}) {
     countOf,
     takeAmmo,
     takeItem,
-    /** 已用格数（按形状计，不是条目数） */
-    usedSlots: () => items.reduce((a, e) => a + e.w * e.h, 0),
+    /** 已用格数（按形状计，不是条目数）。★ M6-4：不含保险箱 —— 那是另一张网格。 */
+    usedSlots: () => items.filter((e) => e.where !== 'safe').reduce((a, e) => a + e.w * e.h, 0),
     /** 携行件占掉的格数（"我真正能拿来装战利品的格子还剩几格"） */
     kitSlots: () => items.filter((e) => e.source === 'kit').reduce((a, e) => a + e.w * e.h, 0),
     /** 战利品占掉的格数 */

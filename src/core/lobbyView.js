@@ -8,41 +8,99 @@
 // 本文件是纯函数：不碰 DOM、不读 localStorage、不持有状态。
 // 端到端有一条断言会确认界面的数字与这里的产物一致。
 
-import { profileView, activeLoadout } from './profile.js';
+import { profileView, activeLoadout, safeSpecOf } from './profile.js';
 import {
   availableForSlot,
-  ammoOnHand,
-  consumableOnHand,
   overweightBand,
   loadoutWeight,
   buildCarry,
+  carryOf,
+  carrySpecsFor,
+  kitAmmo,
+  kitConsumables,
 } from './loadout.js';
 import { stashSummary, stashValue, stashWeight } from './stash.js';
 import { stockView, sellPriceOf } from './shop.js';
 import { questStates } from './quests.js';
 import { levelFromExp, skillModifiers, skillLevel, canLearn, respecCost, spentPoints } from './progression.js';
-import { itemDef, equipmentDef } from './items.js';
+import { itemDef, equipmentDef, valueReadout } from './items.js';
 import { ACTIONS, isRebindable, resolveBindings } from './keybinds.js';
 import { dataKeys } from './lootTable.js';
 
 /**
- * ★ M6：携行具的容量与**进局投放结果**。
+ * 网格里一条物品怎么显示（**渲染与拖放共用同一份形状**）。
  *
- * 为什么必须显示出来：M6 起弹药与药品要占背包格，因此"我在面板上填了 300 发"
- * 与"进战区真的带得进去多少"是两件事。不显示的话，玩家会在局内发现子弹少了，
- * 而那时已经无法补救 —— 静默少带是最容易被当成"游戏坏了"的一类问题。
+ * ★ `w/h` 是已经摆好朝向的尺寸（渲染用），`baseW/baseH` 是未旋转的基准尺寸
+ *   （拖放幽灵用它 + `rotated` 自己算朝向 —— 见 ui/dragdrop.js 的 shapeFor）。
  */
-function carryPanel(lo, cfg) {
-  const plan = buildCarry(lo, cfg);
-  const total = plan.backpack.w * plan.backpack.h + (plan.rig ? plan.rig.w * plan.rig.h : 0);
-  const used = plan.placements.reduce((a, p) => a + p.w * p.h, 0);
+function carryEntryView(e, cfg) {
+  const def = itemDef(e.itemId, cfg);
+  if (!def) return null;
+  const rarity = def.rarity ? cfg.lootTable.rarity.find((r) => r.id === def.rarity) : null;
+  return {
+    uid: e.uid,
+    itemId: e.itemId,
+    label: def.label,
+    count: e.count,
+    x: e.x,
+    y: e.y,
+    w: e.rotated ? def.h : def.w,
+    h: e.rotated ? def.w : def.h,
+    baseW: def.w,
+    baseH: def.h,
+    rotated: !!e.rotated,
+    category: def.category,
+    value: valueReadout(def, e.count),
+    weightKg: (def.unitWeightKg !== undefined ? def.unitWeightKg : def.weightKg) * e.count,
+    color: rarity ? rarity.colorHex : null,
+  };
+}
+
+/**
+ * ★ M6-4：三张携行网格（背包 / 弹挂 / 保险箱）的**内容与容量**。
+ *
+ * 为什么必须画出来：带什么由玩家一格一格拖进去决定，看不见网格就无从决定。
+ * 保险箱那一张尤其重要 —— 阵亡时只保住箱里的东西，"箱里有什么"必须是玩家自己选的
+ * （旧的自动装填 [M3-TEMP-2] 已被这条需求取代）。
+ */
+function carryPanel(lo, profile, cfg) {
+  const plan = buildCarry(lo, cfg, { profile });
+  const specs = carrySpecsFor(lo, profile, cfg);
+  const carry = carryOf(lo);
+  const gridOf = (name) => {
+    const spec = specs[name];
+    return {
+      name,
+      exists: !!spec,
+      id: spec ? spec.id || null : null,
+      label: spec ? spec.label : null,
+      w: spec ? spec.w : 0,
+      h: spec ? spec.h : 0,
+      /** 这张网格收哪些类别（界面据此提示"这个格子不收武器"） */
+      accepts: spec && spec.accepts ? spec.accepts.slice() : null,
+      entries: (carry[name] || []).map((e) => carryEntryView(e, cfg)).filter(Boolean),
+      used: (carry[name] || []).reduce((a, e) => {
+        const def = cfg.itemDefs[e.itemId];
+        if (!def) return a;
+        return a + (e.rotated ? def.h : def.w) * (e.rotated ? def.w : def.h);
+      }, 0),
+    };
+  };
+  // ★ M6-4：`overflow` 现在是**进局检查查出来的违规件**，不再是投放算法的副产品。
+  //   带什么由玩家一格一格拖进去决定，拖不进去的当场就被拦下 —— 于是"装不下"这个
+  //   状态只可能来自**网格变小 / 旧存档**这类事后变化，而那正是进局检查在查的东西。
+  //   （buildCarry 的 overflow 恒为空：留着它等于留一个永远为真的假信号。）
   return {
     plan,
-    backpack: plan.backpack,
-    rig: plan.rig,
-    kitSlots: used,
-    freeSlots: total - used,
-    totalSlots: total,
+    backpack: gridOf('backpack'),
+    rig: gridOf('rig'),
+    safe: gridOf('safe'),
+    kitSlots: plan.kitSlots,
+    freeSlots: plan.freeSlots,
+    totalSlots: plan.totalSlots,
+    // ★ 违规件的唯一真值是 buildCarry 里的那一次 carryAudit（简报读的就是同一份），
+    //   这里**不**再算一遍 —— 两处各判一次迟早分叉。
+    audit: plan.audit,
     overflow: plan.overflow,
   };
 }
@@ -53,8 +111,8 @@ function loadoutPanel(profile, cfg) {
   const ow = overweightBand(lo, cfg);
   // ★ M6：负重上限的基数必须是**所装备的背包**，否则面板上写的加成与局内实际不符
   //   （换一只更大的背包后，面板还按参考装载 22kg 算）。
-  const carry = carryPanel(lo, cfg);
-  const mods = skillModifiers(profile, cfg, { weightBaseKg: carry.backpack.weightLimitKg });
+  const carry = carryPanel(lo, profile, cfg);
+  const mods = skillModifiers(profile, cfg, { weightBaseKg: carry.plan.backpack.weightLimitKg });
 
   const slots = cfg.equipment.slots
     .filter((s) => !s.disabled)
@@ -76,39 +134,33 @@ function loadoutPanel(profile, cfg) {
         // 拖放的说明与提示要能说出"仓库里现成有哪些可选"。这**替代了旧的下拉框**：
         // 下拉框被删掉之后，玩家仍需要知道"这个东西我手上有"，否则只能盲拖。
         options: availableForSlot(profile, s.id, cfg),
-        // 背包 / 弹挂这两格的容量来自**所装备的那一只**（与局内是同一条 buildCarry 口径）。
+        // 背包 / 弹挂这两格的容量来自**所装备的那一只**（与局内是同一条口径）
         capacity:
           s.id === 'backpack'
-            ? { w: carry.backpack.w, h: carry.backpack.h, weightLimitKg: carry.backpack.weightLimitKg, source: carry.backpack.source }
-            : s.id === 'rig' && carry.rig
+            ? { w: carry.backpack.w, h: carry.backpack.h, weightLimitKg: carry.plan.backpack.weightLimitKg, source: carry.plan.backpack.source }
+            : s.id === 'rig' && carry.rig.exists
               ? { w: carry.rig.w, h: carry.rig.h, accepts: carry.rig.accepts.slice() }
               : null,
       };
     });
 
+  // ★ M6-4：弹药与消耗品的携带量是**数网格**数出来的只读读数。
+  //   ± 步进器已按制作人裁定取消 —— 带什么由玩家从仓库拖进网格决定。
   const ammo = cfg.ammo
     .filter((a) => cfg.equipment.ammo.carryCalibers.includes(a.id))
-    .map((a) => {
-      const def = itemDef(a.itemId, cfg);
-      return {
-        caliber: a.id,
-        label: a.label,
-        itemId: a.itemId,
-        current: lo.ammo[a.id] || 0,
-        onHand: ammoOnHand(profile, a.id, cfg),
-        /** 一次点击的步长 = 一格（制作人裁定每格 60 发） */
-        step: def ? def.stack : 1,
-        perRoundKg: a.weightPerRoundKg,
-      };
-    });
+    .map((a) => ({
+      caliber: a.id,
+      label: a.label,
+      itemId: a.itemId,
+      current: (kitAmmo(lo, cfg)[a.id] || 0),
+      stack: itemDef(a.itemId, cfg) ? itemDef(a.itemId, cfg).stack : 1,
+    }));
 
   const consumables = cfg.consumables.map((c) => ({
     id: c.id,
     label: c.label,
-    current: lo.consumables[c.id] || 0,
-    onHand: consumableOnHand(profile, c.id, cfg),
-    step: 1,
-    weightKg: itemDef(c.id, cfg) ? itemDef(c.id, cfg).weightKg : 0,
+    current: kitConsumables(lo, cfg)[c.id] || 0,
+    stack: itemDef(c.id, cfg) ? itemDef(c.id, cfg).stack : 1,
   }));
 
   // ★ M6-3：负重条的刻度必须来自配置表（最后一个"有上限"的档位），
@@ -146,14 +198,16 @@ function loadoutPanel(profile, cfg) {
     nextAtKg: ow.nextAtKg,
     toNextKg: ow.toNextKg,
     modifiers: mods,
-    /** ★ M6：携行具容量与进局投放结果（含"装不下"的清单，见 carryPanel 的说明） */
+    /** ★ M6-4：三张携行网格（背包 / 弹挂 / 保险箱）的内容与容量，见 carryPanel 的说明 */
     carry: {
       backpack: carry.backpack,
       rig: carry.rig,
+      safe: carry.safe,
       kitSlots: carry.kitSlots,
       freeSlots: carry.freeSlots,
       totalSlots: carry.totalSlots,
       overflow: carry.overflow,
+      weightLimitKg: carry.plan.backpack.weightLimitKg,
     },
   };
 }
@@ -173,18 +227,31 @@ function stashPanel(profile, cfg, ui) {
       y: e.y,
       w: e.rotated ? def.h : def.w,
       h: e.rotated ? def.w : def.h,
+      // ★ 旋转 bug 的修法：`w/h` 是**已经摆好朝向**的尺寸（渲染与落点框用），
+      //   而拖放要的是**未旋转的基准尺寸**加上朝向那个布尔值，自己算一次旋转。
+      //   只给朝向后的 w/h，拖放层就会"再转一次"—— 表现是"旋转过的物品拖起来显示未旋转的形状"。
+      //   两个都给出来，就不存在"谁该转、谁不该转"的猜法。
+      baseW: def.w,
+      baseH: def.h,
       // ★ M6-3：朝向是**数据的真值**，界面不该反推。用 `w !== def.w` 反推朝向等于把
       //   itemShape 又实现了一遍，而且对正方形物品（1×1 的弹药盒）根本推不出来。
       rotated: !!e.rotated,
-      // 按**存储单位**估值与计重（弹药的一件是一盒 60 发）
-      value: def.unitValue * e.count,
+      // 按**存储单位**估值与计重（弹药的一件是一盒 60 发）；读数取整（M6-4）
+      value: valueReadout(def, e.count),
       weightKg: def.unitWeightKg * e.count,
       color: rarity ? rarity.colorHex : null,
       sellTotal: sellPriceOf(e.itemId, e.count, cfg),
       selected: selected.has(e.uid),
+      /** ★ M6-4：能不能拆（数量 > 1 才能拆出一部分） */
+      splittable: e.count > 1,
     };
   });
   const picked = entries.filter((e) => e.selected);
+  /** 恰好选中一条堆叠时可以"拆分"（弹药因此能只带一部分）。 */
+  const splitTarget =
+    picked.length === 1 && picked[0].count > 1
+      ? { uid: picked[0].uid, itemId: picked[0].itemId, label: picked[0].label, count: picked[0].count }
+      : null;
   return {
     w: cfg.economy.stash.w,
     h: cfg.economy.stash.h,
@@ -196,6 +263,7 @@ function stashPanel(profile, cfg, ui) {
     selectedSell: picked.reduce((a, e) => a + e.sellTotal, 0),
     value: stashValue(profile.stash, cfg),
     weightKg: stashWeight(profile.stash, cfg),
+    splitTarget,
   };
 }
 

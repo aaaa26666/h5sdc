@@ -16,10 +16,11 @@
 //   把原始文本原样隔离，另起一份新档。把未来版本的数据按旧规则解释，比丢弃它更危险 ——
 //   那会写出结构错乱的内容覆盖掉玩家真正的存档。
 
-import { stashNormalize, stashSummary } from './stash.js';
+import { stashNormalize, stashSummary, stashRemoveItem } from './stash.js';
 import { itemDef } from './items.js';
 import { levelFromExp, spentPoints, skillModifiers } from './progression.js';
 import { dataKeys } from './lootTable.js';
+import { emptyCarry, sanitizeCarry, carrySpecs, planCarry } from './carry.js';
 
 export const PROFILE_VERSION = 1;
 
@@ -39,10 +40,11 @@ export function createNewProfile(cfg, nowMs = 0, opts = {}) {
       head: starter.head,
       backpack: starter.backpack ?? null,
       rig: starter.rig ?? null,
-      ammo: starter.ammo,
-      consumables: starter.consumables,
+      // ★ M6-4：起始携带物直接写在携行网格里（不再是 ammo / consumables 两个数字）。
+      carry: starter.carry,
     },
-    cfg
+    cfg,
+    { safeSpec: safeSpecOf(cfg, cfg.lootTable.safeContainer.tiers[0].id) }
   ).loadout;
   return {
     version: PROFILE_VERSION,
@@ -156,8 +158,57 @@ function num(v, fallback = 0, { integer = true } = {}) {
   return { value: integer ? Math.floor(v) : v, dirty: false };
 }
 
-/** 配装的**结构**收敛（不查仓库）。createNewProfile 与 sanitizeProfile 共用它。 */
-export function sanitizeLoadoutShape(raw, cfg) {
+/** 保险箱网格的规格（档位来自**档案**，不在配装里，因此由调用方注入）。 */
+export function safeSpecOf(cfg, tierId) {
+  const sc = cfg.lootTable && cfg.lootTable.safeContainer;
+  if (!sc) return null;
+  const tier = sc.tiers.find((t) => t.id === tierId) || null;
+  if (!tier) return null;
+  return { id: tier.id, label: tier.label, w: tier.w, h: tier.h, excludes: (sc.excludeCategories || []).slice() };
+}
+
+/** 兜底用的保险箱规格：取**最大**那一档（只用于"调用方没给档位"时，避免误删条目）。 */
+function largestSafeSpec(cfg) {
+  const sc = cfg.lootTable && cfg.lootTable.safeContainer;
+  if (!sc) return null;
+  const last = sc.tiers[sc.tiers.length - 1];
+  return safeSpecOf(cfg, last.id);
+}
+
+/**
+ * ★ M6-4：旧存档的**数字账**（ammo / consumables）→ 携行网格。
+ *
+ * 为什么放在收敛里而不是版本迁移里：这一步**可能丢东西**（塞不下就放不下），
+ * 而"丢了什么"必须落在 repairs 上（可观测）。走 MIGRATIONS 的话这条记录无处可写 ——
+ * 玩家只会发现"我的绷带少了两个"，而不知道为什么。
+ */
+function kitNumbersToCarry(src, lo, cfg, repairs) {
+  const plan = planCarry({
+    loadout: { ...lo, ammo: src.ammo || {}, consumables: src.consumables || {} },
+    carry: cfg.carry,
+    ammo: cfg.ammo,
+    consumables: cfg.consumables,
+    itemDefs: cfg.itemDefs,
+  });
+  const out = emptyCarry();
+  let uid = 0;
+  for (const p of plan.placements) {
+    const name = p.grid === 'rig' ? 'rig' : 'backpack';
+    out[name].push({ uid: ++uid, itemId: p.itemId, count: p.count, x: p.x, y: p.y, rotated: !!p.rotated });
+  }
+  if (plan.overflow.length) {
+    repairs.push(`loadout.carry:legacy-overflow:${plan.overflow.map((o) => `${o.itemId}×${o.count}`).join(',')}`);
+  }
+  return out;
+}
+
+/**
+ * 配装的**结构**收敛（不查仓库）。createNewProfile 与 sanitizeProfile 共用它。
+ *
+ * @param {object} [opts.safeSpec] 保险箱档位规格（档案级：sanitizeProfile 注入）。
+ *   不传时取**最大**档 —— 收敛不该因为"调用方不知道档位"就把箱里的东西删掉。
+ */
+export function sanitizeLoadoutShape(raw, cfg, opts = {}) {
   const repairs = [];
   const src = raw && typeof raw === 'object' ? raw : {};
   const eq = cfg.equipment;
@@ -202,45 +253,37 @@ export function sanitizeLoadoutShape(raw, cfg) {
     return id;
   };
 
-  // 弹药与消耗品：★ 制作人裁定（M5-3）**不设数量上限** —— 只校验口径/道具合法与非负整数。
-  // 真正约束携带量的是负重三档（core/loadout.js 的 overweightBand）与仓库库存。
-  const ammo = {};
-  for (const [cal, n] of Object.entries(src.ammo && typeof src.ammo === 'object' ? src.ammo : {})) {
-    if (!eq.ammo.carryCalibers.includes(cal)) {
-      repairs.push(`loadout.ammo:unknown-caliber:${cal}`);
-      continue;
-    }
-    const { value, dirty } = num(n, 0);
-    if (dirty) repairs.push(`loadout.ammo:bad:${cal}`);
-    ammo[cal] = value;
-  }
-
-  const consumables = {};
-  for (const [id, n] of Object.entries(src.consumables && typeof src.consumables === 'object' ? src.consumables : {})) {
-    if (!cfg.consumables.some((c) => c.id === id)) {
-      repairs.push(`loadout.consumables:unknown:${id}`);
-      continue;
-    }
-    const { value, dirty } = num(n, 0);
-    if (dirty) repairs.push(`loadout.consumables:bad:${id}`);
-    consumables[id] = value;
+  // ★ M6-4：弹药与消耗品不再是配装上的两个数字，而是**玩家自己摆在携行网格里的条目**
+  //   （制作人裁定：拖进背包才算带在身上，±步进器取消）。
+  //   旧存档里那两个数字字典在这里**一次性**转成网格（见 kitNumbersToCarry 的说明）。
+  const hasLegacyKit =
+    src.carry === undefined &&
+    ((src.ammo && typeof src.ammo === 'object' && Object.keys(src.ammo).length > 0) ||
+      (src.consumables && typeof src.consumables === 'object' && Object.keys(src.consumables).length > 0));
+  let carryRaw = src.carry;
+  if (hasLegacyKit) {
+    repairs.push('loadout.carry:migrated-from-counts');
+    carryRaw = kitNumbersToCarry(src, { backpack: pickCarry(src.backpack, 'backpack', 'backpack'), rig: pickCarry(src.rig, 'rig', 'rig') }, cfg, repairs);
   }
 
   const id = typeof src.id === 'string' && src.id ? src.id : 'default';
   const name = typeof src.name === 'string' && src.name ? src.name.slice(0, 24) : '配装';
+  const equipped = {
+    id,
+    name,
+    primary: pickWeapon(src.primary, 1, 'primary'),
+    secondary: pickWeapon(src.secondary, 2, 'secondary'),
+    body: pickArmor(src.body, 'chest', 'body'),
+    head: pickArmor(src.head, 'head', 'head'),
+    backpack: pickCarry(src.backpack, 'backpack', 'backpack'),
+    rig: pickCarry(src.rig, 'rig', 'rig'),
+  };
+  const specs = carrySpecs(equipped, cfg.carry, opts.safeSpec || largestSafeSpec(cfg));
+  const cs = sanitizeCarry(carryRaw, specs, cfg.itemDefs);
+  repairs.push(...cs.repairs);
+
   return {
-    loadout: {
-      id,
-      name,
-      primary: pickWeapon(src.primary, 1, 'primary'),
-      secondary: pickWeapon(src.secondary, 2, 'secondary'),
-      body: pickArmor(src.body, 'chest', 'body'),
-      head: pickArmor(src.head, 'head', 'head'),
-      backpack: pickCarry(src.backpack, 'backpack', 'backpack'),
-      rig: pickCarry(src.rig, 'rig', 'rig'),
-      ammo,
-      consumables,
-    },
+    loadout: { ...equipped, carry: cs.carry },
     repairs,
   };
 }
@@ -326,20 +369,30 @@ export function sanitizeProfile(raw, cfg, nowMs = 0) {
 
   // ---- 配装预设 ----
   {
+    // 保险箱档位先定：携行网格里的第三张网格（safe）尺寸由它决定，
+    // 而它在档案层、不在配装层 —— 所以收敛配装之前必须先把它算出来。
+    const tiers = cfg.lootTable.safeContainer.tiers;
+    const tierId = src.safeTierUnlocked;
+    if (typeof tierId === 'string' && tiers.some((t) => t.id === tierId)) out.safeTierUnlocked = tierId;
+    else if (tierId !== undefined) repairs.push('safe-tier');
+
+    const safeSpec = safeSpecOf(cfg, out.safeTierUnlocked);
     const list = Array.isArray(src.loadouts) ? src.loadouts : [];
     const seen = new Set();
+    let rawActive = null;
     for (const rawLo of list) {
       if (out.loadouts.length >= cfg.equipment.maxPresets) {
         repairs.push('presets-truncated');
         break;
       }
-      const r = sanitizeLoadoutShape(rawLo, cfg);
+      const r = sanitizeLoadoutShape(rawLo, cfg, { safeSpec });
       repairs.push(...r.repairs);
       const lo = r.loadout;
       if (seen.has(lo.id)) {
         repairs.push(`duplicate-preset-id:${lo.id}`);
         continue;
       }
+      if (rawActive === null) rawActive = rawLo;
       seen.add(lo.id);
       out.loadouts.push(lo);
     }
@@ -353,14 +406,27 @@ export function sanitizeProfile(raw, cfg, nowMs = 0) {
     if (src.activeLoadoutId !== undefined && out.activeLoadoutId !== src.activeLoadoutId) {
       repairs.push('active-loadout-reset');
     }
-  }
 
-  // ---- 安全箱解锁档位 ----
-  {
-    const tiers = cfg.lootTable.safeContainer.tiers;
-    const id = src.safeTierUnlocked;
-    if (typeof id === 'string' && tiers.some((t) => t.id === id)) out.safeTierUnlocked = id;
-    else if (id !== undefined) repairs.push('safe-tier');
+    // ★ M6-4 旧档的"账"必须补一次：数字账年代的携行件是**进局才从仓库扣**的，
+    //   而转成网格之后它们就已经"在身上"了。不在这里扣一次，玩家会凭空多出一整套
+    //   弹药与药品（网格里有一份、仓库里还有一份）—— 一次静默的复制。
+    //   只扣**当前生效**的那一套：别的预设只是模板，不占仓库。
+    if (rawActive && rawActive.carry === undefined && out.loadouts.some((l) => l.id === out.activeLoadoutId)) {
+      const migrated = out.loadouts.find((l) => l.id === out.activeLoadoutId);
+      const wanted = [];
+      for (const name of ['backpack', 'rig']) {
+        const agg = new Map();
+        for (const e of migrated.carry[name] || []) agg.set(e.itemId, (agg.get(e.itemId) || 0) + e.count);
+        for (const [itemId, count] of agg) wanted.push({ itemId, count });
+      }
+      let short = 0;
+      for (const w of wanted) {
+        const res = stashRemoveItem(out.stash, w.itemId, w.count, cfg);
+        out.stash = res.stash;
+        short += res.leftover;
+      }
+      if (short > 0) repairs.push(`legacy-kit:stash-short:${short}`);
+    }
   }
 
   // ---- 任务 ----

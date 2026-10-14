@@ -12,10 +12,10 @@
 
 import { alreadyApplied } from './profile.js';
 import { applyExp, raidExp } from './progression.js';
-import { stashAdd } from './stash.js';
 import { advanceQuests } from './quests.js';
-import { returnLoadout } from './loadout.js';
-import { itemDef } from './items.js';
+import { settleCarryAfterRaid } from './loadout.js';
+import { stashAdd } from './stash.js';
+import { valueReadout } from './items.js';
 
 /**
  * @param {object} profile 当前档案
@@ -45,41 +45,74 @@ export function applyRaidToProfile(profile, input, cfg) {
   const overflow = [];
   const deposited = [];
 
-  // ---- ① 配装的去留 ----
-  // 撤离：把**没用完的**还回仓库（只扣消耗量）。阵亡 / 超时 / 放弃 / 断线：什么都不还，
-  //       因为那些东西在 takeLoadout 时就已经离开仓库了 —— 这正是"死一次就丢装备"的实现。
-  let returned = [];
-  let consumed = [];
+  // ---- ① 消耗：按"带进去多少 − 局内还剩多少"算，装备不计（M5 没有耐久持久化）----
+  const consumed = [];
+  //
+  // ★ M6-4：`taken` 里的携行件是**一格一条**（120 发 = 两盒 60），
+  //   而"局内还剩多少"是按物品报的总数。若逐条相减，每一条都会各自被"剩下 90 发"
+  //   减成负数再夹回 0 —— 于是 30 发的消耗被算成 0，账目凭空多出 30 发。
+  //   （这是"一格一条"模型带来的新陷阱：同类物品必须先按物品汇总再对账。）
+  const takenByItem = new Map();
   if (taken && taken.length) {
-    if (isExtract) {
-      const r = returnLoadout(next, taken, remaining || {}, cfg);
-      next = r.profile;
-      returned = r.returned;
-      consumed = r.consumed;
-      overflow.push(...r.overflow);
-    } else {
-      consumed = taken.map((t) => ({ itemId: t.itemId, count: t.count, kind: t.kind }));
+    for (const t of taken) {
+      if (t.kind === 'equipment') continue;
+      const cur = takenByItem.get(t.itemId) || { itemId: t.itemId, kind: t.kind, caliber: t.caliber, count: 0 };
+      cur.count += t.count;
+      takenByItem.set(t.itemId, cur);
     }
   }
-
-  // ---- ② 带出的战利品入库 ----
-  // result.items 是 buildRaidResult 的逐件明细（阵亡时它就是安全箱保住的那几件）。
-  // ★ 单位换算：局内按**件**计数，仓库按**存储单位**计数 —— 弹药的一件是一盒
-  //   （= itemDef.unitsPerItem 发），其余物品一件就是 1 个。换算的唯一实现在 config。
-  // 仓库放不下时走 overflow 通道 —— **不静默丢弃**，由结算界面明确告诉玩家。
-  const byItem = new Map();
-  for (const it of result.items || []) {
-    const def = itemDef(it.id, cfg);
-    // ★ M6：优先用**这一格实际剩多少**（局内一格可以只装半盒），
-    //   只有老口径（没有 count 字段）才退回"一件 = unitsPerItem 个存储单位"。
-    const units = Number.isFinite(it.count) ? it.count : def ? def.unitsPerItem : 1;
-    byItem.set(it.id, (byItem.get(it.id) || 0) + units);
+  for (const t of takenByItem.values()) {
+    const left =
+      t.kind === 'ammo'
+        ? (remaining && remaining.ammo && remaining.ammo[t.caliber]) || 0
+        : (remaining && remaining.consumables && remaining.consumables[t.itemId]) || 0;
+    const used = Math.max(0, Math.min(t.count, t.count - Math.max(0, left)));
+    if (used > 0) consumed.push({ itemId: t.itemId, count: used, kind: t.kind });
   }
-  for (const [itemId, count] of byItem) {
-    const add = stashAdd(next.stash, itemId, count, cfg);
-    if (add.leftover > 0) overflow.push({ itemId, count: add.leftover });
-    deposited.push({ itemId, count: add.added, leftover: add.leftover });
-    next = { ...next, stash: add.stash };
+
+  // ---- ② 携行网格的账（★ M6-4：战利品先回网格，网格塞不下才进仓库）----
+  //
+  // 撤离：从网格扣掉真实消耗 → 战利品塞回网格（弹挂优先）→ 塞不下的进仓库。
+  // 未撤离：背包与弹挂清空，保险箱保留 —— 那就是"保险箱"三个字的意思。
+  //
+  // ★ M6-4：**补结算**（上局没走完就刷新 / 关闭页面）绝不能碰玩家的携行网格。
+  //
+  //   补结算发生在**下一局开始之前**（点提示看结算、或直接点进战区），
+  //   那一刻网格里已经是玩家为下一局摆好的东西。而快照的口径恒为"未撤离"
+  //   （checkpointToFacts 写死 outcome:'death'），照常规路径走就会把背包与弹挂清空 ——
+  //   表现为"我在大厅摆好的一包子弹，点进战区时被上一局的账清掉了"。
+  //
+  //   那时"上一局身上的东西"其实已经随页面一起没了，没有别处可退；
+  //   快照里真正保住的只有保险箱那几件（checkpointToFacts 已按 inSafe 切好），
+  //   直接入库就是它全部的账。
+  let stowed = [];
+  if (input.interrupted) {
+    for (const it of result.items || []) {
+      const def = cfg.itemDefs[it && it.id];
+      if (!def) continue;
+      const units = Number.isFinite(it.count) ? it.count : def.unitsPerItem;
+      const add = stashAdd(next.stash, def.id, units, cfg);
+      next = { ...next, stash: add.stash };
+      if (add.added > 0) deposited.push({ itemId: def.id, count: add.added, grid: 'stash', leftover: 0 });
+      if (add.leftover > 0) overflow.push({ itemId: def.id, count: add.leftover });
+    }
+  } else {
+    const carryRes = settleCarryAfterRaid(
+      next,
+      {
+        survived: isExtract,
+        consumed,
+        loot: result.items || [],
+        // 装备（武器 / 护甲 / 背包 / 弹挂）：撤离才还回仓库，阵亡整份丢失。
+        equipment: (taken || []).filter((t) => t.kind === 'equipment'),
+      },
+      cfg
+    );
+    next = carryRes.profile;
+    stowed = carryRes.stowed;
+    for (const d of carryRes.deposited) deposited.push({ ...d, leftover: 0 });
+    for (const r of carryRes.returned) deposited.push({ ...r, leftover: 0 });
+    overflow.push(...carryRes.overflow);
   }
 
   // ---- ③ 经验（升级时发技能点）----
@@ -119,10 +152,10 @@ export function applyRaidToProfile(profile, input, cfg) {
   // 消耗口径：撤离时是"用掉的那部分"；阵亡时是"整套行头"（都丢了）。
   let spentValue = 0;
   for (const c of consumed) {
-    const def = itemDef(c.itemId, cfg);
-    // 用 unitValue：consumed 的 count 是**存储单位数**（发 / 个）
-    if (def) spentValue += def.unitValue * c.count;
+    // 用 unitValue：consumed 的 count 是**存储单位数**（发 / 个）；读数取整（M6-4）
+    spentValue += valueReadout(cfg.itemDefs[c.itemId], c.count);
   }
+  spentValue = Math.round(spentValue);
   const stats = {
     ...next.stats,
     raids: next.stats.raids + 1,
@@ -161,7 +194,9 @@ export function applyRaidToProfile(profile, input, cfg) {
       leveledTo: expRes.leveledTo,
       skillPoints: next.progression.skillPoints,
       deposited,
-      returned,
+      /** ★ M6-4：撤离后**留在身上网格里**的战利品（不再自动还回仓库） */
+      stowed,
+      returned: [],
       consumed,
       overflow,
       questsAdvanced: qRes.advanced,
