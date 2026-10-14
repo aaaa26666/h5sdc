@@ -188,10 +188,81 @@ function quantile(sorted, q) {
 }
 
 /**
+ * 一组样本的通胀读数。
+ *
+ * ★ M6-5：**分组统计的载体**。以前这些数字是在 inflationReport 里就地算的，
+ *   而分组之后"算一组的指标"要被调用 N 次 —— 就地算就等于把同一段逻辑复制 N 份。
+ *
+ * @param {Array} samples 要统计的那批样本（调用方已经切好窗口）
+ * @param {number} windowRaids 判定所需的最小局数
+ * @param {object} inf economy.inflation
+ * @param {[number,number]} band targetBand 的产物
+ */
+function inflationGroup(samples, windowRaids, inf, band) {
+  const [bandMin, bandMax] = band;
+  const nets = samples.map((s) => s.income - s.spent).sort((a, b) => a - b);
+  const income = samples.reduce((a, s) => a + s.income, 0);
+  const spent = samples.reduce((a, s) => a + s.spent, 0);
+  const netMedian = Math.round(quantile(nets, 0.5));
+  return {
+    raids: samples.length,
+    windowRaids,
+    netMedian,
+    netP90: Math.round(quantile(nets, 0.9)),
+    incomePerRaid: samples.length ? Math.round(income / samples.length) : 0,
+    spentPerRaid: samples.length ? Math.round(spent / samples.length) : 0,
+    bandMin,
+    bandMax,
+    /** 判定所需的阈值（写成绝对值，让报告不必再乘一次 —— 两处各乘一次迟早分叉） */
+    inflationCeil: Math.round(bandMax * inf.inflationRatio),
+    deflationFloor: Math.round(bandMin * inf.deflationRatio),
+  };
+}
+
+/** 一组样本的判定（口径与 M5 原实现逐条一致，只是样本范围从"全部"变成"同一张图"）。 */
+function inflationVerdict(g, inf) {
+  if (g.raids < g.windowRaids) {
+    return { verdict: 'insufficient', verdictReason: `样本 ${g.raids}/${g.windowRaids} 局` };
+  }
+  if (g.netMedian > g.inflationCeil) {
+    return {
+      verdict: 'inflation',
+      verdictReason: `中位净收入 ${g.netMedian} > 上限 ${g.bandMax} × ${inf.inflationRatio}`,
+    };
+  }
+  if (g.netMedian < g.deflationFloor) {
+    return {
+      verdict: 'deflation',
+      verdictReason: `中位净收入 ${g.netMedian} < 下限 ${g.bandMin} × ${inf.deflationRatio}`,
+    };
+  }
+  return { verdict: 'ok', verdictReason: `中位净收入 ${g.netMedian} 落在目标区间内` };
+}
+
+/**
  * 通胀监控（M5 硬性要求：经济系统的买卖价差必须可配置，**且能输出通胀监控数据**）。
  *
+ * ★ M6-5：**按地图分组判定**。两张图的收益本身不可比 ——
+ *   `industrial_01` 有 22 个容器、单层；`tv_station_01` 有 89 个容器、两层。
+ *   把两者混在一起算中位数，会得到一个**两张图都不成立**的数字：
+ *   玩得多的一张图会把它自己的收益水平当成"全局水平"，另一张图的通胀/通缩被完全掩盖。
+ *
+ * 两个窗口各司其职（口径写在 economy.json 的 _windowNote / _windowPerMapNote）：
+ *   · `windowRaids`        —— **全局**窗口：只看最近 N 局，且 N 局的样本不足就不判。
+ *   · `windowRaidsPerMap`  —— **每张图**判定所需的最少局数；够这个数就用这张图的
+ *     **全部留存样本**（档案上限 maxSamples）判，而不是再切一刀"最近 N 局"。
+ *
+ *     为什么每张图用全量而不是切窗口 —— 这是实测逼出来的：全局窗口 20 局按图切分后
+ *     每张图只剩约 10~20 局，而净收入是"成功局的收益 / 失败局的负支出"的双峰混合，
+ *     20 局的中位数方差极大（实测同一份模拟数据：同一张图的最近 20 局中位是 −1380，
+ *     而它 100 局的中位是 +2500 —— 用前者会把随机波动判成"通缩"）。
+ *     档案里每张图本来最多只留 maxSamples 局，全量就是这张图能拿到的**全部**证据。
+ *
+ * 兼容口径（刻意保留）：顶层字段仍是**全部样本**的聚合，因为既有工具与报告读的就是它们。
+ * 新增的 `maps[]` 才是分组结论，`verdict` 则是**两者都要过**的综合判定。
+ *
  * 判定口径全部来自 economy.inflation：
- *   · 样本不足 windowRaids 局 → 'insufficient'（而不是硬判 —— 3 局就报通胀是误导）
+ *   · 样本不足该组的窗口 → 'insufficient'（而不是硬判 —— 3 局就报通胀是误导）
  *   · 中位净收入 > 目标上限 × inflationRatio → 'inflation'
  *   · 中位净收入 < 目标下限 × deflationRatio → 'deflation'
  *
@@ -199,40 +270,84 @@ function quantile(sorted, q) {
  */
 export function inflationReport(profile, cfg) {
   const inf = cfg.economy.inflation;
-  const [bandMin, bandMax] = targetBand(cfg);
+  const perMapWindow = inf.windowRaidsPerMap || inf.windowRaids;
+  const band = targetBand(cfg);
+  const [bandMin, bandMax] = band;
   const all = profile.economy.samples || [];
-  const window = all.slice(-inf.windowRaids);
-  const nets = window.map((s) => s.income - s.spent).sort((a, b) => a - b);
-  const income = window.reduce((a, s) => a + s.income, 0);
-  const spent = window.reduce((a, s) => a + s.spent, 0);
-  const netMedian = Math.round(quantile(nets, 0.5));
+
+  const overall = inflationGroup(all.slice(-inf.windowRaids), inf.windowRaids, inf, band);
   const base = {
-    raids: window.length,
+    raids: overall.raids,
     totalRaids: all.length,
     windowRaids: inf.windowRaids,
-    netMedian,
-    netP90: Math.round(quantile(nets, 0.9)),
-    incomePerRaid: window.length ? Math.round(income / window.length) : 0,
-    spentPerRaid: window.length ? Math.round(spent / window.length) : 0,
+    windowRaidsPerMap: perMapWindow,
+    netMedian: overall.netMedian,
+    netP90: overall.netP90,
+    incomePerRaid: overall.incomePerRaid,
+    spentPerRaid: overall.spentPerRaid,
     currency: profile.currency,
     targetBand: [bandMin, bandMax],
   };
-  if (window.length < inf.windowRaids) {
-    return { ...base, verdict: 'insufficient', verdictReason: `样本 ${window.length}/${inf.windowRaids} 局` };
+
+  // ---- 按地图分组 ----
+  //
+  // 分组顺序 = 在**全量样本**里首次出现的顺序（不按 id 排序）：
+  // 报告是人读的，顺序稳定且能看出"最近在打哪张图"比字母序有用。
+  //
+  // 未知标签（打标之前的旧样本 / 手改档）不静默归并，而是单列成 '(unknown)'，
+  // 理由是归并会把"标签坏了"这件事藏起来；而 profile.js 的收敛已经会把它们
+  // 回落成默认地图，因此正常路径下这个分组不该长期存在。
+  const labelOf = (s) => (s && typeof s.mapId === 'string' && s.mapId ? s.mapId : '(unknown)');
+  const order = [];
+  for (const s of all) {
+    const id = labelOf(s);
+    if (!order.includes(id)) order.push(id);
   }
-  if (netMedian > bandMax * inf.inflationRatio) {
+  const maps = order.map((id) => {
+    const rows = all.filter((s) => labelOf(s) === id);
+    // 用这张图的**全部留存样本**（不切窗口）。理由见函数头：净收入是双峰混合，
+    // 20 局的中位数会把随机波动判成通缩；而档案每张图最多就留 maxSamples 局，
+    // 全量 = 这张图能拿到的全部证据。
+    // 最后一层 slice 是防御：样本数组理论上已经被 profile.js 截到 maxSamples，
+    // 但"理论上"不该是正确性依赖（工具会直接构造样本对象喂进来）。
+    const g = inflationGroup(rows.slice(-(inf.maxSamples || rows.length)), perMapWindow, inf, band);
+    return {
+      mapId: id,
+      label: (cfg.maps && cfg.maps[id] && cfg.maps[id].label) || null,
+      totalRaids: rows.length,
+      ...g,
+      ...inflationVerdict(g, inf),
+    };
+  });
+
+  // 综合判定：有任何一张**样本足够**的图不是 ok，综合就不是 ok。
+  // 为什么不是"多数图 ok 就算 ok"：通胀是"钱变多"这件事，
+  // 一张图在印钱就够破坏经济了，投票制会让它永远通过。
+  const judged = maps.filter((m) => m.verdict !== 'insufficient');
+  const bad = judged.filter((m) => m.verdict !== 'ok');
+  if (bad.length) {
     return {
       ...base,
-      verdict: 'inflation',
-      verdictReason: `中位净收入 ${netMedian} > 上限 ${bandMax} × ${inf.inflationRatio}`,
+      maps,
+      verdict: bad[0].verdict,
+      verdictReason:
+        `${bad.length}/${judged.length} 张图判定异常：` +
+        bad.map((m) => `${m.mapId}=${m.verdict}（${m.verdictReason}）`).join('；'),
     };
   }
-  if (netMedian < bandMin * inf.deflationRatio) {
+  if (!judged.length) {
     return {
       ...base,
-      verdict: 'deflation',
-      verdictReason: `中位净收入 ${netMedian} < 下限 ${bandMin} × ${inf.deflationRatio}`,
+      maps,
+      verdict: 'insufficient',
+      verdictReason:
+        `没有任何一张图样本够 ${perMapWindow} 局（全局窗口 ${overall.raids}/${inf.windowRaids}）`,
     };
-  }
-  return { ...base, verdict: 'ok', verdictReason: `中位净收入 ${netMedian} 落在目标区间内` };
+  }  return {
+    ...base,
+    maps,
+    verdict: 'ok',
+    verdictReason: `${judged.length} 张图的净收入中位数都落在目标区间内` +
+      (maps.length > judged.length ? `（另有 ${maps.length - judged.length} 张图样本不足）` : ''),
+  };
 }

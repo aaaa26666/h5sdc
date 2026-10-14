@@ -10,6 +10,33 @@
 /** 以 _ 开头的键是注释而非数据（沿用项目既有约定）。 */
 export const dataKeys = (o) => Object.keys(o).filter((k) => !k.startsWith('_'));
 
+/**
+ * 地图分区的**角色词表**，以及"哪些角色算资源区"的唯一判据。
+ *
+ * ★ 为什么需要它（销 [M3-TEMP-8] 的一半）：两张地图表的分区角色命名**不一致** ——
+ *   `industrial_01` 用 `resource`，`tv_station_01` 用 `loot`。
+ *   本批次之前，`tools/render-map.mjs` 自己写了一次兼容（`resource || loot`），
+ *   而 `core/briefing.js` 只认 `loot` —— 于是同一个问题在两处各有一个答案。
+ *   地图选择落地之后这条分叉第一次**看得见**：选中 industrial_01 时，
+ *   简报的"资源分区"会读成 **0 个**，而那张图上明明有 5 个资源区、13 个容器。
+ *   放在这里（core、纯函数、两边共用）之后，判据只剩一份。
+ *
+ * 归一映射而不是"改地图表"：改表会让单层地图的几何黄金基准失去对照物
+ * （`results/level-golden-industrial_01.json` 是按现行表录的），
+ * 而这份映射对既有行为是**恒等**的（除了把恒为 0 的那一处修好）。
+ */
+export const ZONE_ROLE = Object.freeze({
+  SPAWN: 'spawn',
+  RESOURCE: 'resource',
+  RESOURCE_LOOT: 'loot',
+  CONTESTED: 'contested',
+});
+
+/** 这个分区角色是不是"资源区"（能搜到东西的地方）。 */
+export function isLootZoneRole(role) {
+  return role === ZONE_ROLE.RESOURCE || role === ZONE_ROLE.RESOURCE_LOOT;
+}
+
 /** 权重归一化。总和为 0 时返回全 0（表结构错误由校验脚本拦下，这里不抛错）。 */
 export function normalizedWeights(containerDef) {
   const keys = dataKeys(containerDef.rarityWeights);

@@ -12,6 +12,7 @@
 // 也不会与 src/config/index.js 形成 core ↔ config 的循环依赖。
 // 唯一允许的导入是 core 内部的纯函数 —— 规则描述只有一份，不能在这里再写一遍。
 import { describeOpenRule } from './extractRules.js';
+import { isLootZoneRole } from './lootTable.js';
 
 // [M5-TEMP-1] 简报只覆盖"这一局要进的那张图"的静态事实。
 //   玩家自己的养成数据（等级 / 货币 / 仓库估值）不在这里 —— 它们要等
@@ -36,16 +37,22 @@ function armorBrief(cfg, id) {
 }
 
 /**
- * @param {object} cfg 装配后的配置（src/config/index.js 的 config）
+ * @param {object} cfg 装配后的配置（src/config/index.js 的 config，
+ *        或 `configForMap(mapId).cfg` —— ★ M6-5 起后者才是"玩家选的那张图"）
  * @param {object} [kit] raidKit（core/loadout.js 的 buildRaidKit 产物）。
  *        ★ M5-3 起大厅简报显示的是**玩家当前配装**，不再固定显示起始配装 ——
  *        否则"改了配装但简报还是老样子"。缺省时退回起始配装（纯逻辑单测走这条路径）。
+ * @param {object[]} [zones] 撤离点的运行时形状。缺省取 `cfg.extract.zones`。
+ *        ★ M6-5：大厅要**同时**画"所有可选地图"的卡片（层数 / 容器 / 撤离点 / 敌方）
+ *        与"选中那张图"的完整简报。卡片那一路是拿 `configForMap(id).cfg` 逐张调本函数的，
+ *        因此 cfg 已经是对的那张图；这个参数留给"cfg 与 zones 不是一回事"的调用方
+ *        （例如只想核对撤离点分级的单测），**不是**给界面绕过 cfg 用的。
  * @returns {object} 大厅展示所需的全部数值。**任何字段都不带默认值兜底** ——
  *                   配置缺失属于启动期错误，由 config 的校验拦下，不在这里静默降级。
  */
-export function buildRaidBriefing(cfg, kit) {
+export function buildRaidBriefing(cfg, kit, zones) {
   const map = cfg.map;
-  const zones = cfg.extract.zones;
+  const zoneList = zones || cfg.extract.zones;
   const start = cfg.startLoadout;
   const bp = cfg.lootTable.backpack;
   /** ★ M6：携行具的规格来自 raidKit（装备的那只背包 / 弹挂 + 进局投放结果） */
@@ -74,7 +81,12 @@ export function buildRaidBriefing(cfg, kit) {
       floors: (map.floors || [{ id: 0 }]).length,
       // 分区只统计"资源区"，出生区/交战区的角色名不下发到界面 —— 那是关卡设计口径，
       // 摆在大厅里对玩家没有意义（玩家关心的是"这局能搜多少"）。
-      lootZones: (map.zones || []).filter((z) => z.role === 'loot').length,
+      //
+      // ★ M6-5：判据改成 core/lootTable.js 的 isLootZoneRole ——
+      //   原来只认 'loot'，而 industrial_01 用的角色名是 'resource'，于是它读成 0 个。
+      //   地图不给玩家选的时候这条错误不可见（activeMap 恰好是 tv_station_01）；
+      //   一旦能选工业区，简报就会写"资源分区 0 个"而那张图上明明有 5 个。
+      lootZones: (map.zones || []).filter((z) => isLootZoneRole(z.role)).length,
       containers: (cfg.loot.containers || []).length,
     },
     raid: {
@@ -82,10 +94,10 @@ export function buildRaidBriefing(cfg, kit) {
       warnThresholdMs: cfg.raid.warningThresholdMs,
     },
     extracts: {
-      total: zones.length,
-      always: zones.filter((z) => !z.conditional).length,
-      conditional: zones.filter((z) => z.conditional).length,
-      list: zones.map((z) => ({
+      total: zoneList.length,
+      always: zoneList.filter((z) => !z.conditional).length,
+      conditional: zoneList.filter((z) => z.conditional).length,
+      list: zoneList.map((z) => ({
         id: z.id,
         label: z.label,
         // 层号给人看，从 1 数起（局内 HUD 的"第 N 层"同口径）

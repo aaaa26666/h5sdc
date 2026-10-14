@@ -16,6 +16,9 @@ import { advanceQuests } from './quests.js';
 import { settleCarryAfterRaid } from './loadout.js';
 import { stashAdd } from './stash.js';
 import { valueReadout } from './items.js';
+// ★ M6-5：样本要按地图分组统计，因此落库时要把"这一局打的是哪张图"打上标签。
+//   判据（已注册 / 回落）只有一份，在 core/mapView.js。
+import { resolveMapId } from './mapView.js';
 
 /**
  * @param {object} profile 当前档案
@@ -44,6 +47,8 @@ export function applyRaidToProfile(profile, input, cfg) {
   let next = profile;
   const overflow = [];
   const deposited = [];
+  /** ★ M6-5：落库过程中发现的"需要修复/回落"的痕迹（目前只有地图 id 回落） */
+  const repairs = [];
 
   // ---- ① 消耗：按"带进去多少 − 局内还剩多少"算，装备不计（M5 没有耐久持久化）----
   const consumed = [];
@@ -176,6 +181,18 @@ export function applyRaidToProfile(profile, input, cfg) {
       outcome: isExtract ? 'extract' : 'death',
       income: result.loot ? result.loot.keptValue : 0,
       spent: spentValue,
+      // ★ M6-5：样本带上**这一局真打了哪张图**。通胀监控按图分组统计 ——
+      //   两张图的收益不可比（单层 22 个容器 vs 两层 89 个容器），
+      //   混在一起算中位数会得到一个两张图都不成立的数字。
+      //
+      //   地图 id 的来源是 `facts.mapId`，而 facts 由 main.js 从**本局实际使用的 cfg**
+      //   上取（`cfg.map.id`），不是从档案上取 —— 玩家在中途改了档案也不影响这一局的归属。
+      //   未知 / 缺失一律回落到默认地图，并留一条 repair（口径与 profile.js 的 mapId 收敛同源）。
+      mapId: (() => {
+        const r = resolveMapId(cfg, facts && facts.mapId);
+        if (r.repaired) repairs.push('economy-sample-map');
+        return r.mapId;
+      })(),
     },
   ].slice(-cfg.economy.inflation.maxSamples);
 
@@ -204,6 +221,9 @@ export function applyRaidToProfile(profile, input, cfg) {
       spentValue,
       keptValue: result.loot ? result.loot.keptValue : 0,
       lostValue: result.loot ? result.loot.lostValue : 0,
+      /** ★ M6-5：本局归属的地图（样本按它分组）+ 落库时发生的修复痕迹 */
+      mapId: samples[samples.length - 1].mapId,
+      repairs,
     },
   };
 }

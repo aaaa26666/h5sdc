@@ -21,6 +21,10 @@ import { itemDef } from './items.js';
 import { levelFromExp, spentPoints, skillModifiers } from './progression.js';
 import { dataKeys } from './lootTable.js';
 import { emptyCarry, sanitizeCarry, carrySpecs, planCarry } from './carry.js';
+// ★ M6-5：进战区打哪张图是**账号级**的选择（不是某套预设的属性），因此它住在档案顶层。
+//   收敛判据（"这个 id 是不是已注册的地图"）只有一份，在 core/mapView.js ——
+//   它同时被 config/index.js（configForMap 的回落）、settlement（样本打标）与界面读。
+import { resolveMapId } from './mapView.js';
 
 export const PROFILE_VERSION = 1;
 
@@ -58,6 +62,9 @@ export function createNewProfile(cfg, nowMs = 0, opts = {}) {
     activeLoadoutId: loadout.id,
     // 安全箱档位：新账号从规格表的第一档开始，任务奖励往上解锁（销 M3-TEMP-4 的一半）
     safeTierUnlocked: cfg.lootTable.safeContainer.tiers[0].id,
+    // ★ M6-5：进战区打哪张图。默认 = tunables.level.activeMap（配置层的默认地图），
+    //   玩家在大厅选过之后随档保存。它是**账号级**属性，不放在预设里。
+    mapId: cfg.activeMap,
     quests: { active: [], progress: {}, completed: [], claimed: [] },
     stats: { raids: 0, extracts: 0, deaths: 0, kills: 0, earned: 0, lost: 0, bestValue: 0 },
     economy: { samples: [] },
@@ -311,6 +318,8 @@ export function sanitizeProfile(raw, cfg, nowMs = 0) {
     loadouts: [],
     activeLoadoutId: '',
     safeTierUnlocked: cfg.lootTable.safeContainer.tiers[0].id,
+    // ★ M6-5：地图选择（见 createNewProfile 的说明）。收敛在下面「地图选择」一段做。
+    mapId: cfg.activeMap,
     quests: { active: [], progress: {}, completed: [], claimed: [] },
     stats: { ...base.stats },
     economy: { samples: [] },
@@ -429,6 +438,18 @@ export function sanitizeProfile(raw, cfg, nowMs = 0) {
     }
   }
 
+  // ---- 地图选择（★ M6-5）----
+  //
+  // 口径：非法 / 未知的地图 id **回落到默认地图**，并留一条 repair。
+  // 为什么不能静默回落：地图 id 会随档保存，而档案是外部输入（玩家手改、地图表被删过、
+  // 旧版本写过别的 id）。静默回落的后果是"我明明选了电视台、进去却是工业区"，
+  // 而玩家没有任何线索可查 —— 修复必须可观测，这是本文件开头的原则。
+  {
+    const r = resolveMapId(cfg, src.mapId);
+    out.mapId = r.mapId;
+    if (r.repaired && src.mapId !== undefined) repairs.push(`map-id:${String(src.mapId).slice(0, 32)}`);
+  }
+
   // ---- 任务 ----
   {
     const q = src.quests && typeof src.quests === 'object' ? src.quests : {};
@@ -505,6 +526,15 @@ export function sanitizeProfile(raw, cfg, nowMs = 0) {
         outcome: row.outcome === 'extract' ? 'extract' : 'death',
         income: num(row.income, 0).value,
         spent: num(row.spent, 0).value,
+        // ★ M6-5：样本必须带**这一局打的是哪张图** —— 两张图的收益本身不可比
+        //   （单层 22 个容器 vs 两层 89 个容器），混在一起算通胀会失真。
+        //   旧样本（打标之前写的）没有这个字段：回落成默认地图 id 并留一条 repair，
+        //   而不是丢弃 —— 丢样本等于让通胀窗口凭空变短，那比"标签不准"更糟。
+        mapId: (() => {
+          const m = resolveMapId(cfg, row.mapId);
+          if (m.repaired && row.mapId !== undefined) repairs.push('economy-sample-map');
+          return m.mapId;
+        })(),
       });
     }
     // 环形保留最近 maxSamples 条
@@ -600,6 +630,8 @@ export function profileView(profile, cfg) {
     presets: profile.loadouts.map((l) => ({ id: l.id, name: l.name })),
     activeLoadoutId: profile.activeLoadoutId,
     safeTierUnlocked: profile.safeTierUnlocked,
+    /** ★ M6-5：玩家选定的地图 id（界面据此高亮地图卡片；它不是"这一局真打了哪张"） */
+    mapId: profile.mapId,
     quests: {
       active: active.map((q) => ({ id: q.id, label: q.label, brief: q.brief })),
       completed: profile.quests.completed.slice(),

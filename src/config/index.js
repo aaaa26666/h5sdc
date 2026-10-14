@@ -48,6 +48,13 @@ import { skillModifiers, CONSUMED_MODIFIERS } from '../core/progression.js';
 // "起始配装一定塞得进兜底背包" —— 各写一份就会出现"校验说塞得下、进局却掉东西"。
 import { carrySpecs, carryUsedSlots, sanitizeCarry } from '../core/carry.js';
 
+/** 地图 id → 派生视图（记忆化：同一张图只派生一次，几何不会有两份）
+ *
+ *  必须在 validate() **之前**初始化：`validate()` 会在模块求值期间就调用
+ *  `deriveMap()` 把注册表里的每张图派一遍（下面的循环），那时这个 const 还没轮到
+ *  自己的声明位置 —— 放到后面会直接命中 TDZ（Cannot access 'MAP_VIEWS' before initialization）。 */
+const MAP_VIEWS = new Map();
+
 function fail(msg) {
   throw new Error(`[config] ${msg}`);
 }
@@ -1085,6 +1092,20 @@ function validateEconomy() {
   if (!(inf.inflationRatio > 1)) fail('economy.inflation.inflationRatio 必须 > 1');
   if (!(inf.deflationRatio > 0 && inf.deflationRatio < 1)) fail('economy.inflation.deflationRatio 必须落在 (0, 1)');
   if (!(inf.maxSamples >= inf.windowRaids)) fail('economy.inflation.maxSamples 必须 >= windowRaids');
+  // ★ M6-5：按地图分组判定用**每张图各自**的窗口（理由见 economy.json 的 _windowPerMapNote）。
+  //   两条校验缺一不可：
+  //     · 它必须 <= maxSamples —— 否则档案里永远凑不满窗口，判定恒为 'insufficient'
+  //       （一条**永远为假**的检查，这种"检查悄悄失效"是本仓库反复踩的坑）；
+  //     · 它必须是正整数 —— 0 或负数会让"样本不足"这条守卫永远不触发。
+  if (!(Number.isInteger(inf.windowRaidsPerMap) && inf.windowRaidsPerMap > 0)) {
+    fail(`economy.inflation.windowRaidsPerMap 必须是正整数，当前 ${inf.windowRaidsPerMap}`);
+  }
+  if (inf.windowRaidsPerMap > inf.maxSamples) {
+    fail(
+      `economy.inflation.windowRaidsPerMap (${inf.windowRaidsPerMap}) 大于 maxSamples (${inf.maxSamples})` +
+        ' —— 档案里永远凑不满每张图的窗口，分组判定会恒为 insufficient'
+    );
+  }
 
   if (!(e.starterCurrency > 0)) fail('economy.starterCurrency 必须为正');
 }
@@ -1461,6 +1482,18 @@ function validate() {
   // 地图表：构建网格 + 校验 + 派生
   const grid = buildMapGrid(mapTable);
   validateMap(mapTable, grid);
+  // ★ M6-5（地图选择）：**注册表里的每一张图都要过同一套校验与派生**。
+  //
+  // 为什么不能只校验 activeMap：本批次起玩家可以在大厅选图，而"选了一张没被校验过的图"
+  // 的后果是进战区才崩（或更糟：几何非法但能跑，表现为卡住 / 容器搜不到）。
+  // 这些是**手写坐标**，启动期带着坐标报错远比事后从现象倒推便宜。
+  //
+  // 派生一次就缓存（deriveMap 内部记忆化），因此训练不出第二份几何：
+  // config 仍然只是"默认地图的视图"，而每张图的视图在 configForMap 里被取用。
+  for (const id of Object.keys(MAP_TABLES)) {
+    const mv = deriveMap(id);
+    validateMap(mv.map, mv.grid);
+  }
   validateExtractInterrupt();
   validateRaidTiming();
   validateSettings();
@@ -1483,42 +1516,146 @@ validate();
 const PLAYER_VITALS = playerVitalsView();
 
 // ---------------------------------------------------------------------------
-// 地图表的派生视图
+// 地图表的派生视图（★ M6-5：由"派生一次"改成"按地图派生 + 记忆化"）
 //
 // 下游模块（player / extract / loot / aiManager / main）原本读的是 tunables 里的
-// level.playerSpawnCell / extract.zones / loot.containers。这些字段现在由地图表
-// 派生出来，因此**下游一行都不用改**，而数据的唯一来源变成了地图表。
+// level.playerSpawnCell / extract.zones / loot.containers。这些字段由地图表派生，
+// 因此**下游一行都不用改**，而数据的唯一来源变成了地图表。
+//
+// ★ 本批次的变化：本局**真的可以用玩家选的那张图**，于是"派生"必须能对任意一张
+//   注册地图求值，而不只是在模块加载时对 activeMap 求一次。
+//   派生的五项（level / extract.zones / loot.containers / coverList / map）恰好就是
+//   `capture-level-golden.mjs` 那份黄金基准靠 `{...config, map}` 覆盖的那几项 ——
+//   两者同源，因此"按图取视图"这件事在工具侧早就存在，这里只是把它搬进产品代码。
+//
+// ★ config 本身**仍然是默认地图（tunables.level.activeMap）的视图**：
+//   大量工具与单测读它（含几何黄金基准），改它的形状等于把一批无关的东西一起炸掉。
 // ---------------------------------------------------------------------------
-const mapGrid = buildMapGrid(mapTable);
-const CELL = mapTable.grid.cell;
 
-export const map = mapTable;
+/**
+ * 某张注册地图的派生视图（记忆化）。
+ *
+ * 返回的是**纯数据**（不依赖 config 对象本身），因此可以在 config 装配完成之前调用 ——
+ * validate() 阶段就会把注册表里的每张图都派一遍并校验。
+ */
+function deriveMap(mapId) {
+  const cached = MAP_VIEWS.get(mapId);
+  if (cached) return cached;
+
+  const table = MAP_TABLES[mapId];
+  if (!table) fail(`未知地图 id "${mapId}"（已注册：${Object.keys(MAP_TABLES).join('、')}）`);
+
+  const grid = buildMapGrid(table);
+  const CELL = table.grid.cell;
+
+  /**
+   * 撤离点的运行时形状。
+   *
+   * floor 必须带上：两层图的撤离点分布在不止一层（tv_station_01 的 e2_roof 在二层），
+   * 丢掉它之后判定只剩水平距离，站在一层同一 xz 就能触发二层的撤离点。
+   * 单层图（industrial_01）的撤离点没有 floor 字段，缺省 0 不改变既有行为。
+   */
+  const extractZones = table.extracts.map((e) => ({
+    id: e.id,
+    label: e.label,
+    cell: [e.x, e.z],
+    floor: e.floor || 0,
+    radius: e.radiusCells * CELL,
+    conditional: !!e.conditional,
+    // M4-1：开放规则随撤离点一起派生。它决定了"这个点什么时候能用"，
+    // 与位置、层号一样属于地图表的真值，不能由代码另外猜一份。
+    openRule: e.openRule || null,
+  }));
+
+  /**
+   * 容器的运行时形状。
+   *
+   * 从 [x, z] 改成对象，因为两个字段丢不得：
+   *   floor —— 容器落在不同标高上。M3-1b-2 ④ 只映射 [x,z]，结果二层 44 个容器
+   *            被摆到了一层高度，且判定不分层，站在一层能隔层搜二层的箱子。
+   *   type  —— 民用/军用/保险箱/钥匙房。掉落分级按它取池（M3-4 接入掉落表时用）。
+   *            此前 89 个容器共用一套权重，价值梯度完全不存在。
+   */
+  const containers = table.containers.map((c) => ({
+    x: c.x,
+    z: c.z,
+    floor: c.floor || 0,
+    type: c.type,
+  }));
+
+  /** 掩体的实际格子（buildMapGrid 校验后的结果，含高度与类型）。 */
+  const coverList = grid.coverList;
+
+  const view = {
+    mapId,
+    map: table,
+    grid,
+    CELL,
+    level: {
+      ...tunables.level,
+      gridW: table.grid.w,
+      gridH: table.grid.h,
+      cell: table.grid.cell,
+      wallHeight: table.grid.wallHeight,
+      playerSpawnCell: [table.playerSpawn.x, table.playerSpawn.z],
+    },
+    extract: { ...tunables.extract, zones: extractZones },
+    loot: { ...tunables.loot, containers },
+    coverList,
+  };
+  MAP_VIEWS.set(mapId, view);
+  return view;
+}
+
+const activeView = deriveMap(activeMapId);
+
+export const map = activeView.map;
 
 /** 全部已注册的地图表（供黄金基准等工具按 id 取用，而不是只能拿到当前生效的那张） */
 export const maps = MAP_TABLES;
 
-/** 当前生效地图的 id（供报告与工具标注来源） */
+/** 当前生效地图的 id（供报告与工具标注来源；★ M6-5 起它同时是 profile.mapId 的默认值） */
 export const activeMap = activeMapId;
 
-/** 地图派生：把格坐标换算成运行时需要的形状 */
-const derivedExtractZones = mapTable.extracts.map((e) => ({
-  id: e.id,
-  label: e.label,
-  cell: [e.x, e.z],
-  // floor 必须带上：两层图的撤离点分布在不止一层（tv_station_01 的 e2_roof 在二层），
-  // 丢掉它之后判定只剩水平距离，站在一层同一 xz 就能触发二层的撤离点。
-  // 单层图（industrial_01）的撤离点没有 floor 字段，缺省 0 不改变既有行为。
-  floor: e.floor || 0,
-  radius: e.radiusCells * CELL,
-  conditional: !!e.conditional,
-  // M4-1：开放规则随撤离点一起派生。它决定了"这个点什么时候能用"，
-  // 与位置、层号一样属于地图表的真值，不能由代码另外猜一份。
-  openRule: e.openRule || null,
-}));
+/**
+ * ★ M6-5：**按地图取配置视图**。
+ *
+ * 返回的是 `config` 的**浅拷贝**，只覆盖五项由地图表派生的字段
+ * （`map` / `level` / `extract` / `loot` / `coverList`）——
+ * 其余字段（武器表、经济表、物品视图…）与地图无关，共享同一份引用。
+ *
+ * 为什么是浅拷贝而不是深合并：这五项在地图之间是**整块替换**的关系
+ * （换图 = 换几何 / 换容器 / 换撤离点），逐字段合并只会掩盖"某个字段忘了覆盖"。
+ *
+ * 为什么叫这个名字：本批次之前，`capture-level-golden.mjs` 用
+ * `{ ...config, map: config.maps[id] }` 手工拼过同样的东西 —— 那是同一件事的
+ * 第二份实现。现在工具与运行时读同一个函数。
+ *
+ * @param {string} mapId 已注册的地图 id（非法时回落到默认地图，并返回 repaired 痕迹）
+ * @returns {{cfg:object, mapId:string, repaired:boolean}}
+ */
+export function configForMap(mapId) {
+  const fallback = activeMapId;
+  const known = Object.prototype.hasOwnProperty.call(MAP_TABLES, mapId);
+  const id = known ? mapId : fallback;
+  const v = deriveMap(id);
+  return {
+    cfg: {
+      ...config,
+      map: v.map,
+      level: v.level,
+      extract: v.extract,
+      loot: v.loot,
+      coverList: v.coverList,
+    },
+    mapId: id,
+    repaired: !known,
+  };
+}
 
 export const config = {
   ...tunables,
-  map: mapTable,
+  map: activeView.map,
   /** 已注册的全部地图表。测试与工具需要"显式指定某一张图"（例如单层对照）时用它 */
   maps: MAP_TABLES,
   /** 掉落表（M3-3/4/5/6 的唯一真值：容器分级、稀有度、物品池、背包、安全箱） */
@@ -1574,35 +1711,17 @@ export const config = {
   aiCombat: aiTable.combat,
 
   // 由地图表派生的既有字段（覆盖 tunables 中的同名项，保证只有一处真值）
-  level: {
-    ...tunables.level,
-    gridW: mapTable.grid.w,
-    gridH: mapTable.grid.h,
-    cell: mapTable.grid.cell,
-    wallHeight: mapTable.grid.wallHeight,
-    playerSpawnCell: [mapTable.playerSpawn.x, mapTable.playerSpawn.z],
-  },
-  extract: {
-    ...tunables.extract,
-    zones: derivedExtractZones,
-  },
-  loot: {
-    ...tunables.loot,
-    // 形状从 [x, z] 改为对象，因为两个字段丢不得：
-    //   floor —— 容器落在不同标高上。M3-1b-2 ④ 只映射 [x,z]，结果二层 44 个容器
-    //            被摆到了一层高度，且判定不分层，站在一层能隔层搜二层的箱子。
-    //   type  —— 民用/军用/保险箱/钥匙房。掉落分级按它取池（M3-4 接入 07 掉落表时用）。
-    //            此前 89 个容器共用 tunables.loot.items 一套权重，价值梯度完全不存在。
-    // 单层图（industrial_01）的容器没有 floor 字段，缺省 0 不改变既有行为。
-    containers: mapTable.containers.map((c) => ({
-      x: c.x,
-      z: c.z,
-      floor: c.floor || 0,
-      type: c.type,
-    })),
-  },
+  //
+  // ★ M6-5：这五项现在来自 `deriveMap(activeMapId)`（见上面的 deriveMap / configForMap）。
+  //   把它们原地展开而不是写 `...activeView.level` 之外的东西，是为了让 diff 一眼看得懂：
+  //   **字段名与字段内容一字未改**，只是来源从"就地算一次"变成"取那张图的派生视图"。
+  level: activeView.level,
+  extract: activeView.extract,
+  loot: activeView.loot,
   /** 掩体的实际格子（校验后的结果，含高度与类型） */
-  coverList: mapGrid.coverList,
+  coverList: activeView.coverList,
+  /** ★ M6-5：默认地图 id。档案里的 `mapId` 未知时回落到它（profile.js 的收敛读它） */
+  activeMap: activeMapId,
 };
 
 export function weaponById(id) {

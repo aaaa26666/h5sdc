@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../src/config/index.js';
+import { isLootZoneRole } from '../src/core/lootTable.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -343,9 +344,12 @@ console.log('\n—— 动线统计 ——');
         // 只认其中一个会让"顺路分区"恒为 0 —— 那样帕累托支配检查就退化成
         // "只看长度和暴露段"，而**顺路能搜到多少恰恰是"绕远"的唯一理由**。
         // 这个失效是静默的：检查仍然打印、仍然 PASS，只是不再表达它该表达的东西。
-        // [M3-TEMP-8] 兼容只是止血：两张地图表的分区角色命名应当统一，
-        // 否则下一个读这张表的工具还会踩同一个坑。
-        if (zn && (zn.role === 'resource' || zn.role === 'loot')) zonesHit.add(zn.id);
+        //
+        // ★ M6-5：判据搬进 core/lootTable.js 的 isLootZoneRole —— 简报那边
+        //   （core/briefing.js 的"资源分区"）此前只认 'loot'，于是同一个问题
+        //   在两处各有一个答案，而地图选择落地后它第一次**看得见**（选工业区时读成 0 个）。
+        //   现在两边读的是同一个函数，[M3-TEMP-8] 只剩"地图表本身没统一命名"这一半。
+        if (zn && isLootZoneRole(zn.role)) zonesHit.add(zn.id);
       }
     }
     return {

@@ -374,7 +374,9 @@
   "inflation": {
     "_comment": "通胀监控（M5 硬性要求：能输出监控数据）。判定用档案里的 economy.samples（每局一行）。",
     "windowRaids": 20,
-    "_windowNote": "只看最近 N 局的样本。样本不足 N 局时 verdict = 'insufficient'（而不是硬判）——30 局打不满就报『通缩』是误导。",
+    "_windowNote": "只看最近 N 局的样本（全局口径，两张图交错）。样本不足 N 局时 verdict = 'insufficient'（而不是硬判）——30 局打不满就报『通缩』是误导。",
+    "windowRaidsPerMap": 20,
+    "_windowPerMapNote": "★ M6-5：**每张地图各自**的判定窗口。两张图的收益不可比（单层 22 个容器 vs 两层 89 个），必须分组判定。为什么单独给一个数字而不是复用 windowRaids：全局窗口是『最近 20 局』（两张图交错），按图切分后每张图只剩约 10 局 —— 用 10 局样本判通胀/通缩会把随机波动当成结论（实测：同一份模拟数据下 industrial_01 被误报 deflation，而它的全样本中位数完全正常）。它必须 <= maxSamples，否则档案里永远凑不满窗口、判定恒为 'insufficient'（一条永远为假的检查）。",
     "inflationRatio": 1.35,
     "deflationRatio": 0.5,
     "_verdictNote": "中位净收入 > 目标上限 × inflationRatio → 'inflation'；< 目标下限 × deflationRatio → 'deflation'；其余 'ok'。目标上下限由 loot.json 的 raidTargets 派生（min(valueMin) ~ max(valueMax)）。",

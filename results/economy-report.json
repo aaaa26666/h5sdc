@@ -1,29 +1,102 @@
 {
-  "generatedAt": "2026-10-13T16:29:11.604Z",
+  "generatedAt": "2026-10-14T11:32:06.927Z",
   "seed": 20260201,
   "simulatedRaids": 200,
-  "_method": "理论分布模拟（掉落表目标区间均匀抽样 + 设计存活率），不是运行时实测收益",
+  "_method": "理论分布模拟（掉落表目标区间均匀抽样 + 设计存活率），不是运行时实测收益；★ M6-5 起按地图分组判定",
   "targetBand": [
     1800,
     36000
   ],
-  "allSampleMedian": 2286,
+  "allSampleMedian": 2123,
   "window": {
     "raids": 20,
-    "totalRaids": 200,
+    "totalRaids": 400,
     "windowRaids": 20,
-    "netMedian": 1943,
-    "netP90": 23651,
-    "incomePerRaid": 5956,
-    "spentPerRaid": 662,
+    "windowRaidsPerMap": 20,
+    "netMedian": 2738,
+    "netP90": 11658,
+    "incomePerRaid": 4942,
+    "spentPerRaid": 401,
     "currency": 20000,
     "targetBand": [
       1800,
       36000
     ],
+    "maps": [
+      {
+        "mapId": "industrial_01",
+        "label": "废弃工业区",
+        "totalRaids": 200,
+        "raids": 60,
+        "windowRaids": 20,
+        "netMedian": 1803,
+        "netP90": 23078,
+        "incomePerRaid": 5829,
+        "spentPerRaid": 706,
+        "bandMin": 1800,
+        "bandMax": 36000,
+        "inflationCeil": 48600,
+        "deflationFloor": 900,
+        "verdict": "ok",
+        "verdictReason": "中位净收入 1803 落在目标区间内"
+      },
+      {
+        "mapId": "tv_station_01",
+        "label": "电视台（两层）",
+        "totalRaids": 200,
+        "raids": 60,
+        "windowRaids": 20,
+        "netMedian": 2257,
+        "netP90": 10500,
+        "incomePerRaid": 3957,
+        "spentPerRaid": 619,
+        "bandMin": 1800,
+        "bandMax": 36000,
+        "inflationCeil": 48600,
+        "deflationFloor": 900,
+        "verdict": "ok",
+        "verdictReason": "中位净收入 2257 落在目标区间内"
+      }
+    ],
     "verdict": "ok",
-    "verdictReason": "中位净收入 1943 落在目标区间内"
+    "verdictReason": "2 张图的净收入中位数都落在目标区间内"
   },
+  "byMap": [
+    {
+      "mapId": "industrial_01",
+      "label": "废弃工业区",
+      "totalRaids": 200,
+      "raids": 60,
+      "windowRaids": 20,
+      "netMedian": 1803,
+      "netP90": 23078,
+      "incomePerRaid": 5829,
+      "spentPerRaid": 706,
+      "bandMin": 1800,
+      "bandMax": 36000,
+      "inflationCeil": 48600,
+      "deflationFloor": 900,
+      "verdict": "ok",
+      "verdictReason": "中位净收入 1803 落在目标区间内"
+    },
+    {
+      "mapId": "tv_station_01",
+      "label": "电视台（两层）",
+      "totalRaids": 200,
+      "raids": 60,
+      "windowRaids": 20,
+      "netMedian": 2257,
+      "netP90": 10500,
+      "incomePerRaid": 3957,
+      "spentPerRaid": 619,
+      "bandMin": 1800,
+      "bandMax": 36000,
+      "inflationCeil": 48600,
+      "deflationFloor": 900,
+      "verdict": "ok",
+      "verdictReason": "中位净收入 2257 落在目标区间内"
+    }
+  ],
   "prices": [
     {
       "ref": "pistol_p9",
