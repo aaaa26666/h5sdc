@@ -32,7 +32,9 @@ import {
   createLandingState, applyLandingImpact, updateLanding,
   stepUpTarget,
 } from '../src/core/movement.js';
-import { config, weaponById, ammoById, armorById } from '../src/config/index.js';
+import { config, weaponById, ammoById, armorById, configForMap } from '../src/config/index.js';
+// ★ M6-5：简报也要在纯逻辑层守一次 —— 地图卡片与"进入战局"页读的都是它。
+import { buildRaidBriefing } from '../src/core/briefing.js';
 // M5 局外系统的纯函数层。它们全部不依赖 DOM，因此能在 Node 里直接驱动。
 import {
   PROFILE_VERSION,
@@ -118,6 +120,10 @@ import {
   questTrackerView,
 } from '../src/core/quests.js';
 import { applyRaidToProfile } from '../src/core/settlement.js';
+// ★ M6-5：地图选择。判据（已注册 / 回落）、统计量与"按图取配置"都在 core 里，
+//   界面与档案读的是同一份 —— 因此它们能在纯逻辑层逐个取值守住。
+import { resolveMapId, isKnownMap, mapCountsOf, listMapOptions } from '../src/core/mapView.js';
+import { isLootZoneRole } from '../src/core/lootTable.js';
 import { buildRaidResult } from '../src/core/raidResult.js';
 import { createInventory } from '../src/gameplay/inventory.js';
 import {
@@ -4949,6 +4955,281 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
     });
     check('★ M6-4 网格相关的新拒绝原因都有中文文案（界面不显示机器串）',
       missing.length === 0, missing.join(',') || `${NEW_REASONS.length} 条全部有文案`);
+  }
+}
+
+// ============================================================
+// ★ M6-5 地图选择：按地图取配置视图、地图统计、档案收敛、样本分组
+//
+// 这一节守的是本批次最容易出错的四件事：
+//   ① `configForMap` 真的换掉了那五项（几何 / 撤离点 / 容器 / 掩体 / 地图表），
+//      而且**没有动** `config` 本身（它是"默认地图的视图"，大量工具与黄金基准读它）；
+//   ② 每张图的层数 / 容器 / 撤离点（含条件）/ 敌方数得对，且分区角色两种命名都算资源区；
+//   ③ 档案里的 mapId 非法时回落并留痕；
+//   ④ 结算样本带 mapId，且通胀监控**按图分组**判定（不混算）。
+// ============================================================
+{
+  // ---- ① configForMap：换对了五项，且 config 一字未动 ----
+  {
+    /** 一张地图的掩体**格数**（一条 w×h 的掩体记录会展开成 w*h 个格子）。 */
+    const expectCoverCells = (m) =>
+      (m.cover || []).reduce((a, c) => a + c.w * c.h, 0);
+
+    const otherId = Object.keys(config.maps).find((id) => id !== config.map.id);
+    check('夹具成立：注册了不止一张地图（否则"按图取配置"无从验证）',
+      !!otherId, Object.keys(config.maps).join('/'));
+
+    // 先记住 config 的现状，稍后逐项比对"没有被写过"
+    const snapshot = {
+      map: config.map,
+      zones: config.extract.zones,
+      containers: config.loot.containers,
+      coverList: config.coverList,
+      cell: config.level.cell,
+      gridW: config.level.gridW,
+    };
+    const r = configForMap(otherId);
+    const mv = config.maps[otherId];
+    check('★ M6-5 configForMap 换掉了那五项（map / level / extract / loot / coverList）',
+      r.mapId === otherId && r.repaired === false
+      && r.cfg.map === mv
+      && r.cfg.extract.zones !== config.extract.zones
+      && r.cfg.loot.containers !== config.loot.containers
+      && r.cfg.coverList !== config.coverList
+      && r.cfg.level.playerSpawnCell[0] === mv.playerSpawn.x,
+      JSON.stringify({ mapId: r.mapId, repaired: r.repaired }));
+    check('★ M6-5 configForMap 出来的容器数 / 撤离点数 = 那张地图表的条目数',
+      r.cfg.loot.containers.length === mv.containers.length
+      && r.cfg.extract.zones.length === mv.extracts.length,
+      `容器 ${r.cfg.loot.containers.length}/${mv.containers.length}` +
+        ` · 撤离点 ${r.cfg.extract.zones.length}/${mv.extracts.length}`);
+    // 掩体是**逐格**展开的（一条 w×h 的掩体记录会产生 w*h 个格子），
+    // 所以它的数量不能与表里的条目数比 —— 只断言"与这张图自己的掩体数一致"。
+    check('M6-5 configForMap 的掩体格数 = 运行时期望值（逐格展开，不是表里的条目数）',
+      r.cfg.coverList.length === expectCoverCells(mv) && r.cfg.coverList.length > 0,
+      `${r.cfg.coverList.length} vs ${expectCoverCells(mv)}`);
+    // ★ 这条是"config 必须保持默认地图视图"的直接证据：
+    //   大量工具（ttk / render-map / 黄金基准）与单测读的就是 config，
+    //   它一旦被 configForMap 就地改过，那些东西会全都在"另一张图"上跑。
+    check('★ M6-5 configForMap **没有**改动 config 本身（它仍是默认地图的视图）',
+      config.map === snapshot.map
+      && config.extract.zones === snapshot.zones
+      && config.loot.containers === snapshot.containers
+      && config.coverList === snapshot.coverList
+      && config.level.cell === snapshot.cell
+      && config.level.gridW === snapshot.gridW,
+      `config.map=${config.map.id}`);
+    // 与地图无关的字段共享同一份引用（浅拷贝，不是深合并）
+    check('M6-5 configForMap 只浅拷贝：与地图无关的表（武器 / 经济 / 物品）是同一份引用',
+      r.cfg.weapons === config.weapons && r.cfg.economy === config.economy
+      && r.cfg.itemDefs === config.itemDefs);
+    // 记忆化：同一张图取两次必须拿到**同一批**派生对象（几何不会有两份）
+    const again = configForMap(otherId);
+    check('M6-5 同一张图取两次拿到同一批派生对象（几何不会有两份）',
+      again.cfg.map === r.cfg.map && again.cfg.extract === r.cfg.extract
+      && again.cfg.loot === r.cfg.loot && again.cfg.coverList === r.cfg.coverList);
+    // 未知 id 回落 + 痕迹
+    const bad = configForMap('no_such_map');
+    check('★ M6-5 未注册的地图 id 回落到默认地图，并给出 repaired 痕迹',
+      bad.repaired === true && bad.mapId === config.activeMap,
+      JSON.stringify({ mapId: bad.mapId, repaired: bad.repaired }));
+    check('注入自检：拿回落后的结果当"换图成功"会被 repaired 标志抓住 —— 上一条不是恒真',
+      bad.mapId !== 'no_such_map');
+  }
+
+  // ---- ② 地图统计：层数 / 容器 / 撤离点（含条件）/ 敌方 ----
+  {
+    for (const id of Object.keys(config.maps)) {
+      const m = config.maps[id];
+      const c = mapCountsOf(m);
+      const wantFloors = (m.floors || []).length || 1;
+      const wantExtracts = m.extracts.length;
+      const wantCond = m.extracts.filter((e) => e.conditional).length;
+      const wantAi = (m.aiSpawns || []).reduce((a, s) => a + s.count, 0) + (m.bossSpawns || []).length;
+      check(`★ M6-5 ${id} 的统计量逐个对得上地图表（层/容器/撤离点含条件/敌方）`,
+        c.floors === wantFloors && c.containers === m.containers.length
+        && c.extracts === wantExtracts && c.conditionalExtracts === wantCond
+        && c.enemies === wantAi,
+        JSON.stringify(c));
+      check(`M6-5 ${id} 的敌方数把 Boss 也算进去了（只数普通 AI 会让"有 Boss"在界面上消失）`,
+        c.enemies === (m.aiSpawns || []).reduce((a, s) => a + s.count, 0) + (m.bossSpawns || []).length
+        && (c.bossCount === 0 || c.enemies > (m.aiSpawns || []).reduce((a, s) => a + s.count, 0)),
+        `敌方 ${c.enemies}（Boss ${c.bossCount}）`);
+    }
+    // ★ 分区角色的两种命名（销 [M3-TEMP-8] 的一半）：
+    //   industrial_01 用 'resource'、tv_station_01 用 'loot'。
+    //   只认其中一个会让工业区的"资源分区"读成 0 个 —— 而地图选择落地后这条第一次看得见。
+    const ind = config.maps.industrial_01;
+    if (ind) {
+      const roles = new Set((ind.zones || []).map((z) => z.role));
+      check('夹具成立：industrial_01 的分区角色是 resource（不是 loot）',
+        roles.has('resource') && !roles.has('loot'), [...roles].join('/'));
+      check('★ M6-5 industrial_01 的"资源分区"不是 0（两种角色命名都被算作资源区）',
+        mapCountsOf(ind).lootZones > 0, `${mapCountsOf(ind).lootZones} 个`);
+      check('M6-5 简报与地图统计读同一个角色判据（isLootZoneRole）',
+        buildRaidBriefing(configForMap('industrial_01').cfg, null).map.lootZones
+          === mapCountsOf(ind).lootZones,
+        `${buildRaidBriefing(configForMap('industrial_01').cfg, null).map.lootZones}` +
+          ` vs ${mapCountsOf(ind).lootZones}`);
+      // 注入自检：退回"只认 loot"的旧判据 → 工业区的资源分区会变成 0
+      const oldJudge = (ind.zones || []).filter((z) => z.role === 'loot').length;
+      check('注入自检：只认 loot 的旧判据会把工业区读成 0 个 —— 上一条因此是有效检查',
+        oldJudge === 0 && mapCountsOf(ind).lootZones > 0, `旧判据 ${oldJudge}`);
+    }
+    check('M6-5 地图选项列表的顺序 = 注册表顺序（不按收益偷偷排序）',
+      listMapOptions(config).map((o) => o.id).join(',') === Object.keys(config.maps).join(','),
+      listMapOptions(config).map((o) => o.id).join(','));
+  }
+
+  // ---- ③ 档案里的 mapId：默认值 / 合法 / 非法回落 + 留痕 ----
+  {
+    const fresh = createNewProfile(config, 0);
+    check('★ M6-5 新档案的 mapId = 配置的默认地图（不是写死的字符串）',
+      fresh.mapId === config.activeMap, `${fresh.mapId} vs ${config.activeMap}`);
+    const otherId = Object.keys(config.maps).find((id) => id !== config.activeMap);
+    const kept = sanitizeProfile({ ...fresh, mapId: otherId }, config, 0);
+    check('M6-5 合法地图 id 原样保留，且**不记**修复',
+      kept.profile.mapId === otherId && !kept.repairs.some((r) => r.startsWith('map-id')),
+      `mapId=${kept.profile.mapId} repairs=${kept.repairs.join(',')}`);
+    const healed = sanitizeProfile({ ...fresh, mapId: 'nope' }, config, 0);
+    check('★ M6-5 非法地图 id 回落到默认地图，并留下 map-id 修复痕迹',
+      healed.profile.mapId === config.activeMap
+      && healed.repairs.some((r) => r.startsWith('map-id:')),
+      `mapId=${healed.profile.mapId} repairs=${healed.repairs.join(',')}`);
+    check('M6-5 缺字段（旧档）不记修复 —— 那只是"还没选过"，不是坏数据',
+      !sanitizeProfile({ ...fresh, mapId: undefined }, config, 0)
+        .repairs.some((r) => r.startsWith('map-id')));
+    // 序列化往返：mapId 必须活过一轮存/读（否则"选了但下次进游戏又要重选"）
+    const back = parseProfile(serializeProfile(kept.profile, config), config, 0).profile;
+    check('★ M6-5 mapId 能活过一轮序列化往返（选了就真的记住了）',
+      back.mapId === otherId, `${back.mapId}`);
+  }
+
+  // ---- ④ 结算样本带 mapId，通胀监控按图分组 ----
+  {
+    const rarity = config.lootTable.rarity;
+    const mkResult = () => buildRaidResult({
+      reason: 'extract', outcome: 'extract', elapsedMs: 1000, kills: 0, aiTotal: 0,
+      containersOpened: 0, containersTotal: 0, shotsFired: 0, health: 100,
+      kept: [], lost: [], keptValue: 0, lostValue: 0, safeValue: 0, rarityTable: rarity,
+    });
+    const ids = Object.keys(config.maps);
+    let p = createNewProfile(config, 0);
+    // 每张图各结算一局（用 facts.mapId 指定这一局打的是哪张图）
+    for (let i = 0; i < ids.length; i++) {
+      p = applyRaidToProfile(
+        p,
+        {
+          raidId: `r-${i}`, atMs: i, result: mkResult(),
+          facts: { kills: 0, mapId: ids[i] }, taken: [], remaining: {},
+        },
+        config
+      ).profile;
+    }
+    check('★ M6-5 每条经济样本都带 mapId，且就是那一局打的那张图',
+      p.economy.samples.length === ids.length
+      && ids.every((id) => p.economy.samples.some((s) => s.mapId === id)),
+      JSON.stringify(p.economy.samples.map((s) => s.mapId)));
+
+    // 未知 mapId 回落 + 留痕（口径与档案收敛同源）
+    const badRes = applyRaidToProfile(
+      { ...p, lastRaidId: null },
+      {
+        raidId: 'r-bad', atMs: 9, result: mkResult(),
+        facts: { kills: 0, mapId: 'nope' }, taken: [], remaining: {},
+      },
+      config
+    );
+    check('★ M6-5 结算里未知的 mapId 回落到默认地图，并留下 economy-sample-map 痕迹',
+      badRes.profile.economy.samples.slice(-1)[0].mapId === config.activeMap
+      && badRes.summary.repairs.includes('economy-sample-map'),
+      JSON.stringify(badRes.summary.repairs));
+    // 收敛层：打标之前的旧样本（没有 mapId）回落成默认地图，而不是被丢弃
+    const legacy = sanitizeProfile({
+      ...p,
+      economy: { samples: [{ raidId: 'old', atMs: 1, outcome: 'extract', income: 10, spent: 1 }] },
+    }, config, 0);
+    check('★ M6-5 旧样本（没有 mapId）被回落成默认地图，而不是丢弃',
+      legacy.profile.economy.samples.length === 1
+      && legacy.profile.economy.samples[0].mapId === config.activeMap,
+      JSON.stringify(legacy.profile.economy.samples));
+
+    // ★ 分组判定：**两张图分开算**，不混在一起
+    //
+    // 夹具构造成"两张图的收益水平完全不同"（一张极高、一张极低）：
+    // 混算会得到一个中间的、两张图都不成立的中位数 —— 那正是本批次要修的病。
+    const hi = config.maps[ids[0]];
+    const lo = config.maps[ids[1]];
+    check('夹具成立：至少两张图（分组判定无从验证少于两张）', !!hi && !!lo);
+    const N = config.economy.inflation.windowRaidsPerMap;
+    const mkSamples = (mapId, income, spent) =>
+      Array.from({ length: N }, (_, i) => ({
+        raidId: `${mapId}-${i}`, atMs: i, outcome: 'extract', income, spent, mapId,
+      }));
+    const hiIncome = 100000;   // 远超目标上限 → 该图必定判 inflation
+    const loIncome = 0;        // 远低于目标下限 → 该图必定判 deflation
+    // 这一对是"混算会失真"的**注入自检**用的（见下面 mixedProbe）。
+    const probeProfile = {
+      ...createNewProfile(config, 0),
+      economy: { samples: [...mkSamples(hi.id, hiIncome, 0), ...mkSamples(lo.id, loIncome, 0)] },
+    };
+    const rep = inflationReport(probeProfile, config);
+    const hiRow = rep.maps.find((m) => m.mapId === hi.id);
+    const loRow = rep.maps.find((m) => m.mapId === lo.id);
+    check('★ M6-5 通胀监控**按图分组**：每张图各自给出判定（不是一份混算的结论）',
+      rep.maps.length === 2 && !!hiRow && !!loRow,
+      JSON.stringify(rep.maps.map((m) => `${m.mapId}=${m.verdict}`)));
+    check('★ M6-5 极高收益的那张图判 inflation、极低的那张判 deflation（两张图的结论不互相污染）',
+      hiRow.verdict === 'inflation' && loRow.verdict === 'deflation',
+      `hi=${hiRow.verdict}（中位 ${hiRow.netMedian}） lo=${loRow.verdict}（中位 ${loRow.netMedian}）`);
+    check('★ M6-5 综合判定取"最坏的那张图"（一张图在印钱就够破坏经济，不能靠投票通过）',
+      rep.verdict === 'deflation' || rep.verdict === 'inflation',
+      `verdict=${rep.verdict} —— ${rep.verdictReason}`);
+
+    // ★ 注入自检（这条是分组口径的**唯一**证明）：
+    //   构造"一张正常 + 一张在印钱（但它的样本里混着零收益的阵亡局）"的档案。
+    //     · 分组口径：正常那张 ok、印钱那张 inflation → 综合 inflation
+    //     · 混算口径：印钱那张的**多数**样本是高收益，它们会把合并后的中位数
+    //       推到目标区间内 → 综合"看起来正常"
+    //   若分组实现退化成"混算一份"，这一条会先红。
+    //   注意为什么不用 50/50：中位数取的是排序后的第 50 百分位，
+    //   两组各占一半时合并中位数几乎由两组的中位数决定 —— 那证明不了"会被掩盖"，
+    //   必须让**多数**样本来自收益偏高的那一组（现实里也如此：印钱的那张图玩家会多打）。
+    const mixedProbe = {
+      ...createNewProfile(config, 0),
+      economy: {
+        samples: [
+          ...mkSamples(hi.id, 3000, 0),
+          ...mkSamples(lo.id, 60000, 0).slice(0, N - 4),
+          ...mkSamples(lo.id, 0, 0).slice(0, 4),
+        ],
+      },
+    };
+    const grouped = inflationReport(mixedProbe, config);
+    const asOne = inflationReport(
+      { ...mixedProbe, economy: { samples: mixedProbe.economy.samples.map((s) => ({ ...s, mapId: hi.id })) } },
+      config
+    );
+    check('★ M6-5 "一张正常 + 一张在印钱"在分组口径下判 inflation（正常那张仍单独报 ok）',
+      grouped.verdict === 'inflation'
+      && grouped.maps.find((m) => m.mapId === hi.id).verdict === 'ok'
+      && grouped.maps.find((m) => m.mapId === lo.id).verdict === 'inflation',
+      JSON.stringify(grouped.maps.map((m) => `${m.mapId}=${m.verdict}(${m.netMedian})`)));
+    check('★ M6-5 同一批样本混成一张图就"看起来正常" —— 分组不是"换个标签"',
+      asOne.verdict === 'ok' && asOne.maps.length === 1,
+      `分组=${grouped.verdict} 混算=${asOne.verdict}（中位 ${asOne.maps[0].netMedian}）`);
+
+    // 样本不足的图 → 'insufficient'（而不是硬判）
+    const few = inflationReport(
+      {
+        ...probeProfile,
+        economy: { samples: mkSamples(hi.id, hiIncome, 0).slice(0, N - 1) },
+      },
+      config
+    );
+    check('★ M6-5 每张图样本不足 N 局时判 insufficient（30 局打不满就报通缩是误导）',
+      few.verdict === 'insufficient' && few.maps[0].verdict === 'insufficient',
+      `${few.verdict} · ${few.verdictReason}`);
   }
 }
 

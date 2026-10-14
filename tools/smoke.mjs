@@ -230,6 +230,20 @@ async function ensureRunning(tag) {  const s = await snap();
 }
 
 /**
+ * ★ M6-5：切到大厅的某个标签页（画面上的真实点击，不是直接改 class）。
+ *
+ * 为什么需要它：本批次把 `#btnStart` 从大厅标题栏**移进**了「进入战局」页
+ * （制作人裁定：不留两个入口）。它不在当前 `.tabbody` 里时 `.tabbody{display:none}`
+ * 会让它**不可见**，而 puppeteer 的 click 对不可见元素会一直等到超时 ——
+ * 失败信息看起来像"页面卡住"，与真实原因（点在另一页的按钮上）毫无关系。
+ * 因此所有点 `#btnStart`、以及所有读「进入战局」页内容的断言，都必须先切到那一页。
+ */
+async function showTab(tab) {
+  await page.click(`#lobbyTabs .tab[data-tab="${tab}"]`);
+  await sleep(60);
+}
+
+/**
  * 从大厅开一局，并**确保指针锁定拿到**（M5 组用它，替代裸 page.click('#btnStart')）。
  *
  * 为什么需要它（实测踩过）：Chrome 在 `exitPointerLock()` 之后约 1 秒内会**拒绝**
@@ -248,6 +262,8 @@ async function startRaidFromLobby() {
   //   注意它只**补齐当前配装所需**，不重置配装 —— 所以"在大厅把主武器换成霰弹枪"
   //   这类断言仍然成立（补齐的是那把霰弹枪，而不是换回 M4）。
   await page.evaluate(() => window.__m2.restockLoadout());
+  // ★ M6-5：`#btnStart` 现在只在「进入战局」页上可见，先切过去。
+  await showTab('deploy');
   await page.click('#btnStart');
   await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 10000 });
   try {
@@ -279,6 +295,8 @@ async function loadAndStart() {
   //   绝大多数断言（开火 / 切枪 / 护甲）失去前提。因此测试显式注入一套富配装：
   //   这一步是**测试的准备动作**，产品路径一行不改（玩家自己买）。
   await page.evaluate(() => window.__m2.grantTestKit());
+  // ★ M6-5：`#btnStart` 只在「进入战局」页上可见（它从标题栏搬走了）。
+  await showTab('deploy');
   await page.click('#btnStart');
   await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 10000 });
   // ★ M6-2：让 AI 先静默。
@@ -1665,6 +1683,13 @@ async function runLegacyGroups() {
     // ---- ① 打开页面直接落在大厅，且此刻没有局内世界 ----
     await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
     await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    // ★ M6-5：**先确认首屏没有抛异常**。
+    //   本批次踩过一次：地图卡片里写了个不存在的转义函数，renderDeploy 在首屏就抛，
+    //   而表现是"后面某处 waitForFunction 超时"—— 排查要从超时那一条倒推回几百行外。
+    //   一条"没有页面异常"的前置断言能把这个方向反过来：谁先坏，谁先红。
+    check('夹具成立：首屏渲染过程中没有页面异常（否则下面的断言都在测一个坏页面）',
+      pageErrors.filter((e) => !/favicon/i.test(e)).length === 0,
+      pageErrors.slice(0, 2).join(' | ') || '无异常');
     await page.evaluate(() => {
       window.__m5Token = Math.random().toString(36).slice(2);
     });
@@ -1680,8 +1705,7 @@ async function runLegacyGroups() {
         hasStart: !!document.getElementById('btnStart'),
         body: body ? body.innerText : '',
       };
-    });
-    const s0 = await snap();
+    });    const s0 = await snap();
     check('打开页面直接进入主大厅（不再是"点击即开始"的开始页）',
       lobbyView.lobbyOn && lobbyView.hasStart, `lobbyOn=${lobbyView.lobbyOn}`);
     check('局外不显示局内 HUD，单局计时未开始',
@@ -1696,35 +1720,133 @@ async function runLegacyGroups() {
 
     // ---- ② 大厅上的每个数字都来自配置表 ----
     // 从测试侧**独立算一遍**期望文本，再要求界面上出现它。
+    //
+    // ★ M6-5：大厅现在分成两页，读数也分两处，因此断言分两段读：
+    //   · 「装备」页（`#lobbyBody`）—— 我带了什么（主武器 / 副武器 / 备弹 / 护甲 / 医疗 / 携行）
+    //   · 「进入战局」页（`#deployBody` + `#mapList`）—— 我这一局要面对什么（地图 / 时限 /
+    //     资源分区 / 敌方 / 撤离点），且必须是**所选那张图**的数字
+    // 制作人裁定简报"在选完地图之后显示所选地图的信息"，因此这一段先读地图页，
+    // 并且**从档案里取所选地图**去算期望值（而不是用 `config.map` —— 那是默认地图，
+    // 拿它算期望值等于把"选图没生效"这件事断言成通过）。
     {
       const total = Math.round(config.raid.timeLimitMs / 1000);
       const expectTime = `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+      // 切到「进入战局」页（点的是真实页签），读该页的正文与地图卡片。
+      //
+      // ★ 必须真的切页：`#deployBody` / `#mapList` 在**非当前页签**里是 display:none，
+      //   而 innerText 在规范上只返回**已渲染**的文本（display:none 的子树会被跳过）。
+      //   不切页就读的话，这里拿到的可能是空串 —— 断言会报出"内容对不上"，
+      //   而真因是"读了一个隐藏的容器"。下面那一句"当前页签确实是进入战局"
+      //   就是给这种情况留的路标。
+      await showTab('deploy');
+      const deploy = await page.evaluate(() => ({
+        tab: window.__m2.lobby().tab,
+        deployOn: document.getElementById('tabDeploy').classList.contains('on'),
+        body: document.getElementById('deployBody').innerText,
+        maps: document.getElementById('mapList').innerText.replace(/\s+/g, ' '),
+        cards: Array.from(document.querySelectorAll('#mapList .map-card')).map((c) => ({
+          id: c.dataset.map,
+          on: c.classList.contains('on'),
+          text: c.innerText.replace(/\s+/g, ' '),
+        })),
+      }));
+      check('夹具成立：读简报时确实停在「进入战局」页（否则读的是隐藏容器）',
+        deploy.tab === 'deploy' && deploy.deployOn,
+        `tab=${deploy.tab} deployOn=${deploy.deployOn}`);
+      const selectedId = await page.evaluate(() => window.__m2.snapshot().mapId);
+      const selMap = config.maps[selectedId];
+      check('夹具成立：档案里记着所选地图，且它是已注册的一张',
+        !!selMap, `selectedId=${selectedId}`);
       check('大厅显示的单局时限与配置表一致',
-        lobbyView.body.includes(expectTime), `期望 ${expectTime}`);
-      check('大厅显示的地图名与地图表一致',
-        lobbyView.body.includes(config.map.label), config.map.label);
-      check('大厅显示的撤离点数量与地图表一致',
-        lobbyView.body.includes(`共 ${config.extract.zones.length} 个`),
-        `共 ${config.extract.zones.length} 个`);
-      const enemyTotal = (config.map.aiSpawns || []).reduce((a, s) => a + s.count, 0);
-      check('大厅显示的敌方总数 = 地图表各分区配额之和',
-        lobbyView.body.includes(`${enemyTotal} 名`), `${enemyTotal} 名`);
-      // ★ M5-3：简报显示的是**玩家当前配装**（档案里的 activeLoadout）。
+        deploy.body.includes(expectTime), `期望 ${expectTime}`);
+      check('★ M6-5 「进入战局」页显示的是**所选那张图**的名字（不是写死的默认图）',
+        !!selMap && deploy.body.includes(selMap.label), `期望 ${selMap ? selMap.label : '?'}`);
+      // 这一条是"选图只是改了个界面数字"的防线：容器数必须跟着所选地图变 ——
+      // 两张图的容器数差 4 倍（22 vs 89），写死任何一张都会被另一张抓住。
+      check('★ M6-5 简报里的容器数 = 所选地图的容器数（选图真的换了简报）',
+        !!selMap && deploy.body.includes(`容器 ${selMap.containers.length} 个`),
+        `期望容器 ${selMap ? selMap.containers.length : '?'} 个`);
+      check('★ M6-5 简报里的撤离点数 = 所选地图的撤离点数',
+        !!selMap && deploy.body.includes(`共 ${selMap.extracts.length} 个`),
+        `期望共 ${selMap ? selMap.extracts.length : '?'} 个`);
+      check('大厅显示的敌方总数 = 所选地图各分区配额之和',
+        !!selMap && deploy.body.includes(`${(selMap.aiSpawns || []).reduce((a, s) => a + s.count, 0)} 名`),
+        `${selMap ? (selMap.aiSpawns || []).reduce((a, s) => a + s.count, 0) : '?'} 名`);
+      // ★ 地图卡片：每张已注册地图一张卡，且都写出了它自己的差异（层数/容器/撤离点/敌方）
+      check('★ M6-5 每张已注册地图都有一张可选卡片（点一下就换图）',
+        deploy.cards.length === Object.keys(config.maps).length
+        && Object.keys(config.maps).every((id) => deploy.cards.some((c) => c.id === id)),
+        deploy.cards.map((c) => c.id).join('/'));
+      check('★ M6-5 当前选中的那张卡片有明确的选中态（不是靠"第一张"猜）',
+        deploy.cards.filter((c) => c.on).length === 1
+        && deploy.cards.find((c) => c.on).id === selectedId,
+        JSON.stringify(deploy.cards.map((c) => `${c.id}${c.on ? '*' : ''}`)));
+      check('★ M6-5 地图卡片写出了各图的差异（层数 / 容器 / 撤离点含条件 / 敌方）',
+        deploy.cards.every((c) => /层/.test(c.text) && /容器/.test(c.text)
+          && /撤离点/.test(c.text) && /敌方/.test(c.text)),
+        deploy.cards.map((c) => c.text.slice(0, 60)).join(' | '));
+      // ★ M5-3：装备页的读数显示的是**玩家当前配装**（档案里的 activeLoadout）。
       //   注意不能用 raidKit()：局外它必须是 null（局内世界未创建），
       //   而这一组整组都在局外。
       const curPrimary = await page.evaluate(() => {
         const p = window.__m2.profile();
         return p.loadout ? p.loadout.primary : null;
       });
-      check('大厅显示的主武器名与**当前配装**一致（M5-3 后不再是写死的起始配装）',
-        curPrimary
-          ? lobbyView.body.includes(config.weapons.find((w) => w.id === curPrimary).label)
-          : lobbyView.body.includes('无'),
-        curPrimary || '（无主武器）');
-      const killsGate = config.extract.zones.find((z) => z.openRule && z.openRule.type === 'killsAfter');
+      const killsGate = (selMap ? selMap.extracts : []).find(
+        (z) => z.openRule && z.openRule.type === 'killsAfter'
+      );
       check('条件撤离点的规则文案带上了规则自身的数值（不是写死的）',
-        !!killsGate && lobbyView.body.includes(`${killsGate.openRule.kills} 名敌人`),
-        killsGate ? `${killsGate.openRule.kills} 名敌人` : '当前地图没有击杀类条件点');
+        !!killsGate && deploy.body.includes(`${killsGate.openRule.kills} 名敌人`),
+        killsGate ? `${killsGate.openRule.kills} 名敌人` : '所选地图没有击杀类条件点');
+      // ★ M6-5 反向断言：`#btnStart` **只有一处**，而且它在「进入战局」页里。
+      //   制作人裁定不留两个入口 —— "看起来还能用"的重复入口会让玩家以为哪一页点都一样。
+      //
+      //   两条分开读，而且**先**把当前页签读下来再切页：
+      //   把"当前页签是什么"与"点了 gear 之后按钮还在不在"塞进同一个 evaluate，
+      //   读到的一定是**切完之后**的状态（我实测踩过一次：报出来 deployTabOn=false，
+      //   看起来像按钮不在战局页，其实只是读晚了）。
+      const startPlaces = await page.evaluate(() => {
+        const all = Array.from(document.querySelectorAll('#btnStart'));
+        return {
+          count: all.length,
+          inDeploy: all.every((b) => !!b.closest('#tabDeploy')),
+          tabNow: window.__m2.lobby().tab,
+        };
+      });
+      check('★ M6-5 进战区按钮**只有一个**，且它在「进入战局」页里（制作人裁定：不留重复入口）',
+        startPlaces.count === 1 && startPlaces.inDeploy && startPlaces.tabNow === 'deploy',
+        JSON.stringify(startPlaces));
+      // ★ M6-5 反向断言的能力来自 index.html 的结构（按钮在 #tabDeploy 内），
+      //   所以这里**静态**再确认一次"它不在标题栏那一层"：源码里 `#btnStart` 只出现一次，
+      //   而且出现在进入战局那一段里。DOM 断言会被"页签恰好停在哪一页"影响，
+      //   源码断言不会 —— 两条一起才守得住"不留重复入口"。
+      {
+        const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+        const hits = (html.match(/id="btnStart"/g) || []).length;
+        const at = html.indexOf('id="btnStart"');
+        const before = html.lastIndexOf('id="tabDeploy"', at);
+        const gearTabEnd = html.indexOf('id="tabShop"');
+        check('★ M6-5 源码里 `#btnStart` 只有一处，且它落在 `#tabDeploy` 与 `#tabShop` 之间',
+          hits === 1 && before >= 0 && before < at && at < gearTabEnd,
+          `出现 ${hits} 次；tabDeploy@${before} btnStart@${at} tabShop@${gearTabEnd}`);
+      }
+      await page.click('#lobbyTabs .tab[data-tab="gear"]');
+      await sleep(80);
+      check('★ M6-5 停在「装备」页时进战区按钮**不可见**（它不在当前页签里）',
+        await page.evaluate(() => document.getElementById('btnStart').getClientRects().length === 0),
+        '若这条红了，说明按钮又被放回了标题栏');
+      // 上面那一条把页签切回了「装备」，因此装备页的正文要**重新读一次**
+      // （lobbyView.body 是页面刚加载、还没渲染完时抓的）。
+      const gearBodyNow = await page.evaluate(() =>
+        document.getElementById('lobbyBody').innerText);
+      check('★ M6-5 装备页仍然写着"我带了什么"（简报搬走后这一块不能跟着消失）',
+        /主武器/.test(gearBodyNow) && /携行/.test(gearBodyNow) && /安全箱/.test(gearBodyNow),
+        gearBodyNow.replace(/\s+/g, ' ').slice(0, 120));
+      check('装备页的主武器名与**当前配装**一致（M5-3 后不再是写死的起始配装）',
+        curPrimary
+          ? gearBodyNow.includes(config.weapons.find((w) => w.id === curPrimary).label)
+          : gearBodyNow.includes('无'),
+        curPrimary || '（无主武器）');
     }
 
     // ---- ③ 分层约束：局外界面不得依赖局内实现（静态检查）----
@@ -1982,12 +2104,14 @@ async function runM5Groups() {
       const tabs = await page.evaluate(() =>
         Array.from(document.querySelectorAll('#lobbyTabs .tab')).map((t) => t.dataset.tab)
       );
-      // ★ M6-3（docs/18 §3.3）：配装与仓库**合并**成「装备」，页签由 6 个变 4 个。
-      //   注意方案原文写的是"由 5 个变 4 个"—— 它数的是 M5 的五个面板入口（配装/仓库/商店/
-      //   技能/任务），没有把**简报**那个页签算进去。简报不能删（撤离点开放规则、单局时限、
-      //   敌方数量都在里面），所以它并入了装备页顶部，页签因此是 6→4 而不是 5→4。
-      check('★ M5/M6-3 大厅恰好四个面板入口（销 M5-TEMP-3；M6-3 把配装与仓库合并为「装备」）',
-        ['gear', 'shop', 'skills', 'quests'].every((t) => tabs.includes(t)) && tabs.length === 4,
+      // ★ M6-3（docs/18 §3.3）：配装与仓库**合并**成「装备」。
+      // ★ M6-5（制作人裁定 2026-10-14）：再加一个「进入战局」（地图选择 + 该图简报 +
+      //   进战区按钮），简报从装备页搬过去。最终 5 个：装备 / 进入战局 / 商店 / 技能 / 任务。
+      //   注意这一条**不是**"多了一页就算过"：下面还反向断言旧的独立
+      //   loadout / stash / brief 页签与其面板容器必须彻底不存在。
+      check('★ M5/M6-3/M6-5 大厅恰好五个面板入口（装备 / 进入战局 / 商店 / 技能 / 任务）',
+        ['gear', 'deploy', 'shop', 'skills', 'quests'].every((t) => tabs.includes(t))
+        && tabs.length === 5,
         tabs.join('/'));
 
       // ★ M6-3 反向断言（docs/18 §五 的风险表点名的那一条）：
@@ -2032,7 +2156,8 @@ async function runM5Groups() {
       }
 
       const bodies = {};
-      for (const tab of ['gear', 'shop', 'skills', 'quests']) {
+      // ★ M6-5：加进 'deploy'（它也是"有内容的页"之一，空壳同样要被抓出来）。
+      for (const tab of ['gear', 'deploy', 'shop', 'skills', 'quests']) {
         await page.click(`#lobbyTabs .tab[data-tab="${tab}"]`);
         await sleep(60);
         bodies[tab] = await page.evaluate(
@@ -2047,7 +2172,7 @@ async function runM5Groups() {
           tab
         );
       }
-      check('★ M5/M6-3 四个面板分别可切换且都画出了内容（不是空壳）',
+      check('★ M5/M6-3/M6-5 五个面板分别可切换且都画出了内容（不是空壳）',
         Object.entries(bodies).every(([, v]) => v.on && v.text.length > 0),
         Object.entries(bodies).map(([k, v]) => `${k}:${v.text.length}`).join(' '));
       const views = await page.evaluate(() => window.__m2.lobby().views);
@@ -2058,6 +2183,23 @@ async function runM5Groups() {
       check('M5 商店面板显示的货币 = 档案货币',
         bodies.shop.text.includes(String(views.shop.currency)),
         `面板含 ${views.shop.currency}`);
+      // ★ M6-5：「进入战局」页画的是**所选地图**的简报 + 地图卡片。
+      //   期望值从档案里的 mapId 取（不是 config.map）—— 否则"选图没生效"也会通过。
+      {
+        const sel = await page.evaluate(() => window.__m2.snapshot().mapId);
+        const m = config.maps[sel];
+        check('★ M6-5 「进入战局」页画的是所选地图的简报（含容器数与撤离点数，不是空壳）',
+          !!m && bodies.deploy.text.includes(m.label)
+          && bodies.deploy.text.includes(`容器 ${m.containers.length} 个`)
+          && bodies.deploy.text.includes(`共 ${m.extracts.length} 个`),
+          `sel=${sel} · ${bodies.deploy.text.slice(0, 100)}`);
+        // ★ M6-5 反向断言：战区简报必须**已经离开**装备页。
+        //   "两处各画一份"是这次改动最容易留下的尾巴（复制粘贴一行的事），
+        //   而它的后果是玩家在装备页看到的是**默认图**的撤离点规则。
+        check('★ M6-5 战区简报**不在**装备页上（搬走，不是复制一份）',
+          !bodies.gear.text.includes('单局时限') && !bodies.gear.text.includes('资源分区'),
+          bodies.gear.text.slice(0, 100));
+      }
     }
 
     // ---- ② 存档异常三态（M5 硬性要求：必须实测）----
@@ -2812,6 +2954,8 @@ async function runM6CarryGroup() {
       await page.evaluate(() => window.__m2.clearStash());
       // 刻意**不用** startRaidFromLobby（它会补齐配装）—— 这一条测的就是"什么都没有"
       await sleep(1200);
+      // ★ M6-5：`#btnStart` 在「进入战局」页上。
+      await showTab('deploy');
       await page.click('#btnStart');
       await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 10000 });
       await sleep(400);
@@ -2851,12 +2995,12 @@ async function runM6CarryGroup() {
         `自带 ${brief.kitSlots} 格 / 共 ${brief.totalSlots} 格`);
 
       // 界面上真的写出来了 —— 数据里有、界面没画等于没告诉玩家
+      // ★ M6-4：装备面板画出了携行容量与进局检查的警告（都在装备页上，与地图无关）。
       const panelText = await page.evaluate(() =>
         document.getElementById('tabGear').innerText.replace(/\s+/g, ' '));
       check('★ M6 装备面板画出了携行容量（不是只在数据里有）',
         /携行/.test(panelText) && /背包/.test(panelText),
-        panelText.slice(0, 140));
-      // ★ M6-3：槽位不再是下拉框，而是**装备格**（`data-drop-slot`）。
+        panelText.slice(0, 140));      // ★ M6-3：槽位不再是下拉框，而是**装备格**（`data-drop-slot`）。
       //   用这个钩子是因为它同时是 DOM 身份与拖放落点的身份 —— 用文案匹配（"背包"）会
       //   在改文案时静默失效，而这里要守的是"这个槽位真的能被拖上去"。
       const slotIds = await page.evaluate(() =>
@@ -3019,31 +3163,68 @@ async function runM63DragGroup() {
       window.addEventListener('pointerup', () => { window.__m63evt.up++; }, true);
     });
 
-    // ---- ① 简报并入装备页，且**内容一条不少** ----
+    // ---- ① ★ M6-5：大厅分两页 —— 装备页放"我带了什么"，进入战局页放"我要面对什么" ----
+    //
+    // 这一组守的是**搬家没有丢东西**：制作人裁定把战区简报从装备页移进「进入战局」页，
+    // 而"合并/搬家时静默少一条信息"正是这类改动最典型的失败方式
+    // （docs/20 §3.1 就为这个理由把简报留在界面上过一次）。
+    // 因此断言分两处读：装备页的读数 / 战局页的简报，两边都必须完整。
+    //
+    // 注意：「进入战局」页默认**不可见**（tabbody 的 display:none），
+    // 可见性断言必须先切过去 —— 否则 getClientRects() 恒为 0，断言恒红。
+    // 切页之前先把"默认停在哪一页"记下来（切完就读不到了）。
+    const defaultTab = await page.evaluate(() => window.__m2.lobby().tab);
+    await showTab('deploy');
     {
       const brief = await page.evaluate(() => {
-        const body = document.getElementById('lobbyBody');
+        const gearBody = document.getElementById('lobbyBody');
+        const deployBody = document.getElementById('deployBody');
+        const mapList = document.getElementById('mapList');
         return {
-          exists: !!body,
-          visible: !!body && body.getClientRects().length > 0,
-          inGear: !!body && document.getElementById('tabGear').contains(body),
-          text: body ? body.innerText.replace(/\s+/g, ' ') : '',
-          tab: window.__m2.lobby().tab,
+          gearExists: !!gearBody,
+          gearText: gearBody ? gearBody.innerText.replace(/\s+/g, ' ') : '',
+          deployExists: !!deployBody,
+          deployVisible: !!deployBody && deployBody.getClientRects().length > 0,
+          deployInTab: !!deployBody && document.getElementById('tabDeploy').contains(deployBody),
+          deployText: deployBody ? deployBody.innerText.replace(/\s+/g, ' ') : '',
+          mapListText: mapList ? mapList.innerText.replace(/\s+/g, ' ') : '',
         };
       });
-      check('★ M6-3 简报并入装备页顶部后**仍然可见**（没有为了合并页面把它删掉）',
-        brief.exists && brief.visible && brief.inGear, JSON.stringify({ ...brief, text: undefined }));
-      // 这六类信息是进战区前唯一的权威来源，一条都不能少
-      const KEYS = ['战区', '单局时限', '资源分区', '敌方', '撤离点', '携行', '安全箱'];
-      const missing = KEYS.filter((k) => !brief.text.includes(k));
-      check('★ M6-3 简报的七类信息全部还在（战区/时限/分区/敌方/撤离点/携行/安全箱）',
-        missing.length === 0, missing.join(',') || brief.text.slice(0, 90));
-      check('★ M6-3 撤离点的**开放规则**仍在界面上（合并页面时最容易被丢掉的那条）',
-        brief.text.includes(`共 ${config.extract.zones.length} 个`) && /常驻开放/.test(brief.text)
-        && /过半|累计淘汰/.test(brief.text),
-        brief.text.slice(0, 120));
-      check('M6-3 默认落在装备页（简报就在它顶部）', brief.tab === 'gear', `tab=${brief.tab}`);
+      check('★ M6-5 默认落在「装备」页（进战区是不可逆动作，不该一进大厅就正对着它）',
+        defaultTab === 'gear', `默认页签=${defaultTab}`);
+      check('★ M6-5 「进入战局」页的简报**可见**且就在该页容器里（没有为了拆页把它删掉）',
+        brief.deployExists && brief.deployVisible && brief.deployInTab,
+        JSON.stringify({ exists: brief.deployExists, visible: brief.deployVisible, inTab: brief.deployInTab }));
+      // 地图那一类读数搬到了战局页；装备那一类留在装备页。两边都要在。
+      const DEPLOY_KEYS = ['战区', '单局时限', '资源分区', '敌方', '撤离点'];
+      const missingDeploy = DEPLOY_KEYS.filter((k) => !brief.deployText.includes(k));
+      check('★ M6-5 战局页的简报五类信息全部在（战区/时限/分区/敌方/撤离点）',
+        missingDeploy.length === 0, missingDeploy.join(',') || brief.deployText.slice(0, 90));
+      const GEAR_KEYS = ['主武器', '副武器', '备弹', '护甲', '医疗', '携行', '安全箱'];
+      const missingGear = GEAR_KEYS.filter((k) => !brief.gearText.includes(k));
+      check('★ M6-5 装备页仍然写着"我带了什么"七类（主/副武器·备弹·护甲·医疗·携行·安全箱）',
+        missingGear.length === 0, missingGear.join(',') || brief.gearText.slice(0, 90));
+      // 撤离点的**开放规则**是合并/搬家时最容易被丢掉的那条（docs/20 §3.1）。
+      // 期望值从**所选地图**取 —— 两张图的撤离点数与规则都不一样。
+      const selId = await page.evaluate(() => window.__m2.snapshot().mapId);
+      const sel = config.maps[selId];
+      check('★ M6-5 撤离点的**开放规则**仍在界面上（搬页时最容易被丢掉的那条）',
+        !!sel && brief.deployText.includes(`共 ${sel.extracts.length} 个`)
+        && /常驻开放/.test(brief.deployText) && /过半|累计淘汰/.test(brief.deployText),
+        brief.deployText.slice(0, 140));
+      // ★ 反向断言：简报**不在**装备页上。两处各画一份是这次改动最容易留下的尾巴，
+      //   而它的后果是玩家在装备页看到**默认图**的撤离点规则（与所选图可能不同）。
+      check('★ M6-5 战区简报**已离开**装备页（搬走，不是复制一份）',
+        !brief.gearText.includes('单局时限') && !brief.gearText.includes('资源分区'),
+        brief.gearText.slice(0, 120));
+      // 地图卡片：差异必须一眼看得出（层数 / 容器 / 撤离点含条件 / 敌方）
+      check('★ M6-5 地图卡片写出了各图的差异（层数 / 容器 / 撤离点含条件 / 敌方）',
+        /层/.test(brief.mapListText) && /容器/.test(brief.mapListText)
+        && /撤离点/.test(brief.mapListText) && /敌方/.test(brief.mapListText),
+        brief.mapListText.slice(0, 140));
     }
+    // 回到装备页 —— 本组后面的断言全是装备页的（拖放 / 装备格 / 负重条）。
+    await showTab('gear');
 
     // ---- ② 左半边：六个装备格，写名字与重量，空格写"空" ----
     {
@@ -3431,6 +3612,8 @@ async function runM64CarryGridGroup() {
       check('★ M6-4 装备面板把"带不进去"画出来了（进战区前就看得见）',
         /带不进去/.test(panelText), panelText.slice(0, 160));
 
+      // ★ M6-5：进战区按钮在「进入战局」页上（上面读装备页的断言必须在切页**之前**做）。
+      await showTab('deploy');
       await page.click('#btnStart');
       await sleep(250);
       const gate = await page.evaluate(() => ({
@@ -3456,6 +3639,9 @@ async function runM64CarryGridGroup() {
 
       // 「全部放回仓库」→ 只退回违规的那几件，然后继续进战区
       await page.evaluate(() => window.__m2.breakCarry('category'));
+      // ★ M6-5：上一段「返回大厅」会重新 showLobby()，但页签**保持**在离开时那一页；
+      //   这里显式切一次「进入战局」，免得断言依赖"上一次点过哪一页"这种隐含状态。
+      await showTab('deploy');
       await page.click('#btnStart');
       await sleep(200);
       await page.click('#btnRaidCheckReturn');
@@ -3517,6 +3703,147 @@ async function runM64CarryGridGroup() {
 }
 
 // ============================================================
+// ★ M6-5：地图选择与"大厅分两页"的端到端
+//
+// 纯逻辑已经守住了"每张图的层数/容器/撤离点/敌方怎么数"（unit-tests 的 M6-5 一节）
+// 与"profile.mapId 的收敛"（同处）。这一组补的是**只有真浏览器能验的三件事**：
+//   ① 点地图卡片真的换了图（档案 + 简报一起换，且两张图的数字确实不同）
+//   ② 本局真的用了所选那张图（几何 / 容器数 / 撤离点数都对得上，
+//      这是"选图只是改了个界面数字"的唯一防线）
+//   ③ 选择随档保存（重新加载页面之后还在），以及**非法 id 的回落**有痕迹
+// ============================================================
+async function runM65MapGroup() {
+  // 组名带 M5 与 M6-5：`--only=m5` 能跑到它，`--only=m6-5` 也能（过滤器按组名子串匹配）。
+  if (m5Group('★ M6-5 / M5-5 地图选择（选图 → 简报 → 本局真的用那张图）')) {
+    await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    await page.evaluate(() => window.__m2.grantTestKit());
+    await showTab('deploy');
+    await sleep(100);
+
+    // ---- ① 初始状态：档案里的 mapId 就是"本局会用哪张图"的判据 ----
+    const before = await page.evaluate(() => window.__m2.mapOptions());
+    check('夹具成立：至少注册了两张地图（否则"选图"这件事无从验证）',
+      before.options.length >= 2, before.options.map((o) => o.id).join('/'));
+    const fromId = before.selectedId;
+    const toId = before.options.map((o) => o.id).find((id) => id !== fromId);
+    check('夹具成立：存在另一张可选的地图', !!toId, `当前 ${fromId}，将要切到 ${toId}`);
+    const fromOpt = before.options.find((o) => o.id === fromId);
+    const toOpt = before.options.find((o) => o.id === toId);
+    // 两张图必须在**界面要显示的四个维度**上确实不同，否则"换了图"看不出来
+    check('夹具成立：两张图的差异是可观测的（容器数或层数不同）',
+      !!fromOpt && !!toOpt
+      && (fromOpt.map.containers !== toOpt.map.containers || fromOpt.map.floors !== toOpt.map.floors),
+      JSON.stringify({ from: fromOpt && fromOpt.map, to: toOpt && toOpt.map }));
+
+    // ---- ② 点卡片换图：档案 + 简报**一起**换 ----
+    {
+      await page.click(`#mapList .map-card[data-map="${toId}"]`);
+      await sleep(150);
+      const after = await page.evaluate(() => ({
+        mapId: window.__m2.snapshot().mapId,
+        text: document.getElementById('deployBody').innerText.replace(/\s+/g, ' '),
+        onCards: Array.from(document.querySelectorAll('#mapList .map-card'))
+          .filter((c) => c.classList.contains('on')).map((c) => c.dataset.map),
+        toast: window.__m2.lobby().toastText,
+      }));
+      const cfgTo = config.maps[toId];
+      check('★ M6-5 点地图卡片真的换了图（写进档案，不是只改界面）',
+        after.mapId === toId, `mapId=${after.mapId} 期望 ${toId}`);
+      check('★ M6-5 换图后简报跟着换成那张图的数字（容器数 / 撤离点数都对得上）',
+        after.text.includes(cfgTo.label)
+        && after.text.includes(`容器 ${cfgTo.containers.length} 个`)
+        && after.text.includes(`共 ${cfgTo.extracts.length} 个`),
+        after.text.slice(0, 130));
+      check('★ M6-5 选中态跟着走（只有一张卡片是 on，且就是新选的那张）',
+        after.onCards.length === 1 && after.onCards[0] === toId, after.onCards.join('/'));
+      check('M6-5 换图给出了人话提示（玩家得知道刚才那一下做了什么）',
+        /已选择/.test(after.toast), after.toast || '（没有提示）');
+    }
+
+    // ---- ③ 本局真的用所选那张图（**这条是"选图生效"的唯一防线**）----
+    {
+      const cfgTo = config.maps[toId];
+      await startRaidFromLobby();
+      await sleep(400);
+      const s = await snap();
+      check('★ M6-5 本局用的是**所选那张图**（快照里的 raidMapId 与档案一致）',
+        s.raidMapId === toId, `raidMapId=${s.raidMapId} 期望 ${toId}`);
+      check('★ M6-5 本局的容器数 / 撤离点数 = 所选地图的数字（不是默认地图的）',
+        s.loot.total === cfgTo.containers.length && s.extract.length === cfgTo.extracts.length,
+        `容器 ${s.loot.total}/${cfgTo.containers.length} · 撤离点 ${s.extract.length}/${cfgTo.extracts.length}`);
+      const floorCount = (cfgTo.floors || []).length;
+      if (floorCount > 1) {
+        check('★ M6-5 两层图上确实有多个层号的撤离点（分层信息没在换图时丢掉）',
+          new Set(s.extract.map((z) => z.floor)).size > 1,
+          s.extract.map((z) => `第${z.floor}层`).join('/'));
+      } else {
+        // 单层图：撤离点必须全在第 0 层（否则就是拿了两层图的派生结果）
+        check('★ M6-5 单层图的撤离点全在第 0 层（层号没串到另一张图上）',
+          s.extract.every((z) => z.floor === 0),
+          s.extract.map((z) => `第${z.floor}层`).join('/'));
+      }
+      // ★ 反向自检：**另一张图的数字必须对不上**。否则上面那两条在
+      //   "两张图恰好容器数相同"时就变成恒真 —— 而夹具本该先证明差异存在（②已经证过）。
+      const other = config.maps[fromId];
+      check('注入自检：另一张图的容器数与本局不同 —— 上一条因此有区分力',
+        other.containers.length !== cfgTo.containers.length,
+        `${fromId} ${other.containers.length} vs ${toId} ${cfgTo.containers.length}`);
+      await page.evaluate(() => window.__m2.abandonRaid());
+      await waitForEnd(20000);
+      await page.evaluate(() => window.__m2.returnToLobby());
+      await sleep(200);
+    }
+
+    // ---- ④ 选择随档保存（重新加载页面之后还在）----
+    {
+      await page.reload({ waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+      const persisted = await page.evaluate(() => ({
+        mapId: window.__m2.snapshot().mapId,
+        repair: window.__m2.profile().repairs.filter((r) => r.startsWith('map-id')),
+      }));
+      check('★ M6-5 地图选择随档保存（刷新页面之后仍是那张图）',
+        persisted.mapId === toId, `mapId=${persisted.mapId} 期望 ${toId}`);
+      check('M6-5 合法地图 id 不会被记成修复（收敛不该对好数据动手）',
+        persisted.repair.length === 0, persisted.repair.join(',') || '无修复记录');
+      // ★ 结算样本按图打标：上面第 ③ 步打了一局（放弃 = 未撤离），档案里应当有样本
+      const sample = await page.evaluate(() => window.__m2.lobby().views.stats.mapId);
+      check('M6-5 档案视图暴露所选地图（界面高亮靠它，不是自己猜）',
+        sample === toId, `views.stats.mapId=${sample}`);
+    }
+
+    // ---- ⑤ 非法地图 id 回落，并**留下痕迹** ----
+    {
+      const bad = await page.evaluate(() => window.__m2.setMap('no_such_map'));
+      check('★ M6-5 未注册的地图 id 回落到默认地图（不是原样写进档案）',
+        bad.repaired === true && bad.mapId === config.activeMap && bad.mapId !== 'no_such_map',
+        JSON.stringify(bad));
+      // 写坏档案再重新加载：收敛那一条路径也要能兜住（夹具走的是同一份 resolveMapId，
+      // 但"存档被外部改过"只能靠写原始文本才能模拟）
+      await page.evaluate(() => {
+        const raw = JSON.parse(localStorage.getItem('h5_extract_profile'));
+        raw.mapId = 'nope_does_not_exist';
+        localStorage.setItem('h5_extract_profile', JSON.stringify(raw));
+      });
+      await page.reload({ waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+      const healed = await page.evaluate(() => ({
+        mapId: window.__m2.snapshot().mapId,
+        repairs: window.__m2.profile().repairs,
+      }));
+      check('★ M6-5 存档里的非法地图 id 被收敛成默认地图（坏档也能进游戏）',
+        healed.mapId === config.activeMap && healed.mapId !== 'nope_does_not_exist',
+        `mapId=${healed.mapId}`);
+      check('★ M6-5 回落**留下了痕迹**（静默回落的后果是"我明明选了电视台、进去却是工业区"）',
+        healed.repairs.some((r) => r.startsWith('map-id:')), healed.repairs.join(',') || '无修复记录');
+      // 收尾：把地图恢复成默认，免得影响后面/后续再次运行的组
+      await page.evaluate((id) => window.__m2.setMap(id), config.activeMap);
+    }
+  }
+}
+
+// ============================================================
 try {
   // `--only=m5`：只跑 M5 段落（自带 prepare，不依赖历史组的状态）。
   // 不指定时按原顺序：历史组 → M5 段落 → 运行时错误。
@@ -3525,12 +3852,14 @@ try {
     await runM6CarryGroup();
     await runM63DragGroup();
     await runM64CarryGridGroup();
+    await runM65MapGroup();
   } else {
     await runLegacyGroups();
     await runM5Groups();
     await runM6CarryGroup();
     await runM63DragGroup();
     await runM64CarryGridGroup();
+    await runM65MapGroup();
   }
 
   // ============================================================

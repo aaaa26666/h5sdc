@@ -152,6 +152,19 @@ try {
     `货币 ${curBefore} → ${curAfter}`);
 
   // ---- 5) 点击进入战区 ----
+  //
+  // ★ M6-5：`#btnStart` 从大厅标题栏搬进了「进入战局」页（制作人裁定：不留两个入口）。
+  //   它不在当前页签的 `.tabbody` 里时是 display:none —— 直接 click 会一直等到超时，
+  //   而失败信息看起来像"进不去战区"。因此这里必须先切页签（玩家真实路径）。
+  await page.click('#lobbyTabs .tab[data-tab="deploy"]');
+  await sleep(150);
+  // 顺带确认便携版（生产构建）也把地图选择画出来了：`#mapList` 的卡片是 DOM 渲染的，
+  // 只断言"数据层有地图表"证明不了界面没坏。
+  const mapCards = await page.$$eval('#mapList .map-card', (ns) =>
+    ns.map((n) => ({ id: n.dataset.map, on: n.classList.contains('on') })));
+  check('★ M6-5 便携版也画出了地图选择卡片（生产构建里界面没坏）',
+    mapCards.length >= 2 && mapCards.filter((c) => c.on).length === 1,
+    JSON.stringify(mapCards));
   await page.click('#btnStart');
   await sleep(1200);
   const hudOn = await page.evaluate(() => document.getElementById('hud').classList.contains('on'));

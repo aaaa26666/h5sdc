@@ -69,6 +69,18 @@ const FORBIDDEN = [
   'carryGive',
   'carryAuditNow',
   'breakCarry',
+  // ★ M6-5 地图选择新增的夹具：选图（复用 resolveMapId 的回落判定）与读地图选项。
+  //
+  // 注意区分（docs/20 §4.1 记过这条教训）：这里只能列**DEV-only 的夹具名**，
+  // 也就是行号在 `if (import.meta.env.DEV)` **之后**的那些名字。
+  // `lobby.renderDeploy` / `lobby.onMapSelect` / `mapOptionOf` / `configForMap` /
+  // `resolveMapId` / `listMapOptions` / `mapCountsOf` 都是**产品代码**
+  // （配置装配、界面渲染、纯函数视图），它们本来就该出现在生产产物里 ——
+  // 列进 FORBIDDEN 会让门禁立刻误报。`snapshot()` 里的 `mapId` / `raidMapId`
+  // 是 DEV 门控内返回值的**字段名**，同理不算夹具名（且 `mapId` 是产品词，
+  // 生产代码里到处都有它，列进去必然误报）。
+  'setMap',
+  'mapOptions',
 ];
 
 console.log('\n================ 生产产物校验（调试接口必须已被剔除）================\n');

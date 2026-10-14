@@ -104,12 +104,16 @@
       .card h2 { font-size: 15px; margin: 0 0 18px; color: var(--dim); font-weight: normal; }
       /* 主大厅（M5-1）：内容比结算页长（战区简报 + 可折叠的操作说明），
          所以给它更宽并允许纵向滚动 —— 小屏上不能靠"内容很少"侥幸不溢出。
-         ★ M6-4：改为**全屏**（制作人裁定）。装备页现在要同屏放下四张网格
-           （人形 300px + 背包/弹挂/保险箱 + 仓库 300px），780px 的卡片塞不下，
-           塞不下的结果就是"拖放目标在视口外"，而那看起来完全像功能坏了。
-           上限 1500px 是为了在超宽屏上不让行长得读不完（不是随手取的数：
-           四列内容 ≈ 300+220+320+ 余量）。 */
-      .card.lobby { width: min(1500px, 98vw); max-height: 96vh; overflow: auto; }
+         ★ M6-4：改为**全屏**（制作人裁定）。
+         ★ M6-5：**真·占满视口**（100vw × 100vh，去掉宽度上限）。理由与 M6-4 同一条、
+           但更彻底：M6-5 把大厅拆成「装备 / 进入战局 / 商店 / 技能 / 任务」五页，
+           其中装备页要同屏放下四张网格（人形 300px + 背包/弹挂/保险箱 + 仓库 300px），
+           而"进入战局"页要放下地图卡片 + 完整战区简报。
+           原来的 min(1500px, 98vw) 在超宽屏上把内容挤成中间一条，两侧全是黑边 ——
+           那不是"限制行长"，是浪费了玩家买来的屏幕。
+           仍然保留 overflow: auto：全屏不等于"内容一定装得下"（小屏上该滚就滚）。 */
+      .card.lobby { width: 100vw; height: 100vh; max-height: none; max-width: none;
+        border-radius: 0; border: none; overflow: auto; }
       /* ★ [M6-BUG-03] 结算页也要能装下"很长的一局"。
          body 是 overflow:hidden，而结算明细随战利品条数增长（带出 / 损失 / 存入仓库逐件列出，
          再加上稀有度、经验、任务、消耗统计），卡片此前**没有 max-height / overflow** ——
@@ -273,6 +277,22 @@
       .stepper .grp { display: inline-flex; align-items: center; gap: 4px; }
       .stepper .num { min-width: 62px; text-align: center; }
 
+      /* ---- ★ M6-5 地图选择卡片（「进入战局」页）----
+         宽度用 grid 的 minmax 而不是 flex-basis：地图数量是可注册的（现在是 2 张，
+         将来可能 3~4 张），写死宽度会在加图时把卡片挤成一条。
+         `minmax(260px, 1fr)` 的含义是"每张至少 260px，多出来的均分" ——
+         260 是"2 层 · 容器 89 · 撤离点 4（条件 2）· 敌方 16"这一行字不换行所需的宽度。 */
+      .map-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 10px; margin: 6px 0; }
+      .map-card { border: 1px solid rgba(140,200,225,.3); border-radius: 6px; padding: 8px 10px;
+        background: rgba(16,26,34,.55); cursor: pointer; pointer-events: auto; user-select: none; }
+      .map-card:hover { border-color: rgba(140,200,225,.65); }
+      /* 选中的那张必须一眼看出来：卡片上的数字决定下面显示哪张图的简报，
+         "我到底选了哪张"看不清会让玩家照着错的撤离点规则做决定。 */
+      .map-card.on { border-color: rgba(140,200,225,.95); background: rgba(80,150,190,.28); }
+      .map-card .map-name { color: var(--ink); margin-bottom: 2px; }
+      .map-card .mini { margin-top: 6px; display: inline-block; }
+
       /* 拖动的幽灵元素。位置由 ui/dragdrop.js 用 ev.clientX/clientY（**视口坐标**）写入，
          所以这里用 position:fixed —— 它与坐标口径自洽，不依赖"宿主元素的包含块恰好也在视口原点"
          这条隐含前提（今天宿主是 #dragLayer，明天若换成别的容器，absolute 就会静默偏移）。
@@ -354,22 +374,24 @@
 
         <!-- M5：大厅内标签页（制作人裁定）。每个面板只渲染 core/ 的纯函数产物。
              ★ M6-3（docs/18 第 3 批）：**配装与仓库合并**成「装备」页，页签由 6 个变 4 个。
-             原始方案的 §3.3 写的是"由 5 个变 4 个"，它数的是 M5 的**五个面板入口**
-             （配装/仓库/商店/技能/任务），没有把简报算进去 —— 而简报页签是客观存在的第 6 个。
-             简报**不能删**：撤离点开放规则、单局时限、敌方数量与分级是进战区前唯一的权威来源，
-             删掉它等于静默丢信息。因此简报并入「装备」页顶部（`#lobbyBody` 原样保留、
-             始终可见、内容一条不少），见 docs/20 的"口径与裁定"一节。 -->
+             ★ M6-5（制作人裁定 2026-10-14）：大厅拆成**两个不同的标签页** ——
+              「装备」只放"我带了什么"（左配装 + 右仓库，M6-3 的交互一字不改），
+              「进入战局」放"我这一局要面对什么"（地图选择 + 该图战区简报 + 进战区按钮）。
+              简报是从装备页**移走**而不是复制：本项目明确不留"看起来还能用"的重复入口。
+              难度选择本次不做（已裁定推迟）。
+              最终集合：装备 / 进入战局 / 商店 / 技能 / 任务（5 个）。 -->
         <div class="tabs" id="lobbyTabs">
           <div class="tab on" data-tab="gear">装备</div>
+          <div class="tab" data-tab="deploy">进入战局</div>
           <div class="tab" data-tab="shop">商店</div>
           <div class="tab" data-tab="skills">技能</div>
           <div class="tab" data-tab="quests">任务</div>
         </div>
 
         <div class="tabbody on" id="tabGear">
-          <!-- 战区简报：数值全部由 src/core/briefing.js 从配置表产出，这里只排版。
-               它排在装备页顶部而不是单独一页 —— 玩家在这一页做的决定（带什么、穿什么）
-               正是由这些数字决定的。两列排版是为了不让它把下面的装备格挤出视口。 -->
+          <!-- ★ M6-5：战区简报**已搬去「进入战局」页**（见下面的 #tabDeploy）。
+               装备页现在只放"我带了什么"：这一块读数（主武器/副武器/备弹/护甲/医疗/
+               携行/安全箱）留在顶部，因为它描述的正是本页要摆的那些东西。 -->
           <div class="brief-strip">
             <div id="lobbyBody" class="grid2"></div>
             <!-- §2.6 要求"断线惩罚规则需在首次进入时告知玩家" -->
@@ -379,9 +401,31 @@
           </div>
           <!-- 装备面板本身（配装 + 仓库）。**单独一层容器**是必需的：
                panels.js 的这个面板用 innerHTML 整块重绘，若直接写 #tabGear，
-               上面那条简报会在每次重绘时被抹掉（简报由 ui/lobby.js 写 #lobbyBody）。 -->
+               上面那条读数会在每次重绘时被抹掉（读数由 ui/lobby.js 写 #lobbyBody）。 -->
           <div id="gearBody"></div>
         </div>
+
+        <!-- ★ M6-5：「进入战局」页（新建）。
+             三件事：选地图 → 看**所选那张图**的战区简报 → 进战区。
+             简报里的每一个数字都来自 core/briefing.js（用 configForMap(所选图) 算出来），
+             因此"以为选的是 A、显示的是 B"在结构上不可能发生。 -->
+        <div class="tabbody" id="tabDeploy">
+          <!-- 进战区按钮从标题栏搬到这里（制作人裁定：不留两个入口）。
+               它排在**最上面**：玩家切到本页的第一眼就是它，而不是先滚过简报。 -->
+          <div class="btns" style="margin-bottom:10px">
+            <div class="btn primary" id="btnStart">进入战区</div>
+            <span class="muted" style="align-self:center">
+              带不进去的东西会被拦下（见「装备」页的携行网格）
+            </span>
+          </div>
+          <div class="slot-line">
+            <span class="k">选择地图</span>
+            <span class="muted">点一张图 → 下面就是它的简报</span>
+          </div>
+          <div id="mapList" class="map-list"></div>
+          <div id="deployBody" class="grid2" style="margin-top:10px"></div>
+        </div>
+
         <div class="tabbody" id="tabShop"></div>
         <div class="tabbody" id="tabSkills"></div>
         <div class="tabbody" id="tabQuests"></div>
@@ -414,8 +458,13 @@
           <span class="k warn">上局未正常结束（刷新 / 关闭页面）</span><span class="v">点击查看结算 ›</span>
         </div>
 
+        <!-- ★ M6-5：`#btnStart` **已经搬进「进入战局」页**（见 #tabDeploy 顶部）。
+             这里刻意**只剩设置** —— 制作人裁定不留两个入口：
+             留一个"看起来还能用"的重复入口，玩家会以为在哪一页点都一样。
+             id 保留不变（自动化测试的锚点），但位置与可见性都跟着页签走：
+             默认停在「装备」页时它**不可见**（不在当前 .tabbody 里 ⇒ display:none），
+             因此所有点它的测试都必须先切到「进入战局」页。 -->
         <div class="btns">
-          <div class="btn" id="btnStart">进入战区</div>
           <div class="btn" id="btnSettings">设置</div>
         </div>
         <!-- 大厅自己的提示条：局内 HUD 的 #toast 在 #hud 里，局外看不到，

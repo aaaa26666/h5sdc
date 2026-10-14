@@ -16,7 +16,7 @@
 //             暴露给任意页面脚本。DEV 门控两头都满足，且**可验证**：
 //             tools/verify-prod-bundle.mjs 会扫描产物确认接口字符串不存在。
 import * as THREE from 'three';
-import { config } from './config/index.js';
+import { config, configForMap } from './config/index.js';
 import { createLevel } from './level/level.js';
 import { createInput } from './platform/input.js';
 import { loadSettings, saveSettings, resetSettings, mouseSensScale, volumeScale, qualityParams, sfxVolumeScale, musicVolumeScale } from './platform/settings.js';
@@ -49,6 +49,9 @@ import { createPanels, reasonText } from './ui/panels.js';
 import { loadProfile, saveProfile, clearProfile, storageInfo, isProfileAvailable } from './platform/profileStore.js';
 import { profileView, activeLoadout } from './core/profile.js';
 import { buildLobbyViews, buildSettingsView } from './core/lobbyView.js';
+// ★ M6-5：地图选择。判据（已注册 / 回落）只有一份 —— core/mapView.js 的 resolveMapId，
+//   档案收敛、结算打标、界面高亮读的都是它。
+import { resolveMapId } from './core/mapView.js';
 // M5-8：设置面板（独立模块，销 M5-TEMP-4）与改键校验
 import { createSettings } from './ui/settings.js';
 // ★ M6-4：进局前的「有东西带不进去」警告页（只排版不算数，判定在 core/carry.js）。
@@ -90,6 +93,23 @@ import { mulberry32 } from './core/rng.js';
 import { sustainedClimbRate } from './core/ballistics.js';
 
 const cfg = config;
+
+/**
+ * ★ M6-5：**玩家选定的那张图**的配置视图。
+ *
+ * 为什么需要第二个 cfg：`config` 是"默认地图（tunables.level.activeMap）的视图" ——
+ * 大量工具与单测读它（含几何黄金基准），它的形状与内容都不能动。
+ * 而玩家选的那张图必须**真的**被用来建世界：`config.level` / `config.extract.zones` /
+ * `config.loot.containers` / `config.coverList` / `config.map` 这五项都是模块加载时
+ * 按 activeMap 派生一次的常量，直接读 `cfg` 就等于"选图只是改了个界面数字"。
+ *
+ * 取值口径：**每次要用时现取**（这个函数就是唯一入口），而不是在启动时算一次存起来 ——
+ * 后者会在"大厅换了图、回大厅又换回来"这类路径上留下一个过期的变量，
+ * 而它读起来完全合理（正是本仓库最忌讳的"看起来对"）。
+ */
+function mapCfg() {
+  return configForMap(profile.mapId).cfg;
+}
 
 // ---------------- 渲染器 ----------------
 const app = document.getElementById('app');
@@ -142,6 +162,14 @@ let profile = profileState.profile;
 const lobbyUi = { selectedUids: [], sortMode: 'category' };
 /** 本局从仓库取走的配装（撤离要把没用完的还回来，阵亡则整份丢失）。 */
 let raidTaken = null;
+/**
+ * ★ M6-5：**本局实际用的配置视图**（= 进局那一刻所选地图的那一份）。
+ *
+ * 为什么不能局内再读 mapCfg()：局内期间档案里的 mapId 有可能被改（DEV 夹具、将来的
+ * 其它入口），而这一局的世界是**按进局那一刻那张图**建的。局内再取一次会得到
+ * "几何是 A、容器/撤离点是 B"这种最难查的错配。因此进局时快照一份，局内只读它。
+ */
+let raidCfg = cfg;
 /** 上一局的结算落库摘要（结算界面要显示经验 / 任务 / 入库明细）。 */
 let lastRaidSummary = null;
 /** 进局时的配装快照（DEV 接口与结算读数用它，避免"局内再算一遍"）。 */
@@ -423,6 +451,11 @@ function resetRaidState() {
  */
 function enterRaidWorld(kit) {
   resetRaidState();
+  // ★ M6-5：本局的世界**按玩家选的那张图**建。取一次快照给下面每一个系统共用 ——
+  //   局内的几何（level）、容器（loot）、撤离点（extract）、AI 出生分区（aiManager 读
+  //   cfg.map.zones / aiSpawns）必须来自同一张地图表，否则会出现"在 A 图的地形上
+  //   摆着 B 图的容器"这类错配。取值口径见 mapCfg / raidCfg 的注释。
+  raidCfg = mapCfg();
   // ★ M5-3：进局的配装与技能倍率由 raidKit 一次传入，局内系统**只读**它。
   //   此前局内读的是 weapons.json 里写死的 startLoadout（M5-TEMP-2），
   //   于是"玩家换了枪但局内还是旧枪"，而且技能倍率根本没有传递通道。
@@ -436,28 +469,31 @@ function enterRaidWorld(kit) {
   }));
 
   raidRoot = createRaidRoot(scene);
-  level = createLevel(cfg, raidRoot);
+  // ★ M6-5：下面每一个系统都拿 raidCfg（= 所选地图的视图），不再是模块级的 `cfg`。
+  //   尤其 `createLevel` 与 `createAiManager`：前者的几何、后者的出生分区
+  //   （`cfg.map.zones` / `aiSpawns`）必须来自同一张地图表。
+  level = createLevel(raidCfg, raidRoot);
   // 灵敏度倍率以**函数**注入，而不是传当前数值快照：
   // 设置面板可以在局内被打开并改动，传快照会让"改了但本局不生效"变成一个
   // 说不清的行为，而玩家会认为设置坏了。
-  player = createPlayer(cfg, level, { sensitivityScale: () => mouseSensScale(settings), kit });
+  player = createPlayer(raidCfg, level, { sensitivityScale: () => mouseSensScale(settings), kit });
   decals = createDecals(raidRoot);
   // M3-5 背包（二维网格 + 负重）与 M3-6 安全箱。
   // 先于 loot 创建：开箱回调要把物品塞进背包，而钥匙房要先查背包里有没有门禁卡。
   // M5-5：负重上限与安全箱档位来自 raidKit（技能与任务解锁都会改它们）。
-  inventory = createInventory(cfg, { kit });
-  extract = createExtract(cfg, level, raidRoot);
+  inventory = createInventory(raidCfg, { kit });
+  extract = createExtract(raidCfg, level, raidRoot);
   // ★ M6-2：新一局开始前清空"已留尸体"的记录。
   //   不清的话，上一局死掉的 AI id（ai_0…ai_15 会复用同样的编号）会被当成"已处理"，
   //   本局对应编号的 AI 死掉时**不会留尸体** —— 一个只在第二局才出现的静默缺陷。
   corpseSpawned.clear();
-  loot = createLoot(cfg, level, raidRoot, {
+  loot = createLoot(raidCfg, level, raidRoot, {
     // M5-5：搜刮速度倍率（搜刮熟练技能）由 raidKit 传入；缺省时等价于配置基线
     kit,
     // ★ M6-2：为尸体预留实例槽位。上限 = 本局 AI 总数（含 Boss）。
     //   刻意**不写死常量** —— AI 配额一改，写死的值就会静默不够用，
     //   而"尸体生不出来"不会报错，只会让人以为"击杀本来就不掉东西"。
-    corpseSlots: (cfg.aiSpawn.totalCount || 0) + (cfg.aiSpawn.bossCount || 0),
+    corpseSlots: (raidCfg.aiSpawn.totalCount || 0) + (raidCfg.aiSpawn.bossCount || 0),
     /**
      * 开箱（或拾取遗留）：逐件尝试入包，装不下的**留在容器里**而不是凭空消失。
      * 容量与负重因此成为真约束 —— 这正是"搜"这个字的核心取舍。
@@ -499,11 +535,11 @@ function enterRaidWorld(kit) {
   // 已释放的几何上（并且地图表若改了尺寸就是两个世界的网格混用）。
   navGrid = createLayeredNavGrid(level.nav);
   aStar = createAStar(navGrid);
-  scheduler = createPathScheduler(aStar, cfg.aiPathBudget);
+  scheduler = createPathScheduler(aStar, raidCfg.aiPathBudget);
   // 该视线函数供后续 AI 侧扩展使用；当前 AI 用的是 level.hasLineOfSight（含高度判定）
   void makeLos;
 
-  aiManager = createAiManager({ cfg, level, scene: raidRoot, scheduler, player });
+  aiManager = createAiManager({ cfg: raidCfg, level, scene: raidRoot, scheduler, player });
 
   // ★ M6：消耗品与弹药不再另存计数 —— 它们就在 inventory 的网格里（见 consumableCount）。
   //   此前这里是 `consumables = { ...kit.loadout.consumables }`，那一份是真值的副本。
@@ -511,7 +547,7 @@ function enterRaidWorld(kit) {
   // 武器随机流每局重取。它是**确定性**的（同一个全局种子），因此重开一局的
   // 后坐力抖动序列与上一局完全一致 —— 这是可复现性（测试依赖它），
   // 不是"忘了重置"。
-  weaponRng = mulberry32(cfg.level.seed + 7717);
+  weaponRng = mulberry32(raidCfg.level.seed + 7717);
   weaponSys = createWeaponSystem({
     cfg,
     level,
@@ -1127,6 +1163,9 @@ function startRaid(nowMs) {
   // ★ M6：用 takeLoadout 给的 `effectiveLoadout` 与 `carry` 建包 ——
   //   局内手上/包里的东西必须是**仓库真的拿得出**的那一份。
   //   直接用档案里的配装会让"配装里留了已卖掉的枪/子弹"变成凭空的物资。
+  //
+  // ★ M6-5：`enterRaidWorld` 内部按**所选地图**取配置（mapCfg），因此这里
+  //   传进去的 kit 与将要建出来的世界属于同一张图（`facts.mapId` 读的也是 raidCfg）。
   enterRaidWorld(buildRaidKit(profile, cfg, { loadout: takenRes.effectiveLoadout, carry: takenRes.carry }));
 
   // 新的一局开始，上局的残留快照到此为止（正常情况下上面那一步已经清掉了）。
@@ -1249,7 +1288,10 @@ function raidFacts(result) {
     keptItems,
     keptValue: result.loot.keptValue,
     extractId: lastExtractZoneId,
-    mapId: cfg.map.id,
+    // ★ M6-5：本局归属的地图取**本局实际用的**配置（raidCfg），不是档案上的 mapId ——
+    //   后者在大厅被改过之后会让这一局的样本被打上另一张图的标签，
+    //   而通胀监控正是按这个标签分组的（错标 = 两张图的统计一起失真）。
+    mapId: raidCfg.map.id,
   };
 }
 
@@ -1362,14 +1404,55 @@ function showLobby() {
   lobby.show(true);
 }
 
-/** 重绘大厅的简报、档案读数与四个面板（档案变过就调它）。 */
+/** 重绘大厅的读数、所选地图的简报与五个面板（档案变过就调它）。 */
 function refreshLobby() {
   lobbyViews = buildLobbyViews(profile, cfg, { selectedUids: lobbyUi.selectedUids });
-  // 简报在这里重绘，而不是只在 showLobby 里 —— M6-3 起简报与装备面板同页，
-  // 而拖放一次就会改配装；不重算的话玩家会看到"面板上换了枪、简报里还是旧的"。
-  lobby.render(buildRaidBriefing(cfg, buildRaidKit(profile, cfg)));
+  const kit = buildRaidKit(profile, cfg);
+  // ① 「装备」页顶部的读数（我带了什么）。它跟着**配装**走，与地图无关。
+  //    在这里重绘而不是只在 showLobby 里 —— M6-3 起读数与装备面板同页，
+  //    而拖放一次就会改配装；不重算的话玩家会看到"面板上换了枪、读数里还是旧的"。
+  lobby.render(buildRaidBriefing(cfg, kit));
+  // ② ★ M6-5：「进入战局」页 —— 所选地图的简报 + 地图卡片。
+  //
+  //   简报必须用**所选那张图**的配置算（configForMap），否则"点的是电视台、
+  //   简报写的是工业区" —— 玩家会照着错的撤离点规则做决定。
+  //
+  //   地图卡片的数字与简报**同源**：每张图各跑一遍 buildRaidBriefing，
+  //   而不是另外写一段"数容器/数撤离点"的代码（那就是第二份口径）。
+  const selected = mapCfg();
+  lobby.renderDeploy({
+    selectedId: selected.map.id,
+    brief: buildRaidBriefing(selected, kit),
+    // 卡片的数字与下方那份完整简报**同源**：每张图各跑一遍 buildRaidBriefing
+    // （它内部就是按 cfg.map / cfg.loot.containers / cfg.extract.zones 数的），
+    // 而不是另外写一段"数容器、数撤离点"的代码 —— 那就是第二份口径。
+    // 顺序取 cfg.maps 的键序（= 注册表顺序），不在这里排序：
+    // "先给玩家看哪张图"是策划决定，界面不该悄悄替他做主。
+    options: Object.keys(cfg.maps).map((id) => mapOptionOf(id)),
+  });
   lobby.renderStats(lobbyViews.stats);
   panels.renderAll(lobbyViews);
+}
+
+/**
+ * ★ M6-5：一条地图卡片的数据（层数 / 容器 / 撤离点含条件 / 敌方）。
+ *
+ * 数字来源是 `buildRaidBriefing(configForMap(id).cfg)` —— 与「进入战局」页下方那份
+ * 完整简报**完全同源**。卡片只取它需要的那三段（map / extracts / enemies），
+ * 因此"卡片说 89 个容器、简报说 22 个"在结构上不可能发生。
+ *
+ * 注意：这里**不传 kit**（第二参数）。地图卡片与"我带了什么"无关，
+ * 传了会让每次换枪都重算一遍所有地图的卡片。
+ */
+function mapOptionOf(mapId) {
+  const b = buildRaidBriefing(configForMap(mapId).cfg, null);
+  return {
+    id: b.map.id,
+    label: b.map.label,
+    map: b.map,
+    extracts: { total: b.extracts.total, conditional: b.extracts.conditional },
+    enemies: { total: b.enemies.total },
+  };
 }
 
 /**
@@ -1421,6 +1504,27 @@ function applySettings(s, persist) {
   // ★ M5-8：改键也立即生效（要求重进游戏才生效会被当成"改键失败"）
   input.syncSettings(s);
 }
+
+// ★ M6-5：**地图选择**。
+//
+// 判定与落库的分工（与 dropCommit 同一口径）：
+//   · id 是否合法、未知时回落到哪张图 —— core/mapView.js 的 resolveMapId（唯一判据）；
+//   · 这里只做"写进档案 + 存盘 + 重绘"。
+// 为什么不能直接 `profile.mapId = id`：那样未知 id 会被原样写进档案，
+// 于是"选了不存在的图"要等到进战区时才发现（而那时只能回落，玩家会以为点错了）。
+lobby.onMapSelect((rawId) => {
+  const r = resolveMapId(cfg, rawId);
+  if (r.mapId === profile.mapId) return; // 点的是已经选中的那张：不写盘、不重绘
+  profile = { ...profile, mapId: r.mapId };
+  saveProfileNow();
+  refreshLobby();
+  const label = (cfg.maps[r.mapId] && cfg.maps[r.mapId].label) || r.mapId;
+  lobby.toast(
+    r.repaired
+      ? `没有「${String(rawId)}」这张图 —— 已回到「${label}」`
+      : `已选择「${label}」：右侧简报就是这张图的`
+  );
+});
 
 lobby.el.btnStart.addEventListener('click', () => {
   // ★ M6-4：先看有没有带不进去的东西。放在补结算**之前** ——
@@ -2000,10 +2104,48 @@ if (import.meta.env.DEV) {
    * 那是正常路径而不是误用。键全部保留、局内专属字段为 null，
    * 断言侧因此不必为两种状态写两套读法。
    */
+  /**
+   * ★ M6-5：地图选择的**夹具**与读数。
+   *
+   * 为什么夹具要走"界面回调那一层"（lobby.onMapSelect 注册的那个函数）的同一条路：
+   *   直接 `profile = {...profile, mapId}` 会绕过 resolveMapId 的回落与文案，
+   *   于是"选了一张不存在的图"在测试里就成了"档案里存了个非法 id"，
+   *   而产品里那种情况会被回落 —— 夹具自己造出了产品里造不出的状态，
+   *   用它测出来的绿证明不了产品是对的。
+   *
+   * @returns {{mapId:string, repaired:boolean, options:string[]}}
+   */
+  function setMap(rawId) {
+    const r = resolveMapId(cfg, rawId);
+    profile = { ...profile, mapId: r.mapId };
+    saveProfileNow();
+    refreshLobby();
+    return { mapId: r.mapId, repaired: r.repaired, options: Object.keys(cfg.maps) };
+  }
+
+  /**
+   * ★ M6-5：地图选项的**读数**（层数 / 容器 / 撤离点含条件 / 敌方）。
+   *
+   * 端到端断言读它，而不是去数 DOM 上的文字 —— 文字会随排版变，
+   * 这里的每一项都是 core 的纯函数产物（与界面显示的同一份）。
+   */
+  function mapOptions() {
+    return {
+      selectedId: profile.mapId,
+      options: Object.keys(cfg.maps).map((id) => mapOptionOf(id)),
+    };
+  }
+
   const lobbySnapshot = () => ({
     flow: flow.state,
     endReason: flow.endReason,
     raidId: null,
+    /**
+     * ★ M6-5：局外读到的"这一局会打哪张图" —— 取自**档案**（玩家在大厅选的），
+     * 而不是取 `config.map`（那是默认地图）。端到端要断言"选了就真的存下来了"，
+     * 只能读这里；读 config 等于读了个常量，永远为真。
+     */
+    mapId: profile.mapId,
     transitions: flow.transitions.slice(),
     paused: isPaused,
     remainingMs: Math.round(flow.timing(raidClock(performance.now())).remainingMs),
@@ -2099,6 +2241,10 @@ if (import.meta.env.DEV) {
     ammoInGrid,
     freeStashSpot,
     grantWeapon,
+    // ★ M6-5：地图选择（选图 / 读选项）。两者都只走产品路径：
+    //   setMap 复用 resolveMapId 的回落判定，mapOptions 复用界面同源的地图卡片数据。
+    setMap,
+    mapOptions,
     /**
      * ★ M6-2 测试隔离：让全部 AI 停止更新（不移动、不开火）。**不是产品功能**。
      *
@@ -2178,6 +2324,12 @@ if (import.meta.env.DEV) {
         // M5-1：本局 id。断言"回到大厅后再进战区拿到的确实是**新的一局**"要靠它 ——
         // 只看 world.builds 只能证明建过一次，证明不了新局不是旧局。
         raidId,
+        /**
+         * ★ M6-5：**本局真的用了哪张图**。它与 `lobbySnapshot().mapId` 是两件事：
+         *   后者是"玩家现在选了哪张"，前者是"这一局的世界是按哪张建的"。
+         *   "选图只是改了个数字、世界还是老图"这类缺陷只有读它才抓得住。
+         */
+        raidMapId: raidCfg.map.id,
         transitions: flow.transitions.slice(),
         paused: isPaused,
         remainingMs: Math.round(flow.timing(raidClock(performance.now())).remainingMs),
