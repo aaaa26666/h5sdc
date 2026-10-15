@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
-import { launchBrowser, describeMode, ROOT as REPO_ROOT } from './lib/browser.mjs';
+import { launchBrowser, describeMode, suppressPointerLock, ROOT as REPO_ROOT } from './lib/browser.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = REPO_ROOT;
@@ -65,6 +65,8 @@ console.log('  （不附加任何 Chrome 特殊参数，与朋友机器一致）
 const browser = await launchBrowser({ protocolTimeout: 120000 });
 
 const page = await browser.newPage();
+// 同上：不让便携版测试抢走用户的鼠标（游戏仍按"已锁定"运行）
+await suppressPointerLock(page);
 const errors = [];
 const consoleMsgs = [];
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
@@ -165,6 +167,21 @@ try {
   check('★ M6-5 便携版也画出了地图选择卡片（生产构建里界面没坏）',
     mapCards.length >= 2 && mapCards.filter((c) => c.on).length === 1,
     JSON.stringify(mapCards));
+
+  // ★ M6-5 第 4 批：「最近一局」/「一键补齐」两个按钮同样要看**生产构建**里有没有。
+  //   它们挂在装备页的 lastRaid 区块上，那块是 DOM 渲染的 —— 断言数据层有 lastRaid
+  //   证明不了界面还画得出来（生产构建里任何一处渲染异常都会让整块消失）。
+  //   强度与上面那条一致：守的是"界面没坏"，不是内容。
+  await page.click('#lobbyTabs .tab[data-tab="gear"]');
+  await sleep(150);
+  const raidBtns = await page.evaluate(() => ({
+    restore: !!document.querySelector('#gearBody [data-act="restoreLastRaid"]'),
+    refill: !!document.querySelector('#gearBody [data-act="refillLastRaid"]'),
+  }));
+  check('★ M6-5 便携版也画出了「最近一局」与「一键补齐」（生产构建里界面没坏）',
+    raidBtns.restore && raidBtns.refill, JSON.stringify(raidBtns));
+  await page.click('#lobbyTabs .tab[data-tab="deploy"]');
+  await sleep(150);
   await page.click('#btnStart');
   await sleep(1200);
   const hudOn = await page.evaluate(() => document.getElementById('hud').classList.contains('on'));

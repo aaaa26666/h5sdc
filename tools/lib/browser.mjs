@@ -92,3 +92,87 @@ export function describeMode(headed = wantsHeaded()) {
     ? '有头 headed（会抢占鼠标与焦点，仅供旁观调试）'
     : '无头 headless（默认，不影响你使用电脑）';
 }
+
+/**
+ * 让被测页面**不要真的去捕获指针**，但游戏仍然按"已锁定"运行。
+ *
+ * 为什么需要它（真实困扰）：本游戏要转视角就得锁定指针，而指针锁定会把**用户的鼠标**
+ * 从桌面抢走 —— 表现为测试一跑、鼠标就不听使唤（无头模式下看不到窗口，但锁定照样成立）。
+ * 于是"跑一次冒烟测试"变成"这台电脑没法用了"，而测试本身要跑好几分钟。
+ *
+ * 为什么不能只把 requestPointerLock 改成空函数：
+ *   main.js 的暂停规则是"局内 + 指针没锁 → 暂停"。锁不上就会被判成"玩家切出去了"，
+ *   游戏立刻冻结、所有断言全废。所以必须**同时**让游戏看到"锁上了"。
+ *
+ * 做法（只动浏览器 API 的表面，不动游戏代码）：
+ *   · requestPointerLock 不转发给浏览器（于是真正不抢鼠标），改为同步派发
+ *     pointerlockchange，并在派发期间让 document.pointerLockElement 指向该元素
+ *     —— input.js 的 onLockChange 正是据此把 pointerLocked 置为 true 的；
+ *   · 派发完立刻把 document.pointerLockElement 恢复（delete 掉），
+ *     并把随后异步到达的 pointerlockerror 吞掉
+ *     （真实浏览器在上面那次请求失败后确实会发它，不吞会污染"无页面异常"类断言）。
+ *
+ * 这**不是**在测一个假游戏：输入层读到的仍是真实的 pointerlockchange 事件，
+ * 只是这个事件由我们自己合规地产生。需要真实指针锁定的场景（例如人眼旁观
+ * `--headed`）用 `DSH_REAL_POINTER_LOCK=1` 关掉本替身。
+ *
+ * @param {import('puppeteer-core').Page} page
+ */
+export async function suppressPointerLock(page) {
+  if (process.env.DSH_REAL_POINTER_LOCK === '1' || process.env.DSH_REAL_POINTER_LOCK === 'true') {
+    console.log('  （DSH_REAL_POINTER_LOCK 已设置：本次不替换指针锁定，鼠标可能被捕获）');
+    return;
+  }
+  await page.evaluateOnNewDocument(() => {
+    const proto = Element.prototype;
+    const realRequest = proto.requestPointerLock;
+    if (typeof realRequest !== 'function') return;
+
+    // 替身要**持续**维持"已锁定"这个状态，而不是只在事件派发的那一瞬。
+    // 原因：测试会直接查 `document.pointerLockElement !== null`（有 3 处断言依赖它，
+    // 用于等待"指针锁定已拿到"）。只在派发瞬间假装锁定的话，那些断言会红。
+    let fakeEl = null;
+
+    Object.defineProperty(document, 'pointerLockElement', {
+      configurable: true,
+      get: () => fakeEl,
+    });
+
+    // 与真实实现一样：exitPointerLock 之后要发 pointerlockchange，
+    // 否则 input.js 的 onLockChange 不会把 pointerLocked 置回 false，
+    // 游戏就会以为还锁着 —— "回大厅后暂停"那条链路会失效。
+    const realExit = document.exitPointerLock;
+    document.exitPointerLock = function patchedExitPointerLock() {
+      const was = fakeEl;
+      fakeEl = null;
+      if (was) {
+        try {
+          document.dispatchEvent(new Event('pointerlockchange'));
+        } catch {
+          /* 忽略 */
+        }
+      }
+      if (typeof realExit === 'function') {
+        try { realExit.call(document); } catch { /* 浏览器侧本来就没锁上 */ }
+      }
+    };
+
+    proto.requestPointerLock = function patchedRequestPointerLock() {
+      fakeEl = this; // 浏览器侧**不转发**：真正不抢鼠标
+      try {
+        document.dispatchEvent(new Event('pointerlockchange'));
+      } catch {
+        /* 忽略 */
+      }
+      return Promise.resolve();
+    };
+
+    // 真实浏览器在这次"请求"后会异步发 pointerlockerror（因为浏览器侧根本没锁上）。
+    // 在捕获阶段拦掉，不让它进到游戏的监听器里。
+    document.addEventListener(
+      'pointerlockerror',
+      (e) => e.stopImmediatePropagation(),
+      true
+    );
+  });
+}

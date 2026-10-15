@@ -6,7 +6,7 @@
 //   ③ 后坐力/恢复造成的变化（正常量级很小，作为对照）
 //
 // 用法：node tools/diag-view-jump.mjs [url] [--headed]
-import { launchBrowser, describeMode } from './lib/browser.mjs';
+import { suppressPointerLock, launchBrowser, describeMode } from './lib/browser.mjs';
 
 const URL_BASE = process.argv.find((a) => a.startsWith('http')) || 'http://127.0.0.1:5180/';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -14,6 +14,7 @@ const DEG = 180 / Math.PI;
 
 const browser = await launchBrowser();
 const page = await browser.newPage();
+await suppressPointerLock(page); // 不抢用户鼠标（原理见 lib/browser.mjs）
 console.log(`\n================ 视角瞬移诊断 ================`);
 console.log(`  运行模式: ${describeMode()}\n`);
 

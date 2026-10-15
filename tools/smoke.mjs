@@ -20,10 +20,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { launchBrowser, describeMode, ROOT as REPO_ROOT } from './lib/browser.mjs';
+import { launchBrowser, describeMode, suppressPointerLock, ROOT as REPO_ROOT } from './lib/browser.mjs';
 // M5-1：大厅上的数值断言需要"从测试侧独立按配置表算一遍期望值"。
 // 只从界面读文本是证明不了"数值来自配置表"的 —— 数字写错了它照样通过。
 import { config } from '../src/config/index.js';
+// ★ 2026-10-14：档案版本号**只有一处真值**（core/profile.js 的 PROFILE_VERSION）。
+// 冒烟里原先写死 `view.version === 1`；M6-5 第 4 批把 PROFILE_VERSION 由 1 提到 2 之后
+// 这条就红了 —— 而红的不是实现（新档拿到的正是当前版本），是断言过期。
+// 改成动态跟随：以后再 +1 不会复发。单测侧本来就全是动态的，只有冒烟这一处漏改。
+import { PROFILE_VERSION } from '../src/core/profile.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = REPO_ROOT;
@@ -145,15 +150,29 @@ const ONLY = (() => {
   return i >= 0 ? String(process.argv[i + 1] || 'm5') : null;
 })();
 
-function m5Group(name) {
+/**
+ * 开一个组。`tags` 是**显式段落标签**（必填），`--only` 按标签精确匹配。
+ *
+ * ★ 2026-10-14：从「组名子串匹配」改成「标签匹配」。旧写法的坑被记过三次
+ *   （docs/20 §八、docs/23 §7.1、docs/24 §六）：新组必须把 `M5` 写进**名字**才不会被
+ *   `--only=m5` 跳过，而**忘了写就被静默跳过** —— 静默跳过比报错难发现得多。
+ *   现在：标签漏写当场抛错；`--only` 一个组都没匹配上，跑完也会报错。
+ */
+const onlyHitTags = new Set();
+function m5Group(name, tags) {
+  if (!Array.isArray(tags) || tags.length === 0) {
+    throw new Error(`[smoke] 组「${name}」没有声明段落标签（m5Group 的第 2 个参数）`);
+  }
   if (!ONLY) {
     group(name);
     return true;
   }
-  if (!name.toLowerCase().includes(ONLY.toLowerCase())) {
+  const t = ONLY.toLowerCase();
+  if (!tags.some((x) => x.toLowerCase() === t)) {
     console.log(`\n—— ${name}（--only=${ONLY} 跳过）——`);
     return false;
   }
+  onlyHitTags.add(t);
   group(name);
   return true;
 }
@@ -167,6 +186,10 @@ const browser = await launchBrowser();
 console.log(`  运行模式: ${describeMode()}`);
 
 const page = await browser.newPage();
+// ★ 让被测页面**不要真的捕获指针**（否则测试跑起来会把用户的鼠标从桌面抢走），
+//   同时游戏仍按"已锁定"运行 —— 原理见 suppressPointerLock 的注释。
+//   必须在任何 goto 之前调用（它装的是"文档创建前"的脚本）。
+await suppressPointerLock(page);
 const pageErrors = [];
 const badResponses = [];
 const lifecycle = [];
@@ -253,6 +276,45 @@ async function showTab(tab) {
  * 非常容易被误判成产品缺陷。**这是浏览器行为，不是游戏的问题** —— 真实玩家点按钮的
  * 间隔远大于 1 秒，且产品侧本来就有"未锁定即暂停"的正确行为。
  */
+/**
+ * ★ 2026-10-14：按一下 F。
+ *
+ * **必须按住约 90ms，不能用 `page.keyboard.press()`** —— 这个是实测踩出来的坑：
+ * `press()` 的 down 与 up 无延迟，可能落进**同一帧**；而 loot 的边沿检测读的是
+ * `interact` 的**状态**（不是"本帧是否发生过按下"），于是两帧都读到 false，开盒被丢掉。
+ * 症状极具误导性：**产品是好的，测试却报"按一下 F 没开出"**（已开 0 → 0）。
+ * 真实玩家的按键有 50~150ms（3~9 帧），不会漏；只有合成事件短到这个程度才会。
+ *
+ * 注：这同时也说明"按一下"的交互对**极短按键**是敏感的 —— 若将来要彻底免疫，
+ * 应该在 input 层做"本帧按下过"的锁存（事件语义），而不是在这里加 sleep。
+ */
+async function tapF() {
+  await page.keyboard.down('KeyF');
+  await sleep(90);
+  await page.keyboard.up('KeyF');
+  await sleep(60);
+}
+
+/**
+ * ★ 2026-10-15：搜一个容器的**唯一玩家路径** = 开盒 → 在搜刮页里拿 → 关页。
+ *
+ * 为什么夹具也必须走这条路：制作人裁定取消了「再按一次 F 自动全拿」，
+ * 于是"按两下 F"不再会把东西装进背包（第二下现在是**重新打开搜刮页**）——
+ * 夹具若继续按两下，测的就是一个不存在的交互，而失败信息看起来像"搜不到东西"。
+ *
+ * @param {number} waitMs 等物品转出来的时长（各容器 revealMs 不同，按调用点传）
+ */
+async function lootOneContainer(waitMs = 3200) {
+  await tapF();                          // 开盒 → 直接进搜刮页
+  await sleep(waitMs);                   // 等逐个转出
+  const on = await page.evaluate(() => document.getElementById('screenLoot').classList.contains('on'));
+  if (on) {
+    await page.click('#btnLootTakeAll'); // 全部取走（页面上的按钮，不是按 F）
+    await sleep(200);
+    await page.click('#btnLootClose');
+  }
+  await sleep(200);
+}
 async function startRaidFromLobby() {
   await sleep(1200); // 给浏览器留出指针锁定的冷却时间
   // ★ M6：进局前把配装补齐到仓库里。
@@ -295,6 +357,13 @@ async function loadAndStart() {
   //   绝大多数断言（开火 / 切枪 / 护甲）失去前提。因此测试显式注入一套富配装：
   //   这一步是**测试的准备动作**，产品路径一行不改（玩家自己买）。
   await page.evaluate(() => window.__m2.grantTestKit());
+  // ★ M6-6：历史组与 M5 段落全部是在**标准难度**下写的，因此这里把难度钉死在标准档。
+  //   不钉的话，每次全新档案的第一局都会走新手曲线（敌人 15 → 11、AI 更迟钝），
+  //   于是"这一组的 AI 行为"变成一个**随局数漂移**的量 ——
+  //   实测后果：M2-6 放开 AI 之后玩家被打死，整轮从 453 条崩到 60 条，
+  //   而失败信息看着像"AI 寻路坏了 / 搜刮页没打开"（真因是那一局已经结束了）。
+  //   难度曲线由它自己的那一组（`--only=m6-6`）专门验，且它会自己设局数。
+  await page.evaluate(() => window.__m2.setRaids(50));
   // ★ M6-5：`#btnStart` 只在「进入战局」页上可见（它从标题栏搬走了）。
   await showTab('deploy');
   await page.click('#btnStart');
@@ -339,6 +408,23 @@ async function runLegacyGroups() {
     check('初始位置不在墙内', s.player.cellBlocked === false);
     const locked = await page.evaluate(() => document.pointerLockElement !== null);
     check('指针锁定生效', locked === true);
+
+    // ★ 不允许真的捕获用户的鼠标。
+    //   背景：本游戏转视角要锁定指针，而**真**锁定会把用户的鼠标从桌面抢走 ——
+    //   跑一次冒烟测试就等于这台电脑没法用了（测试要跑好几分钟）。
+    //   因此 tools/lib/browser.mjs 的 suppressPointerLock() 让浏览器侧不锁、
+    //   游戏侧照旧认为锁上了。这条断言守住"浏览器侧真的没锁"这一半 ——
+    //   只验上面那条 `locked === true` 是不够的：**只让游戏以为锁上**也能通过它。
+    //   走原生 getter（Document.prototype 上那个）绕过替身，读的就是浏览器真实状态。
+    const nativeLock = await page.evaluate(() => {
+      const d = Object.getOwnPropertyDescriptor(Document.prototype, 'pointerLockElement');
+      const real = d && d.get ? d.get.call(document) : undefined;
+      return real ? (real.tagName || 'element') : null;
+    });
+    check('★ 测试没有真的抢走用户鼠标（浏览器侧未捕获指针）', nativeLock === null,
+      nativeLock === null
+        ? '浏览器真实 pointerLockElement=null（替身生效）'
+        : `浏览器真实锁定了 ${nativeLock} —— 会抢鼠标！检查 suppressPointerLock 是否被调用`);
 
     // M4-6：小地图。它由 Canvas 绘制，纯逻辑单测覆盖不到渲染，
     // 所以在这里验证画布确实按配置尺寸建立、且标注了当前层。
@@ -862,26 +948,176 @@ async function runLegacyGroups() {
   group('① 闭环：搜刮 → 撤离 → 结算');
   {
     await ensureRunning('loop');
+    // ★ 2026-10-14 塔科夫式改版：先单独验一条**新机制的核心** ——
+    //   按一下就开出，不再需要按住等进度条。这条是"不用读条"的直接证据。
+    {
+      const ok = await call('teleportToContainer');
+      if (ok) {
+        await sleep(150);
+        const beforeOpen = (await snap()).loot.opened;
+        await tapF();
+        await sleep(200);
+        const afterOpen = (await snap()).loot.opened;
+        check('★ 按一下 F 就立刻开出（不再需要按住等进度 —— 塔科夫式）',
+          afterOpen > beforeOpen, `已开 ${beforeOpen} → ${afterOpen}`);
+      }
+    }
     for (let n = 0; n < 2; n++) {
       const ok = await call('teleportToContainer');
       if (!ok) break;
       await sleep(150);
-      await page.keyboard.down('KeyF');
-      await sleep(3200);
-      await page.keyboard.up('KeyF');
-      await sleep(150);
+      // 开盒 → 等物品逐个转出（民用箱 2500ms）→ 在搜刮页里「全部取走」→ 关页
+      await lootOneContainer(2700);
     }
     const looted = await snap();
     check('容器可被搜索开启（按 F）', looted.loot.opened >= 1, `${looted.loot.opened}/${looted.loot.total}`);
     check('搜到物品并产生估值', looted.loot.inventory >= 1 && looted.loot.value > 0,
       `${looted.loot.inventory} 件 / 估值 ${looted.loot.value}`);
 
+    // ---- ★ 2026-10-14 塔科夫式：开盒 → **进搜刮页** → 物品逐个转出 → 点一件取一件 ----
+    //   这四条守的是"页面与动画真的存在"，而不是"数据层开了一个箱" ——
+    //   机制层（loot.js）在单测里已经验过，这里验的是**玩家看得见的那一层**。
+    {
+      await call('teleportToContainer');
+      await sleep(200);
+      await tapF();
+      await sleep(150);
+      const pageEl = await page.evaluate(() => {
+        const list = document.getElementById('lootList');
+        return {
+          on: !!document.getElementById('screenLoot') && document.getElementById('screenLoot').classList.contains('on'),
+          cells: document.querySelectorAll('#lootList .loot-cell').length,
+          found: document.querySelectorAll('#lootList .loot-cell.found').length,
+          searching: document.querySelectorAll('#lootList .loot-cell.searching').length,
+          title: (document.getElementById('lootTitle') || {}).textContent || '',
+          // 格子的基准尺寸从 CSS 变量读（不在这里写死，免得样式一改测试就假红）
+          cell: parseFloat(getComputedStyle(list).getPropertyValue('--cell')) || 0,
+          gap: parseFloat(getComputedStyle(list).getPropertyValue('--gap')) || 0,
+          // 每个块：**声明的形状** + **实际像素尺寸** —— 两者一致才说明 span 真的生效
+          shapes: Array.from(document.querySelectorAll('#lootList .loot-cell')).map((c) => {
+            const r = c.getBoundingClientRect();
+            return {
+              w: Number(c.dataset.w || 0), h: Number(c.dataset.h || 0),
+              pw: Math.round(r.width), ph: Math.round(r.height),
+            };
+          }),
+        };
+      });
+      check('★ 按 F 开盒后**直接进入搜刮页**（不再是"自动全拿 + 一句 toast"）',
+        pageEl.on && pageEl.cells > 0, JSON.stringify({ on: pageEl.on, cells: pageEl.cells, title: pageEl.title }));
+      // ★ 判据是**像素**：声明 2×1 的块必须真的比声明 1×1 的宽一倍（跨格生效），
+      //   而不是看 `gridColumnEnd` —— 那个属性里 `span 1` 会被浏览器规范化成 `auto`（实测踩过）。
+      {
+        const span = (n) => n * pageEl.cell + (n - 1) * pageEl.gap;
+        const bad = pageEl.shapes.filter((s) => s.w < 1 || s.h < 1
+          || Math.abs(s.pw - span(s.w)) > 4 || Math.abs(s.ph - span(s.h)) > 4);
+        check('★ 物品块按自己的形状跨格（像素尺寸 = 形状 × 格子）',
+          pageEl.shapes.length > 0 && bad.length === 0,
+          pageEl.shapes.map((s) => `${s.w}×${s.h}→${s.pw}×${s.ph}px`).join(' '));
+      }
+      // ★ 箱子是**固定尺寸**的网格（--gw × --gh 来自容器表），空格也看得见。
+      //   这条守的正是用户报的那个毛病："只有一长条，和列表没区别" ——
+      //   没有 gridW/gridH 时，网格会缩成"物品那么宽的一条"。
+      {
+        const box = await page.evaluate(() => {
+          const list = document.getElementById('lootList');
+          const r = list.getBoundingClientRect();
+          const cs = getComputedStyle(list);
+          return {
+            gw: parseFloat(cs.getPropertyValue('--gw')), gh: parseFloat(cs.getPropertyValue('--gh')),
+            cell: parseFloat(cs.getPropertyValue('--cell')), gap: parseFloat(cs.getPropertyValue('--gap')),
+            w: Math.round(r.width), h: Math.round(r.height),
+          };
+        });
+        const wantW = box.gw * box.cell + (box.gw - 1) * box.gap;
+        const wantH = box.gh * box.cell + (box.gh - 1) * box.gap;
+        check('★ 搜刮页是**固定尺寸的箱子网格**（宽高 = 容器 gw×gh × 格子，不是"物品那么宽的一条"）',
+          box.gw >= 3 && box.gh >= 3
+          && Math.abs(box.w - wantW) <= 4 && Math.abs(box.h - wantH) <= 4,
+          `容器 ${box.gw}×${box.gh} 格 → 期望 ${Math.round(wantW)}×${Math.round(wantH)}px，实际 ${box.w}×${box.h}px`);
+      }
+      check('★ 刚进页面时物品**还在搜索中**（格子上有搜索动画，已搜出的少于总数）',
+        pageEl.cells > 0 && pageEl.found < pageEl.cells && pageEl.searching > 0,
+        `搜索中 ${pageEl.searching} / 已搜出 ${pageEl.found} / 共 ${pageEl.cells}`);
+
+      // 等搜索：`.found` 的格子必须变多 —— 这条就是"逐个搜出"的证据
+      await sleep(3200);
+      const after = await page.evaluate(() => ({
+        cells: document.querySelectorAll('#lootList .loot-cell').length,
+        found: document.querySelectorAll('#lootList .loot-cell.found').length,
+      }));
+      check('★ 物品会**逐个搜出来**（等待之后已搜出的格数变多）',
+        after.found > pageEl.found, `${pageEl.found} → ${after.found}（共 ${after.cells}）`);
+
+      // 点一格 = 取走**一件**（不是全部自动拿走）
+      const invBefore = (await snap()).loot.inventory;
+      let clickInfo = null;
+      if (after.found > 0) {
+        clickInfo = await page.evaluate(() => {
+          const c = document.querySelector('#lootList .loot-cell.found');
+          if (!c) return { has: false };
+          const r = c.getBoundingClientRect();
+          return {
+            has: true, idx: c.dataset.idx,
+            x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),
+          };
+        });
+        await page.click('#lootList .loot-cell.found');
+        await sleep(350);
+      }
+      const invAfter = (await snap()).loot.inventory;
+      const toast = await page.evaluate(() => (document.getElementById('lootToast') || {}).textContent || '');
+      check('★ 点一格只取走**那一件**（塔科夫式的"挑"，而不是自动全拿）',
+        invAfter === invBefore + 1,
+        `背包件数 ${invBefore} → ${invAfter}；格子 ${JSON.stringify(clickInfo)}；页内提示「${toast}」`);
+
+      await page.click('#btnLootClose');
+      await sleep(250);
+      const closed = await page.evaluate(() =>
+        !document.getElementById('screenLoot').classList.contains('on'));
+      check('★ 关闭后搜刮页消失（回到局内视角）', closed, closed ? '已关闭' : '页面还开着');
+    }
+
+    // ---- ★ 2026-10-15（v3，制作人裁定）：**结算不把身上的东西塞进仓库** ----
+    //
+    // 要求原话：「结算时身上的东西不要直接放进仓库，依旧留在身上让玩家自己拖动」。
+    // 判据必须是"**没有多出一份**"而不是"仓库里一件都没有" ——
+    //   夹具的仓库里本来就各留了一件**备用**（玩家多买一把是合法的），
+    //   而"自动入库"的缺陷表现是**多出第二件**。
+    const stashBefore = await page.evaluate(() => window.__m2.profile().stash.map((e) => e.itemId));
     await call('teleportToExtract');
     const ended = await waitForEnd(30000);
     check('完成撤离并结算（等待流程结束）', ended, ended ? '已结束' : '30 秒内未结束');
     const done = await snap();
     check('撤离成功且原因为 extracted', done.flow === 'ended' && done.endReason === 'extracted',
       `flow=${done.flow} reason=${done.endReason}`);
+    {
+      const pf = await page.evaluate(() => window.__m2.profile());
+      const lo = pf.loadout || {};
+      const worn = [
+        ['primary', lo.primary], ['secondary', lo.secondary],
+        ['body', lo.body], ['head', lo.head],
+        ['backpack', lo.backpack], ['rig', lo.rig],
+      ].filter(([, v]) => !!v);
+      const wornItemIds = worn.map(([, ref]) => {
+        const d = config.equipmentDefs[ref];
+        return d ? d.itemId : null;
+      }).filter(Boolean);
+      const countIn = (list, id) => list.filter((x) => x === id).length;
+      const nowIds = pf.stash.map((e) => e.itemId);
+      check('★ v3 撤离后：装备**仍穿在身上**（配装没被清空）',
+        worn.length >= 3, JSON.stringify(worn.map(([s, v]) => `${s}=${v}`)));
+      check('★ v3 撤离后：仓库里**没有多出一份**穿在身上的装备（旧的"自动入库"会多一份）',
+        wornItemIds.every((id) => countIn(nowIds, id) === countIn(stashBefore, id)),
+        JSON.stringify(wornItemIds.map((id) => `${id}: ${countIn(stashBefore, id)} → ${countIn(nowIds, id)}`)));
+      const endText2 = await page.evaluate(() => {
+        const pages = [document.getElementById('endPage1'), document.getElementById('endPage2')];
+        return pages.map((b) => (b ? b.textContent : '')).join(' ').replace(/\s+/g, ' ');
+      });
+      check('★ v3 结算页写明"留在身上（回大厅自己拖）"（不再把装备列成"存入仓库"）',
+        /留在身上/.test(endText2) && /自己拖/.test(endText2),
+        endText2.slice(0, 160));
+    }
   }
 
   // ============================================================
@@ -955,10 +1191,8 @@ async function runLegacyGroups() {
     await loadAndStart();
     // 先捡点东西，让"断线后带走什么"有可核对的数字
     await call('teleportToContainer', 0);
-    await page.keyboard.down('KeyF');
-    await sleep(6000);
-    await page.keyboard.up('KeyF');
-    await sleep(300);
+    // ★ 改版：开盒 → 等转出 → 在搜刮页里「全部取走」→ 关页（按第二下 F 只会重开页面）
+    await lootOneContainer(6200);
     const before = await snap();
     const beforeSafe = before.loot.safe.value;
     check('夹具成立：刷新前背包里已有东西可结算',
@@ -1109,9 +1343,8 @@ async function runLegacyGroups() {
   {
     await loadAndStart();
     await call('teleportToContainer', 0);
-    await page.keyboard.down('KeyF');
-    await sleep(6000);
-    await page.keyboard.up('KeyF');
+    // ★ 改版：开盒 → 等转出 → 在搜刮页里「全部取走」→ 关页（按第二下 F 只会重开页面）
+    await lootOneContainer(6200);
     await sleep(6000);                       // 等定期快照（5s）落地
     const before = await snap();
     const beforeSafe = before.loot.safe.value;
@@ -1132,9 +1365,21 @@ async function runLegacyGroups() {
     check('★ 不点提示直接开新局，上局仍被补结算（不再静默丢档）',
       !!res && res.reason === 'disconnected' && res.carried === false,
       res ? `reason=${res.reason} carried=${res.carried}` : '没有结算 —— 上局被丢了');
+    // ★ 2026-10-15：判据改成**快照自己记的那份**。
+    //   原来比的是"刷新前**实时**的保险箱估值"，而快照每 5 秒才写一次、
+    //   保险箱还可能在这 5 秒里被自动装填（价值密度）追加一件 ——
+    //   于是这条断言会偶发地差一两件（实测 110 vs 112），失败信息看着像"补结算丢东西"。
+    //   真正要守的不变式是"**补结算 = 快照里有什么就保什么**"，
+    //   所以按快照里的 inSafe 求和来比 —— 既确定，也更强（是一次完整的往返）。
+    const cpSafeValue = (() => {
+      try {
+        const cp = JSON.parse(cpBefore);
+        return (cp.items || []).filter((i) => i.inSafe).reduce((a, i) => a + i.value, 0);
+      } catch { return null; }
+    })();
     check('★ 补结算保住了安全箱（与"点提示"这条路径的结果一致）',
-      !!res && res.loot.keptValue === beforeSafe,
-      res ? `带出 ${res.loot.keptValue} vs 刷新前保险箱 ${beforeSafe}` : 'n/a');
+      !!res && res.loot.keptValue === cpSafeValue,
+      res ? `带出 ${res.loot.keptValue} vs 快照里的保险箱 ${cpSafeValue}（实时值 ${beforeSafe}）` : 'n/a');
 
     // 新局现在**开局就写自己的第一笔快照**，所以"存在快照"不是残留信号 ——
     // 用 raidId 区分：换成了新局的 id，才说明上局那份已被结算清除。
@@ -1533,10 +1778,8 @@ async function runLegacyGroups() {
       await sleep(600);
       await page.keyboard.up('KeyW');
       await call('teleportToContainer');
-      await page.keyboard.down('KeyF');
-      await sleep(2800);
-      await page.keyboard.up('KeyF');
-      await sleep(300);
+      // ★ 改版：开盒 → 等转出 → 在搜刮页里「全部取走」→ 关页
+      await lootOneContainer(3000);
 
       const s = await snap();
       const errsNow = pageErrors.length - errsBefore;
@@ -1651,10 +1894,8 @@ async function runLegacyGroups() {
     await loadAndStart();
     const tp = await page.evaluate(() => window.__m2.teleportToContainer(1));
     await sleep(200);
-    await page.keyboard.down('KeyF');
-    await sleep(9000);
-    await page.keyboard.up('KeyF');
-    await sleep(200);
+    // 开盒，等转出（钥匙房 revealMs = 8000），在搜刮页里全部取走
+    await lootOneContainer(8200);
     const looted = await snap();
     check('二层容器可被搜索开启（按 F）',
       looted.loot.opened >= 1 && looted.player.y > 3.5,
@@ -2057,10 +2298,8 @@ async function runLegacyGroups() {
     // "页面重新加载"这个天然干净的时机，现在页面可能已经跑过好几局。
     {
       await call('teleportToContainer', 0);
-      await page.keyboard.down('KeyF');
-      await sleep(4000);
-      await page.keyboard.up('KeyF');
-      await sleep(400);
+      // ★ 改版：开盒 → 等转出 → 在搜刮页里「全部取走」→ 关页
+      await lootOneContainer(4200);
       const before = await snap();
       await page.reload({ waitUntil: 'load' });
       await page.waitForFunction(() => typeof window.__m2 !== 'undefined', { timeout: 15000 });
@@ -2090,7 +2329,7 @@ async function runLegacyGroups() {
  *   · 被 `--only=m5` 单独触发
  */
 async function runM5Groups() {
-  if (m5Group('M5-2/M5-3/M5-4/M5-5/M5-6 局外面板与档案')) {
+  if (m5Group('M5-2/M5-3/M5-4/M5-5/M5-6 局外面板与档案', ['m5'])) {
     await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
     await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
 
@@ -2131,27 +2370,46 @@ async function runM5Groups() {
         legacy.selects === 0 && legacy.changeHooks === 0, JSON.stringify(legacy));
       {
         // DOM 数量为 0 只证明"这一帧没渲染"。**源码**里也不能留活代码 ——
-        // 允许在注释里提 slotSelect（那是在解释"为什么删掉它"），按非注释行判定。
-        const hits = [];
-        for (const rel of ['src/ui/panels.js', 'src/main.js', 'src/ui/lobby.js']) {
-          const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-          for (const line of text.split('\n')) {
-            // ★ M6-4：弹药与消耗品的 ± 步进器已被制作人裁定**完全取消**
-            //   （真值搬到网格里之后，留着 ± 就是"改了数字但网格没变"的捷径）。
-            //   因此 ammoInc / ammoDec / consInc / consDec 从"明确保留"变成"必须消失"。
-            if (!/slotSelect|renderLoadout|ammoInc|ammoDec|consInc|consDec|setAmmo|setConsumable/.test(line)) continue;
-            if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
-            hits.push(`${rel}: ${line.trim().slice(0, 70)}`);
+        // 允许在注释里提 slotSelect（那是在解释"为什么删掉它"）。
+        //
+        // ★ M6-5：判据从"跳过以 // 开头的行"升级为**先把注释剥掉再扫**。理由：
+        //   前者的漏洞很具体 —— 行尾注释与块注释都拦不住，而本批次要证明
+        //   "多套预设被删掉了"（这是**反向**断言：删干净比加功能更需要证据），
+        //   一份带洞的扫描不足以支撑这个结论。
+        const BANNED = /slotSelect|renderLoadout|ammoInc|ammoDec|consInc|consDec|setAmmo|setConsumable|addPreset|removePreset|setActivePreset|renamePreset/;
+        /** 剥掉 `//` 行注释与块注释，只留**代码**（字符串字面量里的命中照样算）。 */
+        const stripComments = (text) =>
+          text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+        /** 扫一组源码文件里的禁用标识符。抽成函数是为了能被下面两条注入自检复用。 */
+        const scanBanned = (files) => {
+          const hits = [];
+          for (const rel of files) {
+            const code = stripComments(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
+            for (const line of code.split('\n')) {
+              if (BANNED.test(line)) hits.push(`${rel}: ${line.trim().slice(0, 70)}`);
+            }
           }
-        }
-        check('★ M6-3/M6-4 源码里没有 slotSelect / renderLoadout 的活代码（只允许解释性注释）',
+          return hits;
+        };
+        const hits = scanBanned(['src/ui/panels.js', 'src/main.js', 'src/ui/lobby.js', 'src/core/loadout.js']);
+        check('★ M6-3/M6-4/M6-5 源码里没有 slotSelect / renderLoadout / ± 步进器 / 多套预设的**活代码**（只允许解释性注释）',
           hits.length === 0, hits.join(' | ') || '零命中');
-        // 注入自检：把 ammoInc 加回一行，上一条必须变红 —— 证明它不是"扫了个不存在的东西"
+        // 注入自检 ①：把 addPreset 当成一行**代码**喂给扫描器，它必须命中 ——
+        // 证明这一组反向断言不是在"扫一个不存在的东西"。
         {
-          const text = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
-          const probe = text.split('\n').some((l) => /setAmmo|setConsumable/.test(l) && !/^\s*(\/\/|\*)/.test(l));
-          check('注入自检：扫的是真源码（src/main.js 里 setAmmo 已不存在 —— 扫描式断言有效）',
-            probe === false, probe ? '仍命中 setAmmo/setConsumable' : '零命中');
+          const probe = scanBanned(['src/main.js']).length;
+          const fake = BANNED.test('  presetAdd: () => addPreset(p, cfg),');
+          check('注入自检：扫描器认得被删掉的预设入口（把它当代码喂进去会命中）',
+            fake === true && probe === 0,
+            `模拟命中=${fake} 真实命中=${probe}`);
+        }
+        // 注入自检 ②：同一个名字写在**注释**里必须被忽略 —— 证明上面那条"零命中"
+        // 不是靠"源码里恰好没出现这个词"，而是靠真的做了注释剥离。
+        {
+          const fake = BANNED.test(stripComments('  // 这里解释为什么删掉了 addPreset'));
+          const real = BANNED.test(stripComments('  addPreset(p, cfg); // 删不掉'));
+          check('注入自检：注释里的名字被忽略、代码里的名字被抓到（注释剥离真的生效）',
+            fake === false && real === true, `注释=${fake} 代码=${real}`);
         }
       }
 
@@ -2249,7 +2507,7 @@ async function runM5Groups() {
       await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
       const rebased = await page.evaluate(() => window.__m2.profile());
       check('★ 版本回退：拒绝解释未来版本，另起新档且不崩',
-        rebased.view.version === 1 && rebased.view.currency === config.economy.starterCurrency,
+        rebased.view.version === PROFILE_VERSION && rebased.view.currency === config.economy.starterCurrency,
         `v${rebased.view.version} currency=${rebased.view.currency}`);
       check('★ 版本回退：原始文本仍留在隔离键里（人工可恢复）',
         rebased.storage.quarantineBytes > 0 && /version-ahead/.test(rebased.storage.quarantine.reason || ''),
@@ -2279,7 +2537,7 @@ async function runM5Groups() {
   }
 
   // ---- ④ 配装进局一致性 / ⑤ 技能生效 / ⑥ 画质 / ⑦ 改键 / ⑧ 结算页 ----
-  if (m5Group('M5-3/M5-5/M5-8 配装进局·技能生效·画质·改键·结算页')) {
+  if (m5Group('M5-3/M5-5/M5-8 配装进局·技能生效·画质·改键·结算页', ['m5'])) {
     // 自带页面加载：`--only=结算页` 这类只跑本组的调用会跳过前面的 goto，
     // 页面此时还停在 about:blank（`window.__m2` 不存在）。组内自足才能被单独回归。
     if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
@@ -2546,7 +2804,7 @@ async function runM5Groups() {
   }
 
   // ---- ⑨ 任务链：**完成并领奖**之后才解锁下一段（制作人裁定）----
-  if (m5Group('M5-6 任务链需领奖后才解锁下一段')) {
+  if (m5Group('M5-6 任务链需领奖后才解锁下一段', ['m5', 'm5-6'])) {
     if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
       await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
       await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
@@ -2665,7 +2923,7 @@ async function runM5Groups() {
   //
   // 为什么单独成组：原来的"⑤ M2-5 医疗与消耗品"在**历史段落**里，整段会被 `--only` 跳过；
   // 而这一组自带进局准备，因此可以 `node tools/smoke.mjs --only=医疗` 单独快速回归。
-  if (m5Group('M6 医疗回归（绷带 3 / 急救包 4 / 读条）')) {
+  if (m5Group('M6 医疗回归（绷带 3 / 急救包 4 / 读条）', ['m6'])) {
     // 本组**自带页面加载**：`--only=医疗` 会跳过整个历史段落，没人做过 goto，
     // 页面此时还停在 about:blank（`window.__m2` 不存在）。组内自足才能被单独快速回归。
     if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
@@ -2768,7 +3026,7 @@ async function runM5Groups() {
   }
 
   // ---------------------------------------------------------------------------
-  if (m5Group('M6-1 武器扩充（30 把：装备 / 进局 / 开火）')) {
+  if (m5Group('M6-1 武器扩充（30 把：装备 / 进局 / 开火）', ['m6', 'm6-1'])) {
     // 本组同样**自带页面加载**，才能被 `--only=武器` 单独快速回归。
     if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
       await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
@@ -2823,7 +3081,7 @@ async function runM5Groups() {
   }
 
   // ---------------------------------------------------------------------------
-  if (m5Group('M6-2 AI 尸体掉落（击杀 → 尸体 → 搜开）')) {
+  if (m5Group('M6-2 AI 尸体掉落（击杀 → 尸体 → 搜开）', ['m6', 'm6-2'])) {
     if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
       await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
       await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
@@ -2858,20 +3116,637 @@ async function runM5Groups() {
       !!c0 && typeof c0.tierId === 'string' && c0.items.length > 0,
       c0 ? `tier=${c0.tierId} items=${c0.items.join(',')}` : '没有尸体');
 
-    // 真的搜一次：站到尸体上按住 F，进度走完应当 opened=true。
+    // 真的搜一次：站到尸体上按 F，开盒应当立刻成立。
     // 这是"尸体复用了容器整条搜索路径"的直接证据 —— 而不是只断言"对象被创建了"。
     if (c0) {
       await page.evaluate((c) => window.__m2.teleport(c.x, c.z, c.floor), c0);
       await sleep(300);
-      await page.keyboard.down('KeyF');
-      await sleep(2400); // corpseByTier.searchMs = 1800
-      await page.keyboard.up('KeyF');
+      await tapF();
+      await sleep(2000); // 转出（corpseByTier.revealMs = 1800）+ 余量
+      // ★ 改版：只在页面里取，不再"再按一次 F 自动全拿" —— 搜完就关页
+      const corpsePanelOn = await page.evaluate(() => document.getElementById('screenLoot').classList.contains('on'));
+      if (corpsePanelOn) {
+        await page.click('#btnLootTakeAll');
+        await sleep(200);
+        await page.click('#btnLootClose');
+      }
       await sleep(300);
       const list2 = await page.evaluate(() => window.__m2.corpseList());
       check('★ M6-2 尸体可搜开（复用容器的搜索路径：进度 → 开箱 → 拾取）',
         !!list2[0] && list2[0].opened === true,
         list2[0] ? `opened=${list2[0].opened} 剩余物品 ${list2[0].items.length}` : '尸体不见了');
     }
+  }
+
+  // ============================================================
+  // [M3-BUG-02][M3-BUG-03] 搜刮页回归：第一件要搜索时间 / 取走一件后格子不卡「？」
+  //
+  // 为什么单独成组：搜刮页的端到端断言原来只在**历史段落**的「① 闭环」组里，
+  // 而 `--only` 会跳过整段历史 —— 改一行搜刮页就只能跑全量冒烟。
+  // 本组自带进局准备，因此可以 `node tools/smoke.mjs --only=loot` 单独快速回归。
+  // ============================================================
+  if (m5Group('M3 搜刮页回归（第一件要搜索时间 / 取走一件不卡「？」）', ['m3-loot', 'loot', 'm5'])) {
+    if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
+      await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    }
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
+    await page.evaluate(() => window.__m2.grantTestKit());
+    await startRaidFromLobby();
+    // 本组测的是**界面**，不是交战：让 AI 站着不动，免得"搜刮页开着被 AI 打"污染夹具
+    await page.evaluate(() => window.__m2.aiStandDown(true));
+    await sleep(300);
+
+    // 夹具必须**主动挑**一个"至少 2 件"的容器（`itemsMin >= 2`）：
+    // 随机/顺序取到的多半是民用箱（1~2 件），只抽到 1 件时"取走一件之后还剩几格"
+    // 就无从观察，BUG-03 那条断言会退化成恒真（`cells=0` 时空转）。
+    // 排除 requiresKey 的容器：钥匙房没带门禁卡根本开不了。
+    const cand = (await page.evaluate(() => window.__m2.debugContainerList()))
+      .filter((c) => !c.opened)
+      .map((c) => ({ ...c, def: config.lootTable.containers.find((x) => x.id === c.type) || {} }))
+      .filter((c) => (c.def.itemsMin || 0) >= 2 && !c.def.requiresKey);
+    check('夹具成立：地图上有"至少 2 件"的可开容器（否则取走一件之后没东西可看）',
+      cand.length > 0, `${cand.length} 个候选：${cand.slice(0, 3).map((c) => `${c.type}@${c.floor}`).join(' ')}`);
+    const target = cand[0];
+    check('夹具成立：传送到该容器旁并开出（未开启、至少 2 件）',
+      !!target && target.opened !== true, target ? `${target.type} floor=${target.floor}` : '没有候选容器');
+    if (target) {
+      await page.evaluate((c) => window.__m2.teleport(c.x, c.z, c.floor), target);
+      await sleep(300);
+    }
+
+    // ★ 2026-10-15：往这个容器里**塞一把枪**（夹具，必须在开盒之前）——
+    //   "直接从容器拖到装备格穿上"要测，而随机掉落抽不到枪就只能跳过断言（那等于没测）。
+    const injected = await page.evaluate((cid) => window.__m2.lootGive('rifle_ak762', 1, cid),
+      target ? target.id : null);
+    check('夹具成立：容器里被塞进一把枪（用于测"直接拖到装备格穿上"）',
+      !!injected && injected.ok === true, JSON.stringify(injected));
+
+    await tapF(); // 按一下 F：立刻开盒 → 直接进搜刮页
+    // ★ [M3-BUG-02] 开盒那一刻**一件都不能是"已搜出"**（旧实现 `1 + floor(...)` 让第一件零等待）。
+    //   取样点在 tapF 返回时（离开盒约 150ms），而最坏的时间片也在 300ms 以上
+    //   （尸体 1800ms / 4 件 / 搜刮熟练满级 1.36 ≈ 331ms），余量足够。
+    const opened = await page.evaluate(() => ({
+      on: document.getElementById('screenLoot').classList.contains('on'),
+      cells: document.querySelectorAll('#lootList .loot-cell').length,
+      found: document.querySelectorAll('#lootList .loot-cell.found').length,
+      searching: document.querySelectorAll('#lootList .loot-cell.searching').length,
+    }));
+    check('★ [M3-BUG-02] 开盒后没有任何格子是已搜出（第一件也要搜索时间，旧实现是零等待）',
+      opened.on && opened.cells > 0 && opened.found === 0 && opened.searching === opened.cells,
+      JSON.stringify(opened));
+
+    // 等满容器表的 revealMs + 余量：必须**全部**搜出来（"有搜索时间"不等于"永远不出来"）
+    const revealMs = (target && target.def.revealMs) || 8000;
+    await sleep(revealMs + 600);
+    const full = await page.evaluate(() => ({
+      cells: document.querySelectorAll('#lootList .loot-cell').length,
+      found: document.querySelectorAll('#lootList .loot-cell.found').length,
+      searching: document.querySelectorAll('#lootList .loot-cell.searching').length,
+      cell: parseFloat(getComputedStyle(document.getElementById('lootList')).getPropertyValue('--cell')) || 0,
+    }));
+    check('★ 等满 revealMs 后全部搜出（转出会走完，不是"永远看不见"）',
+      full.cells >= 2 && full.found === full.cells && full.searching === 0, JSON.stringify(full));
+    // ★ [M3-BUG-05] 格子尺寸：写死 30px 时 1×1 的格子放不下物品名（玩家反馈"名字显示不全"）。
+    //   现在按容器与可用空间算，并且**不小于 44px** —— 这条把"格子太小"钉死，
+    //   与下面"名字没被裁掉"那条一个管尺寸、一个管实际渲染结果。
+    check('★ [M3-BUG-05] 格子按容器放大（≥44px，上限 64px）',
+      full.cell >= 44 && full.cell <= 64, `--cell=${full.cell}px`);
+
+    // ★ [M3-BUG-05] 光数 `.found` 的 class 是不够的 —— **玩家看得见的文字**才是判据。
+    //   只切 class 的话，`？` 是 DOM 内容、不会自己消失：于是"搜完了每格还是问号，
+    //   取走一件（触发重建）才变回名字"。这条断言就是那个盲区的补丁。
+    //   判据用 `innerText`（按渲染结果取文字，`display:none` 的内容不算）而不是 `textContent`：
+    //   问号与名字现在**同时在 DOM 里**、由 class 决定显示哪一个（见 index.html），
+    //   所以"DOM 里有没有问号"不是问题，"玩家看不看得见问号"才是。
+    const cellsText = await page.evaluate(() => Array.from(document.querySelectorAll('#lootList .loot-cell'))
+      .map((c) => {
+        const lab = c.querySelector('.loot-label');
+        const q = c.querySelector('.loot-q');
+        const r = lab ? lab.getBoundingClientRect() : null;
+        return {
+          found: c.classList.contains('found'),
+          shown: c.innerText.trim(),                       // 玩家实际看到的字
+          label: lab ? lab.textContent : null,
+          qVisible: !!q && q.getClientRects().length > 0,   // 问号还看得见吗
+          visible: !!lab && lab.getClientRects().length > 0 && r.width > 0 && r.height > 0,
+          // 名字有没有被裁掉：元素的滚动尺寸大于可见尺寸就是裁了
+          clipped: !!lab && (lab.scrollHeight > lab.clientHeight + 1 || lab.scrollWidth > lab.clientWidth + 1),
+          title: c.title,
+        };
+      }));
+    check('★ [M3-BUG-05] 搜完后每格**看得见的是物品名**，不再有问号（旧实现只有 class 变了）',
+      cellsText.length > 0 && cellsText.every((t) => t.found && !!t.label
+        && t.shown.indexOf('？') < 0 && !t.qVisible && t.shown.indexOf(t.label) >= 0),
+      JSON.stringify(cellsText.slice(0, 3)));
+    check('★ [M3-BUG-05] 名字真的画出来了（可见、非空），不是只换了边框',
+      cellsText.every((t) => t.visible && (t.label || '').length > 0),
+      JSON.stringify(cellsText.filter((t) => !t.visible).slice(0, 3)) || '全部可见');
+    check('★ [M3-BUG-05] 名字没有被裁掉（格子够大：玩家反馈"显示不全"）',
+      cellsText.every((t) => !t.clipped),
+      JSON.stringify(cellsText.filter((t) => t.clipped).slice(0, 3)) || '无裁切');
+    check('★ [M3-BUG-05] 悬停提示也是物品名（不是"搜索中…"）',
+      cellsText.every((t) => t.title === t.label),
+      JSON.stringify(cellsText.slice(0, 2).map((t) => t.title)));
+
+    // ---- ★ 2026-10-15（制作人追加）：右侧同时显示自己的背包，搜出来的东西可以直接拖进去 ----
+    {
+      const bagCol = await page.evaluate(() => ({
+        grids: Array.from(document.querySelectorAll('#screenLoot #lootBag [data-drop-grid]')).map((g) => g.dataset.dropGrid),
+        items: document.querySelectorAll('#screenLoot #lootBag .grid-item').length,
+        sourceAttrs: Array.from(document.querySelectorAll('#screenLoot #lootList .loot-cell'))
+          .map((c) => ({ cls: c.className, hasSrc: c.hasAttribute('data-src') })),
+      }));
+      check('★ 搜刮页右侧同时显示自己的三张网格（背包 / 弹挂 / 保险箱）',
+        bagCol.grids.join(',') === 'backpack,rig,safe',
+        JSON.stringify(bagCol.grids));
+      // ★ 2026-10-15（制作人要求）：三栏 = 左容器 / 中**人形装备栏** / 右背包弹挂。
+      //   判据同样是**相对位置**（只看类名的话，改回两栏也照样通过）。
+      const three = await page.evaluate(() => {
+        const r = (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return null;
+          const b = el.getBoundingClientRect();
+          return { left: Math.round(b.left), top: Math.round(b.top), right: Math.round(b.right), bottom: Math.round(b.bottom), w: Math.round(b.width), h: Math.round(b.height) };
+        };
+        return {
+          left: r('#screenLoot .loot-left'),
+          mid: r('#screenLoot .loot-mid'),
+          right: r('#screenLoot .loot-right'),
+          figure: r('#screenLoot .gear-figure'),
+          silhouette: !!document.querySelector('#screenLoot .silhouette'),
+          head: r('#screenLoot .slot-head'),
+          body: r('#screenLoot .slot-body'),
+          primary: r('#screenLoot .slot-primary'),
+          vw: window.innerWidth,
+          vh: window.innerHeight,
+          cards: Array.from(document.querySelectorAll('#screenLoot #lootBag .carry-grid')).map((c) => {
+            const w = c.querySelector('.grid-wrap');
+            const b = c.getBoundingClientRect();
+            const wb = w.getBoundingClientRect();
+            return `${w.dataset.dropGrid}:card=${Math.round(b.width)}x${Math.round(b.height)}@${Math.round(b.left)} wrap=${Math.round(wb.width)}x${Math.round(wb.height)} cols=${w.dataset.w}x${w.dataset.h} cell=${getComputedStyle(w).getPropertyValue('--cell').trim()}`;
+          }),
+        };
+      });
+      check('★ 三栏布局：左＝容器 / 中＝人形装备栏 / 右＝背包弹挂（左 < 中 < 右，且都在屏幕里）',
+        !!three.left && !!three.mid && !!three.right
+        && three.left.left < three.mid.left && three.mid.left < three.right.left
+        && three.right.right <= three.vw && three.left.left >= 0,
+        JSON.stringify({ left: three.left, mid: three.mid, right: three.right, cards: three.cards, vw: three.vw }));
+      check('★ 中栏是**人形**（剪影 + 头在上、甲在下、主武器在左），与大厅/背包页同一份 300×340',
+        three.silhouette && !!three.figure && three.figure.w === 300 && three.figure.h === 340
+        && !!three.head && !!three.body && !!three.primary
+        && three.head.bottom <= three.body.top && three.primary.right <= three.body.left,
+        JSON.stringify({ figure: three.figure, head: three.head, body: three.body, primary: three.primary }));
+      // ★ 2026-10-15（制作人要求）：容器那一张与右侧三张**同一个格边长**（都是 64）。
+      const cellsNow = await page.evaluate(() => ({
+        box: parseFloat(getComputedStyle(document.getElementById('lootList')).getPropertyValue('--cell')) || 0,
+        bag: Array.from(document.querySelectorAll('#screenLoot #lootBag .grid-wrap'))
+          .map((g) => parseFloat(getComputedStyle(g).getPropertyValue('--cell')) || 0),
+      }));
+      check('★ 容器网格与右侧三张网格**逐像素同一个格边长**（"所有网格一样大"）',
+        cellsNow.box >= 56 && cellsNow.bag.length === 3 && cellsNow.bag.every((c) => c === cellsNow.box),
+        JSON.stringify(cellsNow));
+      check('★ 只有**已经转出来**的格子才拖得动（还在搜的没有 data-src —— 规则落在结构上）',
+        bagCol.sourceAttrs.every((c) => (c.cls.includes('found') ? c.hasSrc : !c.hasSrc)),
+        JSON.stringify(bagCol.sourceAttrs.slice(0, 4)));
+
+      // 几何：容器那一格的中心 + 背包某一格的中心（网格无间隙，格子中心 = 格坐标 + 0.5 格）
+      const geom2 = await page.evaluate(() => {
+        const wrap = document.querySelector('#screenLoot #lootBag [data-drop-grid="backpack"]');
+        const r = wrap.getBoundingClientRect();
+        return {
+          left: r.left, top: r.top,
+          cell: parseFloat(getComputedStyle(wrap).getPropertyValue('--cell')) || 42,
+          w: Number(wrap.dataset.w), h: Number(wrap.dataset.h),
+        };
+      });
+      const bagNow = await call('bagList');
+      const busy = bagNow.grids.backpack;
+      const freeCell = (() => {
+        for (let y = 0; y < geom2.h; y++) {
+          for (let x = 0; x < geom2.w; x++) {
+            const hit = busy.some((b) => !(x + 1 <= b.x || b.x + b.w <= x || y + 1 <= b.y || b.y + b.h <= y));
+            if (!hit) return { x, y };
+          }
+        }
+        return null;
+      })();
+      check('夹具成立：背包里有一格空位（否则"拖进去"无从观察）', !!freeCell, JSON.stringify(freeCell));
+
+      const before = await page.evaluate(() => ({
+        cells: document.querySelectorAll('#screenLoot .loot-cell').length,
+        bagItems: document.querySelectorAll('#screenLoot #lootBag .grid-item').length,
+      }));
+      // 拖**第一件已搜出**的（1×1 与 2×4 都试同一套坐标：抓取偏移固定为物品左上角）
+      const dragInfo = await page.evaluate(() => {
+        const cell = document.querySelector('#screenLoot .loot-cell.found');
+        if (!cell) return null;
+        const r = cell.getBoundingClientRect();
+        return {
+          idx: Number(cell.dataset.idx), label: cell.dataset.label,
+          w: Number(cell.dataset.w), h: Number(cell.dataset.h),
+          x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+        };
+      });
+      if (dragInfo && freeCell) {
+        const target = {
+          x: Math.round(geom2.left + (freeCell.x + 0.5) * geom2.cell),
+          y: Math.round(geom2.top + (freeCell.y + 0.5) * geom2.cell),
+        };
+        await pointerDrag({ x: dragInfo.x, y: dragInfo.y }, target, { steps: 8 });
+        await sleep(300);
+        const after = await page.evaluate(() => ({
+          cells: document.querySelectorAll('#screenLoot .loot-cell').length,
+          bagItems: document.querySelectorAll('#screenLoot #lootBag .grid-item').length,
+          toast: (document.getElementById('lootToast') || {}).textContent || '',
+        }));
+        const bagAfter = await call('bagList');
+        const moved = bagAfter.grids.backpack.find((e) => e.x === freeCell.x && e.y === freeCell.y);
+        check('★ 把搜出来的东西**拖到背包指定的那一格**就真的落在那一格（不是"随便塞一个空位"）',
+          !!moved && after.bagItems === before.bagItems + 1,
+          JSON.stringify({ 落点: moved && { itemId: moved.itemId, x: moved.x, y: moved.y }, 期望: freeCell, toast: after.toast }));
+        check('★ 拖走之后容器里就少了那一件（件数守恒，不复制也不吞）',
+          after.cells === before.cells - 1,
+          `容器 ${before.cells} → ${after.cells}`);
+      }
+      void dragInfo;
+    }
+
+    // ---- ★ 2026-10-15（制作人追加）：把容器里的东西**直接拖到装备格穿上** ----
+    {
+      const eq = await page.evaluate(() => {
+        const s = document.querySelector('#screenLoot .gear-figure .equip-slot[data-slot="primary"]');
+        const cell = document.querySelector('#screenLoot .loot-cell.found[data-item="rifle_ak762"]');
+        const r = (el) => {
+          if (!el) return null;
+          const b = el.getBoundingClientRect();
+          return { x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) };
+        };
+        return {
+          hasSlot: !!s,
+          hasRifle: !!cell,
+          slotsInView: !s || (s.getBoundingClientRect().top >= 0 && s.getBoundingClientRect().bottom <= window.innerHeight),
+          slotAt: r(s),
+          // 抓取偏移固定为"物品左上角"（见 lootPanel 的 grabFor）：按格子左上角抓，落点就是那一格
+          cellAt: cell ? { x: Math.round(cell.getBoundingClientRect().left + 10), y: Math.round(cell.getBoundingClientRect().top + 10) } : null,
+        };
+      });
+      check('夹具成立：容器里那把枪已经转出来（可拖）+ 中栏人形上的主武器格在屏幕里',
+        eq.hasRifle && eq.hasSlot && eq.slotsInView, JSON.stringify(eq));
+      if (eq.hasRifle && eq.hasSlot) {
+        const beforeEq = await call('bagList');
+        const prevPrimary = beforeEq.slots.primary ? beforeEq.slots.primary.itemId : null;
+        await pointerDrag(eq.cellAt, eq.slotAt, { steps: 8 });
+        await sleep(400);
+        const afterEq = await call('bagList');
+        check('★ 把容器里的枪**直接拖到主武器格**＝真的换上了（不用先进背包）',
+          afterEq.slots.primary && afterEq.slots.primary.itemId === 'rifle_ak762',
+          JSON.stringify({ 之前: prevPrimary, 之后: afterEq.slots.primary,
+            落点日志: await page.evaluate(() => window.__m2.bagDropLog().slice(-3)) }));
+        check('★ 换下来的那把**自动进了背包**（不是凭空消失）',
+          !!prevPrimary && afterEq.grids.backpack.concat(afterEq.grids.rig).some((e) => e.itemId === prevPrimary),
+          `换下来的 ${prevPrimary} 在：${JSON.stringify(afterEq.grids.backpack.concat(afterEq.grids.rig).map((e) => e.itemId))}`);
+        const stillThere = await page.evaluate(() =>
+          !!document.querySelector('#screenLoot .loot-cell.found[data-item="rifle_ak762"]'));
+        check('★ 拖走之后容器里那把枪就没了（件数守恒）', stillThere === false);
+        // 反向：装备格只收对应的东西 —— 把箱子里剩下的东西拖到**背包格**（局内不可换）必须被拒
+        const lockedTry = await page.evaluate(() => {
+          const cell = document.querySelector('#screenLoot .loot-cell.found');
+          const slot = document.querySelector('#screenLoot .equip-slot[data-slot="backpack"]');
+          if (!cell || !slot) return null;
+          const a = cell.getBoundingClientRect();
+          const b = slot.getBoundingClientRect();
+          return {
+            from: { x: Math.round(a.left + 10), y: Math.round(a.top + 10) },
+            to: { x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) },
+          };
+        });
+        if (lockedTry) {
+          const n0 = (await call('bagList')).grids.backpack.length + (await call('bagList')).grids.rig.length;
+          await pointerDrag(lockedTry.from, lockedTry.to, { steps: 8 });
+          await sleep(300);
+          const n1 = (await call('bagList')).grids.backpack.length + (await call('bagList')).grids.rig.length;
+          const tip = await page.evaluate(() => (document.getElementById('lootToast') || {}).textContent || '');
+          check('★ 拖到「背包」装备格被拒且说得通（局内不能换背包 —— 画出来但不能换）',
+            n1 === n0 && /局内不能换/.test(tip), `件数 ${n0} → ${n1}；提示「${tip}」`);
+        }
+      }
+    }
+
+    // ★ [M3-BUG-03] 取走一件之后：剩下的格子**不能卡在「？」**
+    //   根因是界面拿"格子序号"去比"已搜出件数"，而取走一件会让这两个数错位：
+    //   序号出现缺口，末尾的格子就永远停在「未搜刮」。
+    const invBefore = (await snap()).loot.inventory;
+    await page.click('#lootList .loot-cell.found');
+    await sleep(400);
+    const afterTake = await page.evaluate(() => ({
+      cells: document.querySelectorAll('#lootList .loot-cell').length,
+      found: document.querySelectorAll('#lootList .loot-cell.found').length,
+      searching: document.querySelectorAll('#lootList .loot-cell.searching').length,
+    }));
+    const invAfter = (await snap()).loot.inventory;
+    check('夹具成立：点一格确实取走了一件（进背包 +1）', invAfter === invBefore + 1,
+      `背包 ${invBefore} → ${invAfter}`);
+    check('★ [M3-BUG-03] 取走一件后剩下的格子不会卡在「未搜刮」（旧实现末尾格子永远是「？」）',
+      afterTake.cells >= 1 && afterTake.searching === 0 && afterTake.found === afterTake.cells,
+      JSON.stringify(afterTake));
+
+    await page.click('#btnLootClose');
+    await sleep(200);
+    await page.evaluate(() => window.__m2.abandonRaid());
+    await waitForEnd(20000);
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
+  }
+
+  // ============================================================
+  // ★ 2026-10-15（docs/27 批次 3）：局内背包页
+  //
+  // 本组守的是**玩家看得见的那一层**：B 键开页、三张网格、拖动换位、按 R 旋转、
+  // 拖进保险箱、拖到丢弃区、把枪拖到装备格换上、再关掉。
+  // 判定规则本身在单测里（tools/unit-tests.mjs 的 3b 一节）。
+  // 可 `node tools/smoke.mjs --only=bag` 单独跑。
+  // ============================================================
+  if (m5Group('★ 2026-10-15 局内背包（B 键：三张网格 / 拖放 / 旋转 / 保险箱 / 丢弃 / 换装）', ['bag', 'm5'])) {
+    if (!(await page.evaluate(() => typeof window.__m2 !== 'undefined'))) {
+      await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    }
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
+    await page.evaluate(() => window.__m2.grantTestKit());
+    await startRaidFromLobby();
+    await page.evaluate(() => window.__m2.aiStandDown(true)); // 安静的世界：本组测界面，不测交战
+    await sleep(300);
+
+    // 夹具：往**局内背包**里塞一把枪 / 一件甲 / 一个头盔 / 一点弹药（走与拾取同一条路径）
+    const gave = await page.evaluate(() => ({
+      rifle: window.__m2.bagGive('rifle_ak762', 1),
+      vest: window.__m2.bagGive('vest3', 1),
+      helmet: window.__m2.bagGive('helmet2', 1),
+      ammo: window.__m2.bagGive('ammo_762', 1),
+    }));
+    check('夹具成立：局内背包里塞进了枪 / 甲 / 头盔 / 弹药',
+      gave.rifle.added === 1 && gave.vest.added === 1 && gave.helmet.added === 1 && gave.ammo.added === 1,
+      JSON.stringify(gave));
+
+    // 几何：网格与装备格的视口矩形（拖动坐标全靠它，只在一次 evaluate 里量）
+    const bagGeom = () => page.evaluate(() => {
+      const out = { grids: {}, slots: {}, discard: null, cell: 46 };
+      for (const g of document.querySelectorAll('#screenBag [data-drop-grid]')) {
+        const r = g.getBoundingClientRect();
+        out.grids[g.dataset.dropGrid] = {
+          left: r.left, top: r.top,
+          cell: parseFloat(getComputedStyle(g).getPropertyValue('--cell')) || 46,
+          w: Number(g.dataset.w || 0), h: Number(g.dataset.h || 0),
+        };
+      }
+      for (const s of document.querySelectorAll('#screenBag [data-drop-slot]')) {
+        const r = s.getBoundingClientRect();
+        out.slots[s.dataset.slot] = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), item: s.dataset.item || null };
+      }
+      const d = document.querySelector('#screenBag [data-drop-act="discard"]');
+      if (d) {
+        const r = d.getBoundingClientRect();
+        out.discard = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      }
+      return out;
+    });
+    /** 格坐标 → 视口坐标（格中心）。网格是**无间隙**的（见 index.html 的 .grid-wrap）。 */
+    const cellPt = (g, x, y) => ({
+      x: Math.round(g.left + (x + 0.5) * g.cell),
+      y: Math.round(g.top + (y + 0.5) * g.cell),
+    });
+    /** 某一格的**左上角附近**：抓住偏移算出来就是 (0,0)，落点因此可预测。 */
+    const itemPt = (uid) => page.evaluate((u) => {
+      const el = document.querySelector(`#screenBag .grid-item[data-uid="${u}"]`);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: Math.round(r.left + 3), y: Math.round(r.top + 3) };
+    }, uid);
+
+    // ---- ① B 键开页 ----
+    await page.keyboard.press('KeyB');
+    await sleep(300);
+    const panel = await page.evaluate(() => ({
+      on: document.getElementById('screenBag').classList.contains('on'),
+      grids: Array.from(document.querySelectorAll('#screenBag [data-drop-grid]')).map((g) => g.dataset.dropGrid),
+      slots: Array.from(document.querySelectorAll('#screenBag [data-drop-slot]')).map((s) => s.dataset.slot),
+      discard: !!document.querySelector('#screenBag [data-drop-act="discard"]'),
+      items: Array.from(document.querySelectorAll('#screenBag .grid-item')).map((i) => ({
+        uid: i.dataset.uid, text: i.innerText.trim(), title: i.title, grid: i.dataset.grid,
+      })),
+      sub: (document.getElementById('bagSub') || {}).textContent || '',
+    }));
+    check('★ 按 B 打开局内背包页（三张网格 + 六个装备格 + 丢弃区）',
+      panel.on && panel.grids.join(',') === 'backpack,rig,safe'
+      && panel.slots.join(',') === 'head,body,primary,secondary,backpack,rig' && panel.discard,
+      JSON.stringify({ on: panel.on, grids: panel.grids, slots: panel.slots, discard: panel.discard }));
+    check('★ 网格里看得见那几件（文字非空、悬停提示也是物品名 —— 不是只有空框）',
+      panel.items.length >= 4 && panel.items.every((i) => i.text.length > 0 && i.title.length > 0),
+      JSON.stringify(panel.items.slice(0, 4)));
+    check('★ 标题上写着件数 / 负重 / 估值（玩家一眼要能看到）',
+      panel.sub.includes('件') && /\/\s*\d+(\.\d+)?\s*kg/.test(panel.sub), panel.sub);
+    // ★ 2026-10-15（制作人要求）：左侧装备格改成**与大厅配装页一样的人形分布**。
+    //   判据不能只看"类名对不对"，要量**相对位置** —— 否则改成一行竖排也照样通过。
+    const figure = await page.evaluate(() => {
+      const r = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const b = el.getBoundingClientRect();
+        return {
+          left: Math.round(b.left), top: Math.round(b.top),
+          right: Math.round(b.right), bottom: Math.round(b.bottom),
+          w: Math.round(b.width), h: Math.round(b.height),
+        };
+      };
+      return {
+        figure: r('#screenBag .gear-figure'),
+        silhouette: !!document.querySelector('#screenBag .silhouette'),
+        head: r('#screenBag .slot-head'),
+        body: r('#screenBag .slot-body'),
+        primary: r('#screenBag .slot-primary'),
+        secondary: r('#screenBag .slot-secondary'),
+        backpack: r('#screenBag .slot-backpack'),
+        rig: r('#screenBag .slot-rig'),
+        lockedText: (document.querySelector('#screenBag .slot-backpack') || {}).innerText || '',
+      };
+    });
+    check('★ 左侧是**人形**（剪影 + 六个装备格），尺寸与大厅配装页一致（300×340）',
+      !!figure.figure && figure.silhouette === true && figure.figure.w === 300 && figure.figure.h === 340,
+      JSON.stringify({ figure: figure.figure, silhouette: figure.silhouette }));
+    check('★ 槽位分布真是人形：头盔在上、护甲在下、主武器在左、副武器在右、背包在最下',
+      !!figure.head && !!figure.body && !!figure.primary && !!figure.secondary && !!figure.backpack
+      && figure.head.bottom <= figure.body.top          // 头盔在护甲之上
+      && figure.body.bottom <= figure.backpack.top       // 护甲在背包之上
+      && figure.primary.right <= figure.body.left        // 主武器在护甲左侧
+      && figure.secondary.left >= figure.body.right      // 副武器在护甲右侧
+      && (!figure.rig || figure.rig.top >= figure.body.bottom),
+      JSON.stringify({ head: figure.head, body: figure.body, primary: figure.primary, secondary: figure.secondary }));
+    check('★ 局内不可换的两个格子写着「局内不可换」（画出来但不能换，理由可见）',
+      /局内不可换/.test(figure.lockedText), figure.lockedText.replace(/\s+/g, ' '));
+    // ★ 2026-10-15（制作人要求）：所有网格的格边长统一成搜刮页那套规则（上限 64）。
+    //   这里量的是**实际算出来的像素**：一页里的三张网格必须同尺寸且够大。
+    const bagCells = await page.evaluate(() => Array.from(document.querySelectorAll('#screenBag .grid-wrap'))
+      .map((g) => ({ name: g.dataset.dropGrid, cell: parseFloat(getComputedStyle(g).getPropertyValue('--cell')) || 0 })));
+    check('★ 背包页三张网格**同一个格边长**，且与搜刮页同一个上限（64px）',
+      bagCells.length === 3 && bagCells.every((c) => c.cell === bagCells[0].cell) && bagCells[0].cell >= 56,
+      JSON.stringify(bagCells));
+    // ★ 拖动目标**必须在视口里**（这条是截图看出来的：丢弃区曾经被右侧滚动列滚出屏幕，
+    //   表现为"拖不过去"，而所有断言都还是绿的）。
+    const discardBox = await page.evaluate(() => {
+      const el = document.querySelector('#screenBag [data-drop-act="discard"]');
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return { top: Math.round(b.top), bottom: Math.round(b.bottom), h: Math.round(b.height), vh: window.innerHeight };
+    });
+    check('★ 「丢弃区」在屏幕里看得见（没被滚动列挤出去 —— 拖放目标够不着＝拖不动）',
+      !!discardBox && discardBox.h > 10 && discardBox.top >= 0 && discardBox.bottom <= discardBox.vh,
+      JSON.stringify(discardBox));
+    check('★ 背包页开着时**不暂停**（裁定：主动开界面 ≠ 意外失焦；塔科夫式要让整理有风险）',
+      (await snap()).paused === false, `paused=${(await snap()).paused}`);
+
+    // ---- ② 拖动换位（弹药 1×1）----
+    let geom = await bagGeom();
+    const l0 = await call('bagList');
+    const ammoUid = (l0.grids.backpack.find((e) => e.itemId === 'ammo_762')
+      || l0.grids.rig.find((e) => e.itemId === 'ammo_762')).uid;
+    const ammoFrom = await itemPt(ammoUid);
+    const ammoTo = cellPt(geom.grids.backpack, 4, 3);
+    await pointerDrag(ammoFrom, ammoTo, { steps: 6 });
+    await sleep(250);
+    const l1 = await call('bagList');
+    const ammoNow = l1.grids.backpack.find((e) => e.uid === ammoUid);
+    check('★ 拖动＝真的换位（落库到背包 (4,3)）',
+      !!ammoNow && ammoNow.x === 4 && ammoNow.y === 3, JSON.stringify(ammoNow));
+    check('★ 界面跟着动（这一格在屏幕上的位置真的变了，不是只有数据变了）',
+      await page.evaluate((u, gx, gy, g) => {
+        const el = document.querySelector(`#screenBag .grid-item[data-uid="${u}"]`);
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return Math.abs(r.left - (g.left + gx * g.cell)) <= 3 && Math.abs(r.top - (g.top + gy * g.cell)) <= 3;
+      }, ammoUid, ammoNow.x, ammoNow.y, geom.grids.backpack),
+      `期望 left≈${Math.round(geom.grids.backpack.left + ammoNow.x * geom.grids.backpack.cell)}`);
+
+    // ---- ③ 拖动中按 R 旋转（换一件**有地方转**的：背包快满时 4×2 的空位不一定存在）----
+    geom = await bagGeom();
+    const rotatedShape = (e) => ({ w: e.h, h: e.w });
+    /** 在背包里找一块能放下给定形状的空位（按当前占用图算，不猜）。 */
+    const freeRegion = (shape, entries, skipUid) => {
+      const busy = entries.filter((e) => e.uid !== skipUid);
+      for (let y = 0; y < geom.grids.backpack.h; y++) {
+        for (let x = 0; x < geom.grids.backpack.w; x++) {
+          if (x + shape.w > geom.grids.backpack.w || y + shape.h > geom.grids.backpack.h) continue;
+          const hit = busy.some((b) => !(x + shape.w <= b.x || b.x + b.w <= x || y + shape.h <= b.y || b.y + b.h <= y));
+          if (!hit) return { x, y };
+        }
+      }
+      return null;
+    };
+    let rotTarget = null;
+    for (const e of l1.grids.backpack) {
+      if (e.w === e.h) continue;   // 正方形转了看不出来
+      const spot = freeRegion(rotatedShape(e), l1.grids.backpack, e.uid);
+      if (spot) { rotTarget = { e, spot }; break; }
+    }
+    check('夹具成立：背包里有一件"转一下就有地方放"的物品（否则"旋转"无从观察）',
+      !!rotTarget, rotTarget ? `${rotTarget.e.itemId} → (${rotTarget.spot.x},${rotTarget.spot.y})` : '没有');
+    if (rotTarget) {
+      await pointerDrag(await itemPt(rotTarget.e.uid),
+        cellPt(geom.grids.backpack, rotTarget.spot.x, rotTarget.spot.y), { steps: 6, pressR: true });
+      await sleep(250);
+      const l2 = await call('bagList');
+      const nowRot = l2.grids.backpack.find((e) => e.uid === rotTarget.e.uid);
+      check('★ 拖动中按 R 真的旋转了 90°（w/h 互换 + rotated=true），落库位置也对',
+        !!nowRot && nowRot.rotated === true
+        && nowRot.w === rotTarget.e.h && nowRot.h === rotTarget.e.w
+        && nowRot.x === rotTarget.spot.x && nowRot.y === rotTarget.spot.y,
+        JSON.stringify({ now: nowRot, 期望: `w=${rotTarget.e.h} h=${rotTarget.e.w} @(${rotTarget.spot.x},${rotTarget.spot.y})` }));
+    }
+
+    // ---- ④ 拖进保险箱（1×1 的弹药；先按**实际占用图**找一个空格）----
+    geom = await bagGeom();
+    const l2b = await call('bagList');
+    let safeCell = null;
+    for (let y = 0; y < geom.grids.safe.h && !safeCell; y++) {
+      for (let x = 0; x < geom.grids.safe.w && !safeCell; x++) {
+        if (!l2b.safeOccupied[y][x]) safeCell = { x, y };
+      }
+    }
+    check('夹具成立：保险箱里有一格空位（否则"放进去"无从观察）', !!safeCell, JSON.stringify(safeCell));
+    if (safeCell) {
+      const ammoFrom2 = await itemPt(ammoUid);
+      await pointerDrag(ammoFrom2, cellPt(geom.grids.safe, safeCell.x, safeCell.y), { steps: 6 });
+      await sleep(250);
+      const l3 = await call('bagList');
+      const inSafe = l3.grids.safe.find((e) => e.uid === ammoUid);
+      check('★ 拖进保险箱＝真的进了箱子，而且本局转「手动」不再自动装填',
+        !!inSafe && inSafe.safePinned === true && l3.safeManual === true,
+        JSON.stringify({ inSafe, manual: l3.safeManual }));
+      check('★ 箱子里的东西在界面上出现在**保险箱那张网格**里（不是还画在背包里）',
+        await page.evaluate((u) => {
+          const el = document.querySelector(`#screenBag .grid-item[data-uid="${u}"]`);
+          return !!el && el.dataset.grid === 'safe';
+        }, ammoUid));
+    }
+
+    // ---- ⑤ 拖到丢弃区 ----
+    geom = await bagGeom();
+    const l4 = await call('bagList');
+    const helmet = l4.grids.backpack.find((e) => e.itemId === 'helmet2') || l4.grids.rig.find((e) => e.itemId === 'helmet2');
+    check('夹具成立：背包里有那件要丢的头盔', !!helmet, JSON.stringify(helmet));
+    if (helmet) {
+      const before = l4.grids.backpack.length + l4.grids.rig.length + l4.grids.safe.length;
+      await pointerDrag(await itemPt(helmet.uid), geom.discard, { steps: 6 });
+      await sleep(300);
+      const l5 = await call('bagList');
+      const after = l5.grids.backpack.length + l5.grids.rig.length + l5.grids.safe.length;
+      const toast = await page.evaluate(() => (document.getElementById('bagToast') || {}).textContent || '');
+      check('★ 拖到「丢弃区」＝真的丢掉了（件数 -1，且说得出丢了什么）',
+        after === before - 1 && /丢弃/.test(toast), `件数 ${before} → ${after}；提示「${toast}」`);
+    }
+
+    // ---- ⑥ 把枪拖到主武器格＝换上（换下来的那把自动进背包）----
+    geom = await bagGeom();
+    const l6 = await call('bagList');
+    const primaryBefore = l6.slots.primary ? l6.slots.primary.itemId : null;
+    const rifleUid2 = l6.grids.backpack.find((e) => e.itemId === 'rifle_ak762').uid;
+    await pointerDrag(await itemPt(rifleUid2), geom.slots.primary, { steps: 6 });
+    await sleep(350);
+    const l7 = await call('bagList');
+    check('★ 把背包里的枪拖到主武器格＝真的换上了（手上那把变了）',
+      l7.slots.primary && l7.slots.primary.itemId === 'rifle_ak762',
+      JSON.stringify({ before: primaryBefore, after: l7.slots.primary }));
+    check('★ 换下来的那把**自动进背包**（不吞装备）',
+      !!primaryBefore && l7.grids.backpack.concat(l7.grids.rig).some((e) => e.itemId === primaryBefore),
+      `换下来的 ${primaryBefore} 在背包里：${JSON.stringify(l7.grids.backpack.map((e) => e.itemId))}`);
+    const slotText = await page.evaluate(() => {
+      const el = document.querySelector('#screenBag .equip-slot[data-slot="primary"]');
+      return el ? el.innerText.replace(/\s+/g, ' ').trim() : '(没有主武器格)';
+    });
+    check('★ 换上的枪在界面上写明了弹匣状态（捡来的枪是空仓，按 R 装弹）',
+      /弹匣/.test(slotText), slotText);
+
+    // ---- ⑦ 关页（B 与 Esc 各一次）----
+    await page.keyboard.press('KeyB');
+    await sleep(200);
+    const closedByB = await page.evaluate(() => !document.getElementById('screenBag').classList.contains('on'));
+    check('★ 再按 B 关闭（回到局内视角）', closedByB);
+    await page.keyboard.press('KeyB');
+    await sleep(200);
+    await page.keyboard.press('Escape');
+    await sleep(250);
+    const closedByEsc = await page.evaluate(() => !document.getElementById('screenBag').classList.contains('on'));
+    check('★ Esc 也能关掉背包页（不弹暂停菜单）', closedByEsc,
+      `面板可见=${!closedByEsc}`);
+    await ensureRunning('关掉背包页之后');
+
+    await page.evaluate(() => window.__m2.abandonRaid());
+    await waitForEnd(20000);
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
   }
 }
 
@@ -2883,7 +3758,7 @@ async function runM5Groups() {
 // 弹药真的在网格里被扣、"仓库什么都没有"时进战区不崩。
 // ============================================================
 async function runM6CarryGroup() {
-  if (m5Group('★ M6 携行具容量化与弹药网格化')) {
+  if (m5Group('★ M6 携行具容量化与弹药网格化', ['m6', 'm6-3'])) {
     // ---- ① 装备哪只包，局内就是哪只包的容量 ----
     await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
     await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
@@ -2952,9 +3827,12 @@ async function runM6CarryGroup() {
       await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
       await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
       await page.evaluate(() => window.__m2.clearStash());
-      // 刻意**不用** startRaidFromLobby（它会补齐配装）—— 这一条测的就是"什么都没有"
+      // ★ 2026-10-15（v3）：装备穿在身上，所以"什么都没有"要**两步**
+      //   （空仓库 + 脱掉身上那套）。混成一个夹具会误伤 M6-3 那种"仓库空、身上有枪"的用例。
+      await page.evaluate(() => window.__m2.stripLoadout());
       await sleep(1200);
       // ★ M6-5：`#btnStart` 在「进入战局」页上。
+      // 刻意**不用** startRaidFromLobby（它会补齐配装）—— 这一条测的就是"什么都没有"
       await showTab('deploy');
       await page.click('#btnStart');
       await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 10000 });
@@ -3148,7 +4026,7 @@ async function dragStashItemToCell(itemId, cell, opts = {}) {
 async function runM63DragGroup() {
   // 组名同时带 M6-3 与 M5 —— 因为 `--only=<子串>` 是按**组名子串**过滤的，
   // 带上 M5 之后 `--only=m5` 也能跑到这一组（否则改一行界面只能跑全量）。
-  if (m5Group('★ M6-3 / M5-3 装备页（配装＋仓库合并）拖放')) {
+  if (m5Group('★ M6-3 / M5-3 装备页（配装＋仓库合并）拖放', ['m6', 'm6-3', 'm5'])) {
     await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
     await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
     await page.evaluate(() => window.__m2.grantTestKit());
@@ -3162,6 +4040,26 @@ async function runM63DragGroup() {
       window.addEventListener('pointermove', () => { window.__m63evt.move++; }, true);
       window.addEventListener('pointerup', () => { window.__m63evt.up++; }, true);
     });
+
+    // ---- ⓪b ★ 2026-10-15：大厅三列网格的格边长 —— 与搜刮页**同一条规则**（上限 64） ----
+    {
+      const gc = await page.evaluate(() => Array.from(document.querySelectorAll('#tabGear .grid-wrap'))
+        .map((g) => {
+          const r = g.getBoundingClientRect();
+          return {
+            name: g.dataset.dropGrid,
+            cell: parseFloat(getComputedStyle(g).getPropertyValue('--cell')) || 0,
+            inView: r.left >= 0 && r.right <= window.innerWidth && r.top >= 0,
+          };
+        }));
+      const carry = gc.filter((c) => c.name !== 'stash');
+      check('★ 大厅三列网格按**同一条规则**取到最大（明显大于旧的固定 30px，上限与搜刮页相同 64px）',
+        gc.length >= 2 && gc.every((c) => c.cell >= 34 && c.cell <= 64)
+        && new Set(carry.map((c) => c.cell)).size <= 1,
+        JSON.stringify(gc));
+      check('★ 放大之后**所有网格仍在屏幕里**（拖动目标够得着 —— 这是"放大"唯一的硬约束）',
+        gc.every((c) => c.inView), JSON.stringify(gc.filter((c) => !c.inView)));
+    }
 
     // ---- ① ★ M6-5：大厅分两页 —— 装备页放"我带了什么"，进入战局页放"我要面对什么" ----
     //
@@ -3404,6 +4302,8 @@ async function runM63DragGroup() {
       // 先腾空仓库：grantTestKit 塞了 31 条（约 102/120 格），一只 2×5 的霰弹枪
       // 可能连一块连续空位都找不到 —— 那样"夹具不成立"会被误读成"脱下功能坏了"。
       // 夹具必须是确定的：空仓库 + 一件穿在身上的装备 = 落点唯一。
+      // ★ 2026-10-15（v3）：`clearStash()` 只清仓库 —— 身上那件**必须还在**
+      //   （装备穿在身上，不在仓库里；这一步要拖的正是它）。
       await page.evaluate(() => window.__m2.clearStash());
       await sleep(120);
       const g = await gearGeometry();
@@ -3457,6 +4357,176 @@ async function runM63DragGroup() {
 }
 
 // ============================================================
+// ★ M6-6 新手引导（第一步）：按**已打完的局数**缩放的难度曲线
+//
+// 纯逻辑那一半已经守住（unit-tests 的 M6-6 一节：档位、缩放、不污染配置、尸体池一致）。
+// 这一组补的是**只有真浏览器能验**的三件事：
+//   ① 大厅「进入战局」页真的写出本局难度（玩家看得见，而不是只在数据里）
+//   ② 第一局与"老手局"用的**不是同一份配额**（进局后读本局实际在用的那份）
+//   ③ 曲面**不粘**：设过一次新手档之后，改成老手档进局必须回到标准（共享配置没被改脏）
+//      —— 这条是这类"按档位缩放配置"的经典缺陷，而且它**只在第二局**才现形。
+// ============================================================
+async function runM66NewbieRampGroup() {
+  if (m5Group('★ M6-6 新手难度曲线（按局数缩放）', ['m6', 'm6-6', 'm5'])) {
+    await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    await page.evaluate(() => window.__m2.grantTestKit());
+    await page.evaluate(() => window.__m2.setRaids(0));
+    await sleep(150);
+    await showTab('deploy');
+    await sleep(150);
+
+    const base = await page.evaluate(() => window.__m2.newbieRamp());
+    check('★ M6-6：第一局的敌人配额**少于标准**（新手曲线真的算出来了）',
+      base.raids === 0 && base.scaledTotal > 0 && base.scaledTotal < base.baseTotal,
+      JSON.stringify({ raids: base.raids, base: base.baseTotal, scaled: base.scaledTotal, text: base.text }));
+    const deployText = await page.evaluate(() => {
+      const el = document.getElementById('deployBody');
+      return el ? el.innerText.replace(/\s+/g, ' ') : '';
+    });
+    check('★ M6-6：大厅「进入战局」页写出了本局难度（玩家看得见，不是只在数据里）',
+      /难度/.test(deployText) && /新手/.test(deployText) && new RegExp(String(base.scaledTotal)).test(deployText),
+      deployText.slice(0, 180));
+
+    // ---- 真的进一局：本局**在用**的那份配额必须就是缩放后的 ----
+    await sleep(1100);
+    await page.evaluate(() => window.__m2.restockLoadout());
+    await page.click('#btnStart');
+    await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 12000 });
+    await sleep(400);
+    const inRaid = await page.evaluate(() => window.__m2.newbieRamp());
+    const aiNow = (await snap()).aiTotal;
+    check('★ M6-6：进局后**本局实际在用**的配额 = 曲线算出来的那份（缩放落到了世界里）',
+      inRaid.appliedTotal === inRaid.scaledTotal && inRaid.appliedTotal < inRaid.baseTotal,
+      JSON.stringify({ applied: inRaid.appliedTotal, scaled: inRaid.scaledTotal, base: inRaid.baseTotal, aiManager: aiNow }));
+    await page.evaluate(() => window.__m2.abandonRaid());
+    await waitForEnd(20000);
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(300);
+
+    // ---- 曲线不粘：换成老手档再来一局，配额必须回到标准 ----
+    await page.evaluate(() => window.__m2.setRaids(50));
+    await sleep(150);
+    const vet = await page.evaluate(() => window.__m2.newbieRamp());
+    check('★ M6-6：局数够了就回到标准难度（不再给老手"新手福利"）',
+      vet.aiScale === 1 && !vet.isNewbie && vet.scaledTotal === vet.baseTotal,
+      JSON.stringify({ raids: vet.raids, scaled: vet.scaledTotal, base: vet.baseTotal }));
+    await sleep(1100);
+    await page.evaluate(() => window.__m2.restockLoadout());
+    await showTab('deploy');
+    await page.click('#btnStart');
+    await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 12000 });
+    await sleep(400);
+    const vetRaid = await page.evaluate(() => window.__m2.newbieRamp());
+    check('注入自检：上一局的新手缩放**没有污染**共享配置（老手局实际用的是标准配额）',
+      vetRaid.appliedTotal === vetRaid.baseTotal,
+      JSON.stringify({ applied: vetRaid.appliedTotal, base: vetRaid.baseTotal }));
+    await page.evaluate(() => window.__m2.abandonRaid());
+    await waitForEnd(20000);
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(200);
+  }
+}
+
+// ============================================================
+// ★ M6-6 第二步：首局引导清单（玩家看得见的那一层）
+//
+// 纯逻辑已守住步骤机（unit-tests 的 M6-6 第二步一节）。这一组补的是：
+//   ① 大厅「进入战局」页真的写出三步清单（新账号才出现）
+//   ② 局内 HUD 的引导提示**真的显示**、并且随进度**换话**（不是只在数据里变）
+//   ③ 撤离过一次之后：数据 done、HUD 那一行消失、大厅清单也消失
+//      —— 老玩家不该再看到"新手引导"四个字
+// ============================================================
+async function runM66TutorialGroup() {
+  if (m5Group('★ M6-6 首局引导清单（进战区 → 搜容器 → 活着撤离）', ['m6', 'm6-6', 'tutorial'])) {
+    await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    await page.evaluate(() => window.__m2.grantTestKit());
+    await page.evaluate(() => window.__m2.resetTutorial());
+    await sleep(150);
+
+    const t0 = await page.evaluate(() => window.__m2.tutorial());
+    check('★ M6-6 引导：新账号停在第 1 步、三步都没打勾',
+      !t0.lobby.done && t0.lobby.step === 'enter' && t0.lobby.steps.every((s) => !s.done),
+      JSON.stringify(t0.lobby));
+
+    await showTab('deploy');
+    await sleep(150);
+    const deployText = await page.evaluate(() => {
+      const el = document.getElementById('deployBody');
+      return el ? el.innerText.replace(/\s+/g, ' ') : '';
+    });
+    check('★ M6-6 引导：大厅「进入战局」页写出了三步清单与"现在该做什么"',
+      /第一次进战区/.test(deployText) && /进入战区/.test(deployText)
+      && /搜一个容器/.test(deployText) && /撤离/.test(deployText) && /现在：/.test(deployText),
+      deployText.slice(-220));
+
+    // ---- 进战区：第 1 步打勾，局内引导换成"搜容器" ----
+    await sleep(1100);
+    await page.evaluate(() => window.__m2.restockLoadout());
+    await showTab('deploy');
+    await page.click('#btnStart');
+    await page.waitForFunction(() => window.__m2.snapshot().flow === 'raid', { timeout: 12000 });
+    await sleep(500);
+    const t1 = await page.evaluate(() => window.__m2.tutorial());
+    const hud1 = await page.evaluate(() => {
+      const el = document.getElementById('tutHint');
+      return el ? { on: el.classList.contains('on'), text: el.textContent.trim() } : null;
+    });
+    check('★ M6-6 引导：进战区让第 1 步打勾、当前步变成"搜一个容器"',
+      t1.raw.entered === 1 && t1.raid.step === 'loot' && t1.raid.steps[0].done,
+      JSON.stringify(t1.raw));
+    check('★ M6-6 引导：局内 HUD **真的显示**引导（放在左下角，不与交互提示抢位置）',
+      !!hud1 && hud1.on === true && /按 F/.test(hud1.text) && /搜/.test(hud1.text),
+      JSON.stringify(hud1));
+
+    // ---- 搜一个容器：第 2 步打勾，引导换成"撤离" ----
+    await page.evaluate(() => window.__m2.aiStandDown(true));
+    await page.evaluate(() => window.__m2.teleportToContainer());
+    await sleep(300);
+    await tapF();
+    await sleep(400);
+    await page.keyboard.press('Escape');   // 关掉搜刮页，回到局内视角看 HUD
+    await sleep(300);
+    const t2 = await page.evaluate(() => window.__m2.tutorial());
+    const hud2 = await page.evaluate(() => {
+      const el = document.getElementById('tutHint');
+      return el ? { on: el.classList.contains('on'), text: el.textContent.trim() } : null;
+    });
+    check('★ M6-6 引导：开过一个容器之后第 2 步打勾、引导换成"活着撤离"',
+      t2.raw.looted >= 1 && t2.raid.step === 'extract' && t2.raid.steps[1].done,
+      JSON.stringify(t2.raw));
+    check('★ M6-6 引导：HUD 上的话**跟着进度换**（不是一直写着第一句）',
+      !!hud2 && hud2.on === true && /撤离/.test(hud2.text) && hud2.text !== hud1.text,
+      JSON.stringify({ before: hud1 && hud1.text, after: hud2 && hud2.text }));
+
+    // ---- 活着撤离：走完最后一步，整套提示永久消失 ----
+    await call('teleportToExtract');
+    const endT = await waitForEnd(40000);
+    const t3 = await page.evaluate(() => window.__m2.tutorial());
+    const hud3 = await page.evaluate(() => {
+      const el = document.getElementById('tutHint');
+      return el ? el.classList.contains('on') : null;
+    });
+    check('★ M6-6 引导：活着撤离让清单走完（第 3 步打勾、done=true）',
+      endT && t3.raw.extracted >= 1 && t3.lobby.done === true && t3.lobby.hint === '',
+      `结束=${endT} ${JSON.stringify(t3.raw)}`);
+    check('★ M6-6 引导：走完之后 HUD 那一行消失（老玩家不再被新手提示打扰）',
+      hud3 === false, `tutHint.on=${hud3}`);
+    await page.evaluate(() => window.__m2.returnToLobby());
+    await sleep(300);
+    await showTab('deploy');
+    await sleep(150);
+    const deployAfter = await page.evaluate(() => {
+      const el = document.getElementById('deployBody');
+      return el ? el.innerText.replace(/\s+/g, ' ') : '';
+    });
+    check('★ M6-6 引导：大厅清单也消失（"第一次进战区"不再出现）',
+      !/第一次进战区/.test(deployAfter), deployAfter.slice(0, 120));
+  }
+}
+
+// ============================================================
 // ★ M6-4：携行网格（"身上"）的端到端
 //
 // 纯逻辑已经把网格读写与进局检查逐例守住了（unit-tests 的 M6-4 一节）。
@@ -3468,7 +4538,7 @@ async function runM63DragGroup() {
 // 外加"大厅全屏"与"拆分堆叠"两条需求验收。
 // ============================================================
 async function runM64CarryGridGroup() {
-  if (m5Group('★ M6-4 携行网格（背包/弹挂/保险箱）与进局检查')) {
+  if (m5Group('★ M6-4 携行网格（背包/弹挂/保险箱）与进局检查', ['m6', 'm6-4'])) {
     await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
     await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
     await page.evaluate(() => window.__m2.grantTestKit());
@@ -3714,7 +4784,7 @@ async function runM64CarryGridGroup() {
 // ============================================================
 async function runM65MapGroup() {
   // 组名带 M5 与 M6-5：`--only=m5` 能跑到它，`--only=m6-5` 也能（过滤器按组名子串匹配）。
-  if (m5Group('★ M6-5 / M5-5 地图选择（选图 → 简报 → 本局真的用那张图）')) {
+  if (m5Group('★ M6-5 / M5-5 地图选择（选图 → 简报 → 本局真的用那张图）', ['m6', 'm6-5', 'm5'])) {
     await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
     await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
     await page.evaluate(() => window.__m2.grantTestKit());
@@ -3843,6 +4913,175 @@ async function runM65MapGroup() {
   }
 }
 
+/**
+ * ★ M6-5 第 4 批：单套配装 —— 「最近一局」与「一键补齐」。
+ *
+ * 覆盖 docs/22 §7.3 明确要求的那四条：两个按钮可用 / 点恢复后网格与上一局一致 /
+ * 点补齐后**货币真的减少**且随后能直接进战区 / 买不到的件出现在确认框里。
+ *
+ * 为什么这一组非有不可（而不是"单测覆盖了就够"）：单测只能证明 core 返回了正确的
+ * `{cost, bought}` —— 那是**函数的**性质。而"钱真的从**档案**里扣掉了、面板与档案
+ * 仍是同一份、扣完真的进得了战区"是**整条界面路径**的性质。实测过的那类缺陷
+ * （面板报 4622 / 实扣 4639）正是只出现在这条缝里，纯逻辑断言看不见它。
+ *
+ * 夹具说明：`newRaidRecord` 造"上一局"、`makeMissing` 造"上次带了、现在没有"。
+ * 两者都只写**记忆**、不动产品路径；正常路径下前者由进战区那一刻的
+ * `recordRaidSnapshot` 写、后者只能靠真的阵亡丢掉东西来产生 —— 端到端里既慢又不确定。
+ */
+async function runM65LoadoutGroup() {
+  if (m5Group('★ M6-5 / M5-6 单套配装（最近一局 / 一键补齐）', ['m6', 'm6-5', 'm5'])) {
+    // 按 itemId 聚合（恢复会把 120 发拆成两盒 60，逐条比会假红 —— 数量守恒才是口径）
+    const aggByItem = (rows) => {
+      const m = new Map();
+      for (const r of rows) m.set(r.itemId, (m.get(r.itemId) || 0) + r.count);
+      return [...m.entries()].sort().map(([k, v]) => `${k}x${v}`);
+    };
+
+    await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    await page.evaluate(() => window.__m2.grantTestKit());
+    // ★ 前置：**先清掉记忆**才谈得上"没有上一局"。档案是跨组持久的（同一个
+    //   localStorage），上一组留下的 lastRaid 会让这条前置静默失效 ——
+    //   实测过：夹具那一步读到 available=true，而失败信息看起来像"按钮没被禁用"。
+    await page.evaluate(() => {
+      const raw = JSON.parse(localStorage.getItem('h5_extract_profile'));
+      raw.lastRaid = null;
+      localStorage.setItem('h5_extract_profile', JSON.stringify(raw));
+    });
+    await page.reload({ waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+    await showTab('gear');
+
+    // ---- ① 没有上一局：两个按钮**在**，但处于禁用态 ----
+    {
+      const s = await page.evaluate(() => {
+        const pick = (a) => document.querySelector(`#gearBody [data-act="${a}"]`);
+        const r = pick('restoreLastRaid');
+        const f = pick('refillLastRaid');
+        return {
+          hasRestore: !!r, hasRefill: !!f,
+          disabled: !!r && !!f && r.classList.contains('dis') && f.classList.contains('dis'),
+          text: (document.getElementById('gearBody').innerText || '').replace(/\s+/g, ' '),
+          lr: window.__m2.lastRaidNow(),
+        };
+      });
+      check('★ M6-5 没有上一局时两个按钮**仍在**（删掉多套预设 ≠ 删掉入口）',
+        s.hasRestore && s.hasRefill, JSON.stringify({ restore: s.hasRestore, refill: s.hasRefill }));
+      check('★ M6-5 没有上一局时两个按钮是禁用态（不是"点了却什么也不做"）',
+        s.disabled && s.lr.available === false, JSON.stringify(s.lr));
+      check('M6-5 面板说清了"为什么按不了"（不是留白让人猜）',
+        /还没有上一局/.test(s.text), s.text.slice(0, 90));
+    }
+
+    // ---- ② 「最近一局」：网格被清空后一键摆回，且与记忆**数量守恒** ----
+    {
+      await page.evaluate(() => window.__m2.restockLoadout());
+      const rec = await page.evaluate(() => window.__m2.newRaidRecord());
+      const want = aggByItem(rec.carry.filter((e) => e.grid === 'backpack' || e.grid === 'rig'));
+      check('夹具成立：上一局的记忆里有携行件（否则"摆回来"无从观察）',
+        want.length > 0, `记忆 ${want.join(' ')}`);
+
+      // 清空携行网格（模拟"上一局打完、身上空了"），**仓库不动** —— 那才是恢复的货源
+      await page.evaluate(() => {
+        const raw = JSON.parse(localStorage.getItem('h5_extract_profile'));
+        raw.loadout.carry = { backpack: [], rig: [], safe: (raw.loadout.carry && raw.loadout.carry.safe) || [] };
+        localStorage.setItem('h5_extract_profile', JSON.stringify(raw));
+      });
+      await page.reload({ waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+      await showTab('gear');
+      const emptied = await page.evaluate(() => {
+        const c = window.__m2.profile().loadout.carry;
+        return { backpack: c.backpack.length, rig: c.rig.length };
+      });
+      check('夹具成立：恢复前携行网格确实是空的（否则"摆回来了"看不出来）',
+        emptied.backpack === 0 && emptied.rig === 0, JSON.stringify(emptied));
+
+      const btn = await page.$('#gearBody [data-act="restoreLastRaid"]');
+      check('夹具成立：清空网格后「最近一局」仍然可点', !!btn);
+      if (btn) {
+        await btn.click();
+        await sleep(300);
+        const after = await page.evaluate(() => {
+          const p = window.__m2.profile();
+          const c = p.loadout.carry;
+          return {
+            got: [...c.backpack, ...c.rig].map((e) => ({ itemId: e.itemId, count: e.count })),
+            toast: window.__m2.lobby().toastText,
+          };
+        });
+        check('★ M6-5 点「最近一局」后网格里的东西与上一局**数量守恒且逐项一致**',
+          JSON.stringify(aggByItem(after.got)) === JSON.stringify(want),
+          `恢复 ${aggByItem(after.got).join(' ')} / 期望 ${want.join(' ')}`);
+        check('M6-5 恢复后给出了人话提示（玩家要知道刚才发生了什么）',
+          /已恢复最近一局/.test(after.toast || ''), after.toast || '（没有提示）');
+      }
+    }
+
+    // ---- ③ 「一键补齐」：钱**真的**从档案里扣掉，且补完能直接进战区 ----
+    {
+      await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
+      await page.evaluate(() => window.__m2.grantTestKit());
+      await showTab('gear');
+
+      // 造两件缺件：一件买得到（绷带）、一件商店根本不卖（12ga 弹药，不在售）
+      await page.evaluate(() => window.__m2.newRaidRecord());
+      const miss = await page.evaluate(() => {
+        window.__m2.makeMissing('bandage', 2);
+        return window.__m2.makeMissing('ammo_12ga', 20);
+      });
+      check('夹具成立：造出了两件缺件（一件买得到、一件买不到）',
+        miss.available && miss.missing.length === 2,
+        JSON.stringify(miss.missing.map((m) => m.itemId)));
+
+      // ★ 货币读 **view**：`profile()` 的顶层是原始档案片段，货币在派生的视图里
+      //   （早先读顶层拿到 undefined，断言就成了 `undefined < undefined` 的假红）。
+      const before = await page.evaluate(() => window.__m2.profile().view.currency);
+      // 打桩 confirm：既放行，也把确认框文本留下 —— "明示清单与总价"只有它能证
+      await page.evaluate(() => {
+        window.__confirmMsg = null;
+        window.confirm = (m) => { window.__confirmMsg = m; return true; };
+      });
+      const btn = await page.$('#gearBody [data-act="refillLastRaid"]');
+      check('夹具成立：有缺件时「一键补齐」是可点的', !!btn);
+      if (btn) {
+        await btn.click();
+        await sleep(350);
+        const after = await page.evaluate(() => ({
+          currency: window.__m2.profile().view.currency,
+          msg: window.__confirmMsg,
+          toast: window.__m2.lobby().toastText,
+        }));
+        check('★ M6-5 点「一键补齐」后货币**真的**从档案里减少（不是只把东西放进格子）',
+          after.currency < before, `货币 ${before} → ${after.currency}`);
+        check('★ M6-5 补齐前必须二次确认，且确认框写明了清单与总价',
+          !!after.msg && /将花/.test(after.msg) && /确认购买吗/.test(after.msg),
+          (after.msg || '（没有弹窗）').split('\n').join(' / ').slice(0, 120));
+        check('★ M6-5 买不到的件在确认框里**被单列**（不是整单拒绝、也不是静默跳过）',
+          !!after.msg && /不可购买/.test(after.msg),
+          (after.msg || '').split('\n').join(' / ').slice(0, 150));
+        check('M6-5 补齐之后给出了人话提示（说了补了几件、花了多少）',
+          /已补齐/.test(after.toast || ''), after.toast || '（没有提示）');
+
+        // ★ 这条是补齐的**验收条件**：补完必须真的进得了战区
+        await startRaidFromLobby();
+        await page.waitForFunction("window.__m2 && window.__m2.snapshot().flow === 'raid'", { timeout: 20000 })
+          .catch(() => { /* 进不去也要把断言记下来，而不是静默跳过 */ });
+        const flow = await page.evaluate(() => window.__m2.snapshot().flow);
+        check('★ M6-5 补齐之后**真的进了战区**（补齐唯一的验收条件）',
+          flow === 'raid', `flow=${flow}`);
+        if (flow === 'raid') {
+          await page.evaluate(() => window.__m2.abandonRaid());
+          await waitForEnd(20000);
+          await page.evaluate(() => window.__m2.returnToLobby());
+          await sleep(200);
+        }
+      }
+    }
+  }
+}
+
 // ============================================================
 try {
   // `--only=m5`：只跑 M5 段落（自带 prepare，不依赖历史组的状态）。
@@ -3853,6 +5092,9 @@ try {
     await runM63DragGroup();
     await runM64CarryGridGroup();
     await runM65MapGroup();
+    await runM65LoadoutGroup();
+    await runM66NewbieRampGroup();
+    await runM66TutorialGroup();
   } else {
     await runLegacyGroups();
     await runM5Groups();
@@ -3860,6 +5102,15 @@ try {
     await runM63DragGroup();
     await runM64CarryGridGroup();
     await runM65MapGroup();
+    await runM65LoadoutGroup();
+    await runM66NewbieRampGroup();
+    await runM66TutorialGroup();
+  }
+
+  // ★ 2026-10-14：`--only` 一个组都没匹配上 → **报错**。多半是标签拼错了，
+  //   而"静默跑 0 个组、然后显示全绿"正是这个开关最坏的失效方式。
+  if (ONLY && onlyHitTags.size === 0) {
+    throw new Error(`--only=${ONLY} 没有匹配到任何组 —— 检查标签拼写（可用：m5 / m5-6 / m6 / m6-1 / m6-2 / m6-3 / m6-4 / m6-5 / m6-6 / loot（搜刮页）/ bag（局内背包））`);
   }
 
   // ============================================================

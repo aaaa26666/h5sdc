@@ -1,11 +1,12 @@
 // 诊断：AI 发现玩家后是否在靠近（还是漫无目的乱跑）
-import { launchBrowser } from './lib/browser.mjs';
+import { suppressPointerLock, launchBrowser } from './lib/browser.mjs';
 
 const URL_BASE = process.argv.find((a) => a.startsWith('http')) || 'http://127.0.0.1:5180/';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const browser = await launchBrowser();
 const page = await browser.newPage();
+await suppressPointerLock(page); // 不抢用户鼠标（原理见 lib/browser.mjs）
 await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
 await page.waitForFunction('window.__m2 !== undefined', { timeout: 20000 });
 await page.click('#btnStart');

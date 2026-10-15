@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { launchBrowser, describeMode, ROOT as REPO_ROOT } from './lib/browser.mjs';
+import { suppressPointerLock, launchBrowser, describeMode, ROOT as REPO_ROOT } from './lib/browser.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = REPO_ROOT;
@@ -36,6 +36,7 @@ const browser = await launchBrowser({
 console.log(`  运行模式: ${describeMode()}`);
 
 const page = await browser.newPage();
+await suppressPointerLock(page); // 不抢用户鼠标（原理见 lib/browser.mjs）
 await page.goto(URL_BASE, { waitUntil: 'load', timeout: 60000 });
 await page.waitForFunction('window.__m1 !== undefined', { timeout: 30000 });
 
